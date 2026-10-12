@@ -1,4 +1,4 @@
-from trakbot_agent.core import Aggregator, Spool, browser_url
+from trakbot_agent.core import Aggregator, Spool, browser_url, is_private
 
 
 def test_merge_and_drain():
@@ -23,6 +23,13 @@ def test_browser_url():
     assert browser_url("Google-chrome", r, 110) == "https://a.com"
     assert browser_url("code", r, 110) == ""
     assert browser_url("chrome", r, 200) == ""
+
+
+def test_is_private():
+    assert is_private("Reddit - Google Chrome (Incognito)")
+    assert is_private("New InPrivate window")
+    assert is_private("Private Browsing - Mozilla Firefox")
+    assert not is_private("Reddit - Google Chrome")
 
 
 def test_spool(tmp_path):

@@ -1,9 +1,19 @@
 """Sampling + aggregation. Pure logic so it can be unit tested."""
 import json
+import re
 import time
 from dataclasses import dataclass, field
 
 BROWSERS = ("chrome", "chromium", "firefox", "msedge", "edge", "brave", "opera", "vivaldi", "safari", "arc")
+
+# Browsers put this in the window title in private mode; the extension never
+# gets a URL out of such a window (that's the browser's own privacy boundary,
+# and we don't try to work around it — see shots.py / README).
+PRIVATE_TITLE_RE = re.compile(r"\(incognito\)|\(inprivate\)|private browsing|private window|private/incognito", re.I)
+
+
+def is_private(title: str) -> bool:
+    return bool(PRIVATE_TITLE_RE.search(title or ""))
 
 
 @dataclass

@@ -33,4 +33,7 @@ DEFAULT_RULES = [
     ("domain", "thepiratebay.org", "Piracy", U, 1), ("domain", "1337x.to", "Piracy", U, 1),
     ("app", "*qbittorrent*", "Piracy", U, 1), ("app", "*utorrent*", "Piracy", U, 1),
     ("domain", "draftkings.com", "Gambling", U, 1), ("domain", "bet365.com", "Gambling", U, 1),
+    # The agent can't see the URL inside a private/incognito window (by browser design),
+    # but it can see the window title says so — flag it and rely on screenshots for evidence.
+    ("title", r"\(incognito\)|\(inprivate\)|private browsing|private window|private/incognito", "Private/Incognito Browsing", U, 1),
 ]

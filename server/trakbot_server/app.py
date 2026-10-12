@@ -1,6 +1,8 @@
 """TrakBot server: ingest API, reports, rule + alert management, dashboard."""
+import base64
 import hmac
 import os
+import re
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -9,6 +11,7 @@ from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .classify import LABELS, classify, matching_rule
@@ -18,10 +21,17 @@ ADMIN_TOKEN = os.environ.get("TRAKBOT_ADMIN_TOKEN", "")
 AGENT_KEY = os.environ.get("TRAKBOT_AGENT_KEY", "")
 DB_PATH = os.environ.get("TRAKBOT_DB", "data/trakbot.db")
 MAX_EVENT_SECONDS = 3600
+MAX_SHOT_B64 = 3_000_000  # ~2.2MB decoded; agent targets far smaller JPEGs
 
 app = FastAPI(title="TrakBot")
 db = DB(DB_PATH)
 STATIC = Path(__file__).parent / "static"
+SCREENSHOT_DIR = Path(os.environ.get("TRAKBOT_SCREENSHOT_DIR", "data/screenshots"))
+SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+DIST_DIR = Path(os.environ.get("TRAKBOT_DIST_DIR", "dist"))
+if DIST_DIR.exists():
+    app.mount("/dist", StaticFiles(directory=str(DIST_DIR)), name="dist")
+WINSCRIPTS = Path(__file__).parent / "winscripts"
 
 
 def _check(given: str | None, expected: str):
@@ -193,6 +203,107 @@ def ack_alert(aid: int):
     with db.conn() as c:
         c.execute("UPDATE alerts SET acked=1 WHERE id=?", (aid,))
     return {"ok": True}
+
+
+# ----------------------------------------------------------- trend (charts)
+@app.get("/api/trend", dependencies=[Depends(admin)])
+def trend(user: str | None = None, days: int = Query(14, ge=1, le=92)):
+    rules = db.rules()
+    end = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    start = end - timedelta(days=days)
+    buckets = [defaultdict(float) for _ in range(days)]
+    for e in _events(user, start.timestamp(), end.timestamp()):
+        idx = int((e["ts"] - start.timestamp()) // 86400)
+        if 0 <= idx < days:
+            _, lab = classify(e, rules)
+            buckets[idx][lab] += e["dur"]
+    out = []
+    for i in range(days):
+        day = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+        out.append({"day": day, **{k: round(buckets[i].get(k, 0)) for k in (*LABELS, "idle")}})
+    return out
+
+
+# ------------------------------------------------------------- screenshots
+_SAFE = re.compile(r"[^a-zA-Z0-9_.-]")
+
+
+class ScreenshotIn(BaseModel):
+    user: str = Field(min_length=1, max_length=128)
+    device: str = Field(min_length=1, max_length=128)
+    ts: float
+    app: str = ""
+    title: str = ""
+    image_b64: str = Field(min_length=1, max_length=MAX_SHOT_B64)
+
+
+@app.post("/api/screenshot", dependencies=[Depends(agent)])
+def upload_screenshot(s: ScreenshotIn):
+    try:
+        data = base64.b64decode(s.image_b64, validate=True)
+    except Exception:
+        raise HTTPException(400, "bad image data")
+    folder = SCREENSHOT_DIR / _SAFE.sub("_", s.user)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{int(s.ts * 1000)}_{_SAFE.sub('_', s.device)}.jpg"
+    path.write_bytes(data)
+    with db.conn() as c:
+        cur = c.execute(
+            "INSERT INTO screenshots(user,device,ts,app,title,path,bytes) VALUES(?,?,?,?,?,?,?)",
+            (s.user, s.device, s.ts, s.app, s.title, str(path), len(data)))
+    return {"id": cur.lastrowid}
+
+
+@app.get("/api/screenshots", dependencies=[Depends(admin)])
+def list_screenshots(user: str, start: float, end: float, limit: int = Query(500, le=2000)):
+    with db.conn() as c:
+        rows = c.execute(
+            "SELECT id,user,device,ts,app,title,bytes FROM screenshots "
+            "WHERE user=? AND ts>=? AND ts<? ORDER BY ts LIMIT ?",
+            (user, start, end, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/screenshots/{sid}/image", dependencies=[Depends(admin)])
+def get_screenshot(sid: int):
+    with db.conn() as c:
+        row = c.execute("SELECT path FROM screenshots WHERE id=?", (sid,)).fetchone()
+    if not row:
+        raise HTTPException(404)
+    p = Path(row["path"])
+    if not p.is_file():
+        raise HTTPException(404)
+    return FileResponse(p, media_type="image/jpeg")
+
+
+class ScreenshotDelete(BaseModel):
+    ids: list[int] = Field(max_length=5000)
+
+
+@app.post("/api/screenshots/delete", dependencies=[Depends(admin)])
+def delete_screenshots(d: ScreenshotDelete):
+    if not d.ids:
+        return {"deleted": 0}
+    marks = ",".join("?" * len(d.ids))
+    with db.conn() as c:
+        rows = c.execute(f"SELECT id, path FROM screenshots WHERE id IN ({marks})", d.ids).fetchall()
+        for r in rows:
+            try:
+                os.remove(r["path"])
+            except FileNotFoundError:
+                pass
+        c.execute(f"DELETE FROM screenshots WHERE id IN ({marks})", d.ids)
+    return {"deleted": len(rows)}
+
+
+@app.get("/install.ps1")
+def install_script():
+    return FileResponse(WINSCRIPTS / "install.ps1", media_type="text/plain")
+
+
+@app.get("/uninstall.ps1")
+def uninstall_script():
+    return FileResponse(WINSCRIPTS / "uninstall.ps1", media_type="text/plain")
 
 
 @app.get("/api/health")

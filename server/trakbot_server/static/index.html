@@ -15,6 +15,10 @@ button{cursor:pointer}main{padding:16px;display:grid;gap:16px;grid-template-colu
 .hours{display:flex;align-items:flex-end;gap:2px;height:80px}.hours div{flex:1;display:flex;flex-direction:column-reverse;min-height:1px}
 table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:4px 6px;border-bottom:1px solid var(--bd);font-size:13px}
 .wide{grid-column:1/-1}.mut{color:var(--mut)}.tag{padding:1px 6px;border-radius:8px;font-size:12px;color:#fff}
+#trend{width:100%;height:160px}
+.shots{display:flex;flex-wrap:wrap;gap:8px}
+.shot{width:140px}.shot img{width:100%;border-radius:6px;border:1px solid var(--bd);display:block;background:var(--bd)}
+.shot .meta{font-size:11px;color:var(--mut);display:flex;gap:4px;align-items:center;margin-top:2px}
 @media(max-width:600px){main{padding:12px}}
 </style></head><body>
 <header><h1>TrakBot</h1>
@@ -29,7 +33,18 @@ table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:4px 6px;
 <div class="card"><h2>Top websites</h2><div id="sites"></div></div>
 <div class="card"><h2>Categories</h2><div id="cats"></div></div>
 <div class="card"><h2>Employees</h2><div id="byuser"></div></div>
+<div class="card wide"><h2>Productivity trend</h2><canvas id="trend"></canvas></div>
 <div class="card wide"><h2>Flagged activity (alerts)</h2><table id="alerts"></table></div>
+<div class="card wide"><h2>Screenshots</h2>
+<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+<label class="mut">From <input id="shotFrom" type="datetime-local"></label>
+<label class="mut">To <input id="shotTo" type="datetime-local"></label>
+<button id="shotLoad">Load</button>
+<button id="shotAll">Select all</button>
+<button id="shotDelete">Delete selected</button>
+<span id="shotCount" class="mut"></span>
+</div>
+<div class="shots" id="shots"><span class="mut">Pick an employee above and a range, then Load.</span></div></div>
 <div class="card wide"><h2>Productivity rules</h2><form id="ruleform" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
 <select name="kind"><option>domain</option><option>app</option><option>title</option></select>
 <input name="pattern" placeholder="pattern e.g. youtube.com" required><input name="category" placeholder="Category" required>
@@ -42,6 +57,18 @@ const fmt=s=>{s=Math.round(s||0);const h=Math.floor(s/3600),m=Math.floor(s%3600/
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let tok=sessionStorage.getItem('tok')||'';$('tok').value=tok;$('day').value=new Date().toLocaleDateString('en-CA');
 async function api(p,o={}){const r=await fetch(p,{...o,headers:{Authorization:'Bearer '+tok,'Content-Type':'application/json'}});if(!r.ok)throw new Error(r.status===401?'Bad admin token':r.statusText);return r.json()}
+async function apiBlobUrl(p){const r=await fetch(p,{headers:{Authorization:'Bearer '+tok}});if(!r.ok)throw new Error(r.statusText);return URL.createObjectURL(await r.blob())}
+function drawTrend(rows){
+ const cv=$('trend'),ctx=cv.getContext('2d');const dpr=window.devicePixelRatio||1;
+ const w=cv.clientWidth||600,h=160;cv.width=w*dpr;cv.height=h*dpr;ctx.scale(dpr,dpr);ctx.clearRect(0,0,w,h);
+ if(!rows.length)return;
+ const colors={productive:'#2e9e6b',unproductive:'#d9534f',neutral:'#98a2b3',idle:'#555'};
+ const bw=w/rows.length,mx=Math.max(1,...rows.map(r=>r.productive+r.unproductive+r.neutral+r.idle));
+ rows.forEach((r,i)=>{let y=h-4;const x=i*bw+2;
+  for(const k of ['productive','unproductive','neutral','idle']){const bh=(r[k]/mx)*(h-20);ctx.fillStyle=colors[k];ctx.fillRect(x,y-bh,bw-4,bh);y-=bh}});
+ ctx.fillStyle='var(--mut)';ctx.font='10px system-ui';ctx.fillStyle=getComputedStyle(document.body).color;
+ rows.forEach((r,i)=>{if(i%Math.ceil(rows.length/8||1)===0)ctx.fillText(r.day.slice(5),i*bw,h-0)});
+}
 const list=(el,rows)=>$(el).innerHTML=rows.map(r=>`<div class="row"><span>${esc(r.name)}</span><span class="mut">${fmt(r.seconds)}</span></div>`).join('')||'<span class="mut">No data</span>';
 async function load(){
  tok=$('tok').value;sessionStorage.setItem('tok',tok);$('err').textContent='';
@@ -62,6 +89,8 @@ async function load(){
   $('alerts').innerHTML='<tr><th>When</th><th>Employee</th><th>Category</th><th>Activity</th><th></th></tr>'+al.map(a=>`<tr><td>${new Date(a.ts*1000).toLocaleString()}</td><td>${esc(a.user)}</td><td>${esc(a.category)}</td><td>${esc(a.url||a.app)} <span class="mut">${esc(a.title)}</span></td><td>${a.acked?'':`<button onclick="ack(${a.id})">Ack</button>`}</td></tr>`).join('');
   const r=await api('/api/rules');
   $('rules').innerHTML='<tr><th>Type</th><th>Pattern</th><th>Category</th><th>Label</th><th>Alert</th><th></th></tr>'+r.map(x=>`<tr><td>${x.kind}</td><td>${esc(x.pattern)}</td><td>${esc(x.category)}</td><td>${x.label}</td><td>${x.alert?'yes':''}</td><td><button onclick="delr(${x.id})">×</button></td></tr>`).join('');
+  const tr=await api('/api/trend?'+new URLSearchParams({days:30,...($('user').value?{user:$('user').value}:{})}));
+  drawTrend(tr);
  }catch(e){$('err').textContent=e.message}
 }
 window.ack=async id=>{await api(`/api/alerts/${id}/ack`,{method:'POST'});load()};
@@ -69,4 +98,26 @@ window.delr=async id=>{await api('/api/rules/'+id,{method:'DELETE'});load()};
 $('ruleform').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);
  await api('/api/rules',{method:'POST',body:JSON.stringify({kind:f.get('kind'),pattern:f.get('pattern'),category:f.get('category'),label:f.get('label'),alert:!!f.get('alert'),priority:100})});e.target.reset();load()};
 $('go').onclick=load;$('user').onchange=load;if(tok)load();
+
+// ---- screenshots ----
+async function loadShots(){
+ if(!$('user').value){$('shots').innerHTML='<span class="mut">Pick an employee above first.</span>';return}
+ const from=$('shotFrom').value?new Date($('shotFrom').value).getTime()/1000:Date.now()/1000-86400;
+ const to=$('shotTo').value?new Date($('shotTo').value).getTime()/1000:Date.now()/1000+86400;
+ const rows=await api('/api/screenshots?'+new URLSearchParams({user:$('user').value,start:from,end:to}));
+ $('shotCount').textContent=rows.length+' screenshot(s)';
+ $('shots').innerHTML=rows.map(r=>`<div class="shot" data-id="${r.id}">
+   <label><input type="checkbox" class="pick"> <img loading="lazy" data-src="/api/screenshots/${r.id}/image" alt=""></label>
+   <div class="meta">${new Date(r.ts*1000).toLocaleString()}<br>${esc(r.app)}</div></div>`).join('')||'<span class="mut">No screenshots in range.</span>';
+ for(const img of $('shots').querySelectorAll('img[data-src]')){img.src=await apiBlobUrl(img.dataset.src).catch(()=>'')}
+}
+$('shotLoad').onclick=loadShots;
+$('shotAll').onclick=()=>$('shots').querySelectorAll('.pick').forEach(c=>c.checked=true);
+$('shotDelete').onclick=async()=>{
+ const ids=[...$('shots').querySelectorAll('.shot')].filter(d=>d.querySelector('.pick').checked).map(d=>+d.dataset.id);
+ if(!ids.length)return;
+ if(!confirm(`Permanently delete ${ids.length} screenshot(s)? This cannot be undone.`))return;
+ await api('/api/screenshots/delete',{method:'POST',body:JSON.stringify({ids})});
+ loadShots();
+};
 </script></body></html>

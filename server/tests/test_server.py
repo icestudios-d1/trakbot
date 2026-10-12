@@ -1,3 +1,4 @@
+import base64
 import os
 import tempfile
 import time
@@ -46,3 +47,42 @@ def test_flow():
 def test_validation():
     r = c.post("/api/ingest", headers=K, json={"user": "a", "device": "d", "events": [{"ts": 1, "dur": 99999}]})
     assert r.status_code == 422
+
+
+def test_private_browsing_flagged():
+    now = time.time()
+    ev = [{"ts": now, "dur": 60, "app": "chrome", "title": "(private/incognito browsing)"}]
+    c.post("/api/ingest", headers=K, json={"user": "priv", "device": "pc1", "events": ev})
+    alerts = c.get("/api/alerts", headers=A).json()
+    assert any(a["category"] == "Private/Incognito Browsing" and a["user"] == "priv" for a in alerts)
+
+
+def test_trend():
+    now = time.time()
+    c.post("/api/ingest", headers=K, json={"user": "trendy", "device": "d", "events": [
+        {"ts": now, "dur": 300, "app": "code", "title": "x"}]})
+    rows = c.get("/api/trend", headers=A, params={"user": "trendy", "days": 3}).json()
+    assert len(rows) == 3
+    assert sum(r["productive"] for r in rows) == 300
+
+
+def test_screenshot_upload_list_image_delete():
+    jpeg_b64 = base64.b64encode(b"\xff\xd8\xff\xe0fakejpegbytes").decode()
+    now = time.time()
+    r = c.post("/api/screenshot", headers=K, json={
+        "user": "shotty", "device": "pc1", "ts": now, "app": "chrome", "title": "t", "image_b64": jpeg_b64})
+    sid = r.json()["id"]
+    rows = c.get("/api/screenshots", headers=A, params={"user": "shotty", "start": now - 5, "end": now + 5}).json()
+    assert len(rows) == 1 and rows[0]["id"] == sid
+    img = c.get(f"/api/screenshots/{sid}/image", headers=A)
+    assert img.status_code == 200 and img.content == base64.b64decode(jpeg_b64)
+    # no auth -> 401; wrong path traversal in user is sanitized, not exploitable
+    assert c.get(f"/api/screenshots/{sid}/image").status_code == 401
+    d = c.post("/api/screenshots/delete", headers=A, json={"ids": [sid]})
+    assert d.json() == {"deleted": 1}
+    assert c.get(f"/api/screenshots/{sid}/image", headers=A).status_code == 404
+
+
+def test_install_scripts_served():
+    assert "ScheduledTask" in c.get("/install.ps1").text
+    assert "Unregister-ScheduledTask" in c.get("/uninstall.ps1").text

@@ -19,6 +19,10 @@ CREATE TABLE IF NOT EXISTS alerts(
   id INTEGER PRIMARY KEY, ts REAL NOT NULL, user TEXT NOT NULL, device TEXT,
   rule_id INTEGER, category TEXT, app TEXT, title TEXT, url TEXT, acked INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS screenshots(
+  id INTEGER PRIMARY KEY, user TEXT NOT NULL, device TEXT NOT NULL,
+  ts REAL NOT NULL, app TEXT, title TEXT, path TEXT NOT NULL, bytes INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS ss_user_ts ON screenshots(user, ts);
 """
 
 
