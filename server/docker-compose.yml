@@ -29,7 +29,8 @@ services:
       # soon as it's dropped in, with no server restart needed.
       - ./dist:/dist
     depends_on:
-      - seaweedfs
+      seaweedfs:
+        condition: service_healthy
 
   # MinIO replacement: SeaweedFS's S3 gateway, self-hosted, single binary,
   # no cluster-layout bootstrap needed for one node.
@@ -48,6 +49,16 @@ services:
     # over the compose-internal network. Screenshots are never reachable
     # directly, only through the server's admin-authenticated proxy
     # endpoint (/api/screenshots/{id}/image).
+    healthcheck:
+      # `server` waits for this (condition: service_healthy above) instead of
+      # racing SeaweedFS's startup -- this is what the earlier "Name or
+      # service not known" crash was: `server` resolved/connected before the
+      # S3 gateway was actually accepting connections.
+      test: ["CMD-SHELL", "wget -q -O /dev/null -T 3 http://127.0.0.1:8333 || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
 
 volumes:
   cyril_db:

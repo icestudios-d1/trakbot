@@ -73,15 +73,37 @@ class S3Store:
         except urllib.error.HTTPError as e:
             body = e.read().decode(errors="replace")
             raise ObjectStoreError(f"{method} {key} -> {e.code}: {body[:300]}") from e
+        except urllib.error.URLError as e:
+            # DNS not resolved yet (SeaweedFS container not up/registered), connection
+            # refused, timeout, etc. -- anything below the HTTP layer. Previously only
+            # HTTPError was caught here, so a slow-starting SeaweedFS container (DNS
+            # lookup failing with socket.gaierror) crashed the whole app at import time
+            # instead of being retried/handled like any other store-unavailable case.
+            raise ObjectStoreError(f"{method} {key} -> unreachable: {e}") from e
 
-    def ensure_bucket(self) -> None:
-        try:
-            self._request("HEAD", "")
-        except ObjectStoreError:
+    def ensure_bucket(self, retries: int = 10, delay: float = 2.0) -> None:
+        """Retries with a short delay: in docker-compose, `server` can start
+        before SeaweedFS's S3 port is actually accepting connections even
+        though its container (and DNS alias) already exists."""
+        import time as _time
+        last: Exception | None = None
+        for attempt in range(retries):
             try:
-                self._request("PUT", "")
-            except ObjectStoreError:
-                pass  # created concurrently, or already exists
+                self._request("HEAD", "")
+                return
+            except ObjectStoreError as e:
+                last = e
+                try:
+                    self._request("PUT", "")
+                    return
+                except ObjectStoreError as e2:
+                    last = e2
+            if attempt < retries - 1:
+                _time.sleep(delay)
+        # Still unreachable after retrying: don't crash the whole app over it.
+        # Screenshot endpoints will fail (502) until SeaweedFS is reachable;
+        # everything else (events, rules, alerts, dashboard) keeps working.
+        print(f"WARNING: SeaweedFS unreachable after {retries} attempts, continuing without it: {last}")
 
     def put(self, key: str, data: bytes, content_type: str = "image/jpeg") -> None:
         self._request("PUT", key, data)
