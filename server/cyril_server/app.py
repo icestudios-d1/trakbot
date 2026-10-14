@@ -37,9 +37,24 @@ MAX_SHOT_B64 = 3_000_000  # ~2.2MB decoded; agent targets far smaller JPEGs
 app = FastAPI(title="Cyril")
 db = DB(DB_PATH)
 STATIC = Path(__file__).parent / "static"
+class _Static(StaticFiles):
+    """StaticFiles with an explicit Cache-Control. Without one, browsers and CDNs (Cloudflare caches .exe by
+    default) keep serving an old copy after the files change."""
+
+    def __init__(self, *a, cache_control: str = "no-cache", **kw):
+        super().__init__(*a, **kw)
+        self._cache_control = cache_control
+
+    def file_response(self, *a, **kw):
+        r = super().file_response(*a, **kw)
+        r.headers["Cache-Control"] = self._cache_control
+        return r
+
+
 DIST_DIR = Path(os.environ.get("CYRIL_DIST_DIR", "dist"))
 if DIST_DIR.exists():
-    app.mount("/dist", StaticFiles(directory=str(DIST_DIR)), name="dist")
+    # no-store: the agent build must never be served from a stale proxy/CDN cache.
+    app.mount("/dist", _Static(directory=str(DIST_DIR), cache_control="no-store"), name="dist")
 WINSCRIPTS = Path(__file__).parent / "winscripts"
 
 # SeaweedFS's S3 gateway (bundled as the `seaweedfs` service in docker-compose.yml).
@@ -557,7 +572,7 @@ def install_info(request: Request):
     return {"server_url": base, **_agent_one_liners(base, AGENT_KEY),
             "exe_published": (DIST_DIR / "cyril.exe").is_file(),
             "extension_published": (DIST_DIR / "cyril-extension.zip").is_file(),
-            "version": (manifest or {}).get("version")}
+            "version": (manifest or {}).get("version"), "build": (manifest or {}).get("build")}
 
 
 @app.get("/api/agent/seen", dependencies=[Depends(agent)])
@@ -601,17 +616,7 @@ def health():
     return {"ok": True, "time": time.time(), "build": BUILD}
 
 
-class _RevalidatingStatic(StaticFiles):
-    """Browsers heuristically cache files that carry no Cache-Control, so an upgraded server kept showing the
-    old menu/JS. `no-cache` = always revalidate (a cheap 304 via ETag when nothing changed)."""
-
-    def file_response(self, *a, **kw):
-        r = super().file_response(*a, **kw)
-        r.headers["Cache-Control"] = "no-cache"
-        return r
-
-
-app.mount("/static", _RevalidatingStatic(directory=str(STATIC)), name="static")
+app.mount("/static", _Static(directory=str(STATIC)), name="static")
 
 # Pages are static HTML; each one checks the admin token client-side and bounces to /login. All data
 # comes from the token-protected /api/* endpoints, so serving the shells unauthenticated leaks nothing.

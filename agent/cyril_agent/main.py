@@ -135,8 +135,11 @@ def main():
     ap.add_argument("--no-screenshots", action="store_true")
     ap.add_argument("--spool", default=None, help="default: <data dir>/spool.jsonl")
     ap.add_argument("--log", default=None, help="default: <data dir>/agent.log")
+    ap.add_argument("--selftest", action="store_true", help="exit 0 right away if the program starts (used by windows/build.ps1)")
     ap.add_argument("--update-check-every", type=float, default=3600.0, help="seconds between self-update checks; 0 disables")
     a = ap.parse_args()
+    if a.selftest:
+        return  # reaching here means every import above worked: that is all a build check needs
 
     cfg = load_config(a.config)
     server = cfg.get("server", a.server)

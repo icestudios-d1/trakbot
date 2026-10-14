@@ -62,8 +62,14 @@ try { Invoke-WebRequest -UseBasicParsing -Uri "$ServerUrl/api/health" -TimeoutSe
 catch { Fail "Cannot reach $ServerUrl ($($_.Exception.Message)). Check the address and this machine's network." }
 Ok "Server reachable"
 
-$expectedHash = $null
-try { $expectedHash = (Invoke-RestMethod -UseBasicParsing -Uri "$ServerUrl/api/agent/version" -TimeoutSec 15).windows_exe.sha256 } catch { }
+$expectedHash = $null; $buildInfo = ""; $canSelftest = $false
+try {
+    $ver = Invoke-RestMethod -UseBasicParsing -Uri "$ServerUrl/api/agent/version" -TimeoutSec 15
+    $expectedHash = $ver.windows_exe.sha256
+    $canSelftest = ($ver.selftest -eq $true)
+    if ($ver.version) { $buildInfo = "version $($ver.version)" + $(if ($ver.build) { ", build $($ver.build)" } else { "" }) }
+} catch { }
+if (-not $expectedHash) { Warn "The server publishes no checksum for the agent (dist\manifest.json missing?), so the download cannot be verified. Rebuild with windows\build.ps1." }
 $upToDate = $false
 if ($updating -and $expectedHash) { $upToDate = ((Get-FileHash $exe -Algorithm SHA256).Hash.ToLower() -eq $expectedHash.ToLower()) }
 
@@ -71,12 +77,14 @@ if ($updating -and $expectedHash) { $upToDate = ((Get-FileHash $exe -Algorithm S
 #    so a failed update never leaves a machine unmonitored. ----------------------------
 New-Item -ItemType Directory -Force -Path $installDir, $cfgDir, $dataDir | Out-Null
 if ($upToDate) {
-    Ok "Agent is already the published version"
+    Ok "Agent is already the published build ($buildInfo). If it is crashing, rebuild and publish a new one with windows\build.ps1."
 } else {
     if ($updating) { Step "Existing install found, updating it" }
     Step "Downloading the agent"
-    $tmp = Join-Path $installDir "cyril.exe.download"
-    try { Invoke-WebRequest -UseBasicParsing -Uri "$ServerUrl/dist/cyril.exe" -OutFile $tmp -TimeoutSec 300 }
+    $tmp = Join-Path $installDir "cyril.new.exe"
+    # ?h=<hash>: a different URL for every build, so no proxy/CDN can hand back an old cached exe.
+    $bust = if ($expectedHash) { $expectedHash.Substring(0, 16) } else { [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
+    try { Invoke-WebRequest -UseBasicParsing -Uri "$ServerUrl/dist/cyril.exe?h=$bust" -OutFile $tmp -TimeoutSec 300 }
     catch {
         Remove-Item $tmp -Force -ErrorAction SilentlyContinue
         Fail "Could not download $ServerUrl/dist/cyril.exe ($($_.Exception.Message)). The agent build has not been published to the server yet - run windows\build.ps1 in the repo on the server machine (it writes into server\dist, which the server serves; if you built elsewhere, copy the files there)."
@@ -86,16 +94,23 @@ if ($upToDate) {
         if ($actual -ne $expectedHash.ToLower()) { Remove-Item $tmp -Force; Fail "Downloaded file does not match the published checksum. Nothing was installed." }
         Ok "Checksum verified"
     }
+    if ($canSelftest) {
+        # Run the downloaded program once before it replaces anything: a broken build is rejected here,
+        # on this PC, instead of installing and silently never reporting.
+        $t = Start-Process -FilePath $tmp -ArgumentList "--selftest" -Wait -PassThru
+        if ($t.ExitCode -ne 0) { Remove-Item $tmp -Force; Fail "The downloaded cyril.exe does not start (self-test exit code $($t.ExitCode)). It is a broken build: rebuild with windows\build.ps1 and run this again. Nothing was installed." }
+        Ok "Downloaded program starts correctly"
+    }
     if ($updating) {
         Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
         Get-Process -Name "cyril" -ErrorAction SilentlyContinue | Stop-Process -Force
         Start-Sleep -Seconds 2
     }
     Move-Item -Force $tmp $exe
-    Ok "Agent installed to $installDir"
+    Ok "Agent installed to $installDir$(if ($buildInfo) { " ($buildInfo)" })"
     try {
         $zip = Join-Path $installDir "cyril-extension.zip"
-        Invoke-WebRequest -UseBasicParsing -Uri "$ServerUrl/dist/cyril-extension.zip" -OutFile $zip -TimeoutSec 60
+        Invoke-WebRequest -UseBasicParsing -Uri "$ServerUrl/dist/cyril-extension.zip?t=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" -OutFile $zip -TimeoutSec 60
         Expand-Archive -Force $zip (Join-Path $installDir "extension")
         Ok "Browser extension unpacked to $installDir\extension"
     } catch { Warn "Browser extension step skipped: $($_.Exception.Message)" }

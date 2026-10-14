@@ -36,7 +36,7 @@ async function info(){
     $('#inst').textContent=i.install;$('#uninst').textContent=i.uninstall;
     $('#checks').innerHTML=
       chk(true,'Server address',`Agents will use <code>${esc(i.server_url)}</code>${i.server_url.startsWith('http://')?' <b>(not HTTPS)</b>':''}`)+
-      chk(i.exe_published,'Agent program (cyril.exe)',i.exe_published?`Published${i.version?' · version '+esc(i.version):''}`:'Not on the server yet. Run <code>windows\\build.ps1</code> in the repo on the server machine: it writes into <code>server\\dist</code>, which the server serves (if you built on another PC, copy the files there). Installs will fail until then.')+
+      chk(i.exe_published,'Agent program (cyril.exe)',i.exe_published?`Published${i.version?' · version '+esc(i.version):''}${i.build?' · build '+esc(i.build):''}`:'Not on the server yet. Run <code>windows\\build.ps1</code> in the repo on the server machine: it writes into <code>server\\dist</code>, which the server serves (if you built on another PC, copy the files there). Installs will fail until then.')+
       chk(i.extension_published,'Browser extension (optional)',i.extension_published?'Published':'Not published; installs still work without it, but website addresses will not be captured.');
   }catch(e){TB.error(e)}
 }

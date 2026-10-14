@@ -24,11 +24,23 @@ pyinstaller --onefile --noconsole --name cyril `
   --distpath $out --workpath "$root\build" --specpath "$root\build" `
   "$root\agent\cyril_entry.py"
 
+# Never publish an exe that cannot start (a relative-import crash once shipped this way). --selftest exits 0
+# as soon as the program has started; a crash shows PyInstaller's error dialog and a non-zero exit code.
+$test = Start-Process -FilePath "$out\cyril.exe" -ArgumentList "--selftest" -Wait -PassThru
+if ($test.ExitCode -ne 0) {
+    Remove-Item "$out\cyril.exe", "$out\manifest.json" -Force -ErrorAction SilentlyContinue
+    throw "The built cyril.exe failed its self-test (exit code $($test.ExitCode)). Nothing was published."
+}
+Write-Host "Self-test passed."
+
 Compress-Archive -Path "$root\browser-extension\*" -DestinationPath "$out\cyril-extension.zip" -Force
 
 $hash = (Get-FileHash "$out\cyril.exe" -Algorithm SHA256).Hash.ToLower()
+$build = (git -C $root rev-parse --short HEAD 2>$null)
 $manifest = @{
     version      = $Version
+    build        = "$build"
+    selftest     = $true   # tells install.ps1 this exe understands --selftest
     windows_exe  = @{ url = "/dist/cyril.exe"; sha256 = $hash }
 } | ConvertTo-Json -Depth 5
 Set-Content -Path "$out\manifest.json" -Value $manifest -Encoding UTF8

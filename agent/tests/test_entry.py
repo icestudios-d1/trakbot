@@ -17,3 +17,9 @@ def test_pyinstaller_entry_runs_as_a_plain_script():
 def test_build_script_uses_that_entry_point():
     build = open(os.path.join(AGENT_DIR, "..", "windows", "build.ps1"), encoding="utf-8").read()
     assert "cyril_entry.py" in build and "__main__.py" not in build
+
+
+def test_selftest_flag_exits_zero():
+    r = subprocess.run([sys.executable, os.path.join(AGENT_DIR, "cyril_entry.py"), "--selftest"],
+                       capture_output=True, text=True, cwd=os.path.dirname(os.path.abspath(__file__)), timeout=60)
+    assert r.returncode == 0, r.stderr

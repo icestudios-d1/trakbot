@@ -279,3 +279,12 @@ def test_agent_seen_for_installer_verification():
     r = c.get("/api/agent/seen", params=q, headers=K).json()
     assert r["seen"] and r["events"] == 2 and r["with_app"] == 1
     assert c.get("/api/agent/seen", params={"device": "PC-SEEN", "since": now + 600}, headers=K).json()["seen"] is False
+
+
+def test_dist_files_are_never_cached():
+    d = os.environ["CYRIL_DIST_DIR"]
+    with open(os.path.join(d, "probe.bin"), "wb") as f:
+        f.write(b"x")
+    r = c.get("/dist/probe.bin")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    assert c.get("/static/app.css").headers["cache-control"] == "no-cache"
