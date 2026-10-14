@@ -60,9 +60,10 @@
     const here = location.pathname === '/employee' ? '/employees' : location.pathname;
     const top = document.createElement('header');
     top.className = 'top';
-    top.innerHTML = `<a class="brand" href="/"><i></i>Cyril</a><nav>${NAV.map(([h, t]) => `<a href="${h}" class="${h === here ? 'on' : ''}">${t}${h === '/alerts' ? '<span id="alertBadge"></span>' : ''}</a>`).join('')}</nav><button class="out" id="signout">Sign out</button>`;
+    top.innerHTML = `<a class="brand" href="/"><i></i>Cyril</a><nav>${NAV.map(([h, t]) => `<a href="${h}" class="${h === here ? 'on' : ''}">${t}${h === '/alerts' ? '<span id="alertBadge"></span>' : ''}</a>`).join('')}</nav><span class="sm mut" id="build" title="Version of the server code that is running"></span><button class="out" id="signout">Sign out</button>`;
     document.body.prepend(top);
     $('#signout').onclick = TB.signOut;
+    fetch('/api/health').then((r) => r.json()).then((h) => { if (h.build) $('#build').textContent = 'build ' + h.build; }).catch(() => {});
     TB.api('/api/alerts?' + TB.qs({ unacked: 'true', limit: 1000 })).then((a) => { if (a.length) $('#alertBadge').outerHTML = `<span class="badge">${a.length}</span>`; }).catch(() => {});
     const tip = document.createElement('div'); tip.id = 'tip'; document.body.append(tip);
     document.addEventListener('mousemove', (e) => {

@@ -257,3 +257,11 @@ def test_install_info_and_devices():
     c.post("/api/ingest", headers=K, json={"user": "devy", "device": "PC-DEVY", "events": [{"ts": time.time(), "dur": 5, "app": "code"}]})
     d = [x for x in c.get("/api/devices", headers=A).json() if x["device"] == "PC-DEVY"]
     assert len(d) == 1 and d[0]["user"] == "devy" and d[0]["events"] == 1
+
+
+def test_static_files_always_revalidate_and_health_reports_build():
+    r = c.get("/static/app.js")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
+    assert c.get("/", headers={}).headers["cache-control"] == "no-cache"
+    h = c.get("/api/health").json()
+    assert h["ok"] and len(h["build"]) == 8

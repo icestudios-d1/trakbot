@@ -570,12 +570,36 @@ def devices():
     return [dict(r) for r in rows]
 
 
+def _build_id() -> str:
+    """Short hash of the code + dashboard files actually running, shown in the dashboard so it is obvious
+    which version is live (and whether the browser is showing a stale copy)."""
+    h = hashlib.sha1()
+    for f in sorted(Path(__file__).parent.rglob("*")):
+        if f.is_file() and f.suffix in (".py", ".html", ".js", ".css", ".ps1"):
+            h.update(f.relative_to(Path(__file__).parent).as_posix().encode())
+            h.update(f.read_bytes())
+    return h.hexdigest()[:8]
+
+
+BUILD = _build_id()
+
+
 @app.get("/api/health")
 def health():
-    return {"ok": True, "time": time.time()}
+    return {"ok": True, "time": time.time(), "build": BUILD}
 
 
-app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+class _RevalidatingStatic(StaticFiles):
+    """Browsers heuristically cache files that carry no Cache-Control, so an upgraded server kept showing the
+    old menu/JS. `no-cache` = always revalidate (a cheap 304 via ETag when nothing changed)."""
+
+    def file_response(self, *a, **kw):
+        r = super().file_response(*a, **kw)
+        r.headers["Cache-Control"] = "no-cache"
+        return r
+
+
+app.mount("/static", _RevalidatingStatic(directory=str(STATIC)), name="static")
 
 # Pages are static HTML; each one checks the admin token client-side and bounces to /login. All data
 # comes from the token-protected /api/* endpoints, so serving the shells unauthenticated leaks nothing.

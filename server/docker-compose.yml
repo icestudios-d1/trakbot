@@ -1,5 +1,3 @@
-version: "3.8"
-
 # Office-server deployment: both services run on one box, and both keep
 # state on local volumes, so an office-server reboot/outage loses nothing --
 # agents spool locally while this is down and flush once it's back (see

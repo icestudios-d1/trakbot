@@ -74,6 +74,16 @@ same as how Chrome or any managed EDR patches itself — but every step is writt
 endpoint, so the rollout is fully auditable even though it isn't interruptive. A checksum mismatch aborts
 the update rather than applying anything.
 
+### Updating the server
+
+```bash
+git pull origin main
+cd server && docker compose up -d --build
+```
+The dashboard shows `build xxxxxxxx` next to **Sign out**; it should match `curl http://<server>:8000/api/health`.
+If the menu or pages look old after an update, your browser is showing a cached copy: hard-refresh once
+(Ctrl+Shift+R). Newer builds tell browsers to revalidate, so this only happens once, when moving from an old build.
+
 ### Windows rollout (one PowerShell command, no dev tools on the target machine)
 
 Python/PyInstaller is only needed **once**, on a machine IT uses to build the agent:
