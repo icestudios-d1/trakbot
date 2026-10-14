@@ -73,11 +73,14 @@ class ExtHandler(BaseHTTPRequestHandler):
         pass
 
 
+USER_AGENT = "CyrilAgent/1.0"
+
+
 def _post(server: str, path: str, key: str, payload: dict) -> bool:
     url = server.rstrip("/") + path
     req = urllib.request.Request(
         url, json.dumps(payload).encode(),
-        {"Content-Type": "application/json", "X-Api-Key": key})
+        {"Content-Type": "application/json", "X-Api-Key": key, "User-Agent": USER_AGENT})
     try:
         urllib.request.urlopen(req, timeout=20).read()
         return True

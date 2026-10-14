@@ -43,13 +43,20 @@ def _logger() -> logging.Logger:
     return lg
 
 
+USER_AGENT = "CyrilAgent/1.0"  # urllib's default UA is a well-known bot signature
+                                # that Cloudflare's basic WAF/bot rules block on
+                                # sight -- see main.py's _post for the same fix.
+
+
 def _get_json(url: str, timeout: float = 15.0) -> dict:
-    with urllib.request.urlopen(url, timeout=timeout) as r:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
 
 def _download(url: str, timeout: float = 120.0) -> bytes:
-    with urllib.request.urlopen(url, timeout=timeout) as r:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
 
 
@@ -63,7 +70,7 @@ def _report(server: str, key: str, user: str, device: str, from_v: str, to_v: st
             server.rstrip("/") + "/api/agent/update-log",
             json.dumps({"user": user, "device": device, "from_version": from_v,
                         "to_version": to_v, "ok": ok, "detail": detail[:2000]}).encode(),
-            {"Content-Type": "application/json", "X-Api-Key": key})
+            {"Content-Type": "application/json", "X-Api-Key": key, "User-Agent": USER_AGENT})
         urllib.request.urlopen(req, timeout=15).read()
     except Exception:
         pass  # the local log file is the record of truth; server reachability isn't required
