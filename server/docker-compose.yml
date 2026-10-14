@@ -53,7 +53,16 @@ services:
       # racing SeaweedFS's startup -- this is what the earlier "Name or
       # service not known" crash was: `server` resolved/connected before the
       # S3 gateway was actually accepting connections.
-      test: ["CMD-SHELL", "wget -q -O /dev/null -T 3 http://127.0.0.1:8333 || exit 1"]
+      #
+      # Checks the SeaweedFS *master*'s admin UI on 9333, not the S3 gateway
+      # on 8333: an unauthenticated request to the S3 API correctly returns
+      # 403 (it's parsing the request fine, just refusing it with no
+      # credentials), but the minimal wget in this image can't tell "got an
+      # HTTP error response" apart from "nothing's listening" -- both just
+      # fail the check. The master's root page returns a plain 200 with no
+      # auth, side-stepping that, and master+filer+volume+S3 all come up
+      # together in one `weed server` process a couple seconds apart.
+      test: ["CMD-SHELL", "wget -q -O /dev/null -T 3 http://127.0.0.1:9333/ || exit 1"]
       interval: 3s
       timeout: 3s
       retries: 20
