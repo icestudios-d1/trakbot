@@ -53,7 +53,7 @@ def test_flow():
     now = time.time()
     ev = [
         {"ts": now, "dur": 600, "app": "code", "title": "x"},
-        {"ts": now + 600, "dur": 300, "app": "chrome", "title": "YT", "url": "https://www.youtube.com/watch"},
+        {"ts": now + 600, "dur": 300, "app": "chrome", "title": "FB", "url": "https://www.facebook.com/feed"},
         {"ts": now + 900, "dur": 200, "app": "chrome", "title": "t", "url": "https://thepiratebay.org/"},
         {"ts": now + 1100, "dur": 100, "idle": True},
     ]
@@ -64,10 +64,10 @@ def test_flow():
     assert s["seconds"]["unproductive"] == 500
     assert s["seconds"]["idle"] == 100
     assert s["productivity_pct"] == 54.5
-    assert s["sites"][0]["name"] == "youtube.com"
+    assert s["sites"][0]["name"] == "facebook.com"
     assert c.get("/api/alerts", headers=A).json()[0]["category"] == "Piracy"
-    # reclassification: make youtube productive, history updates
-    c.post("/api/rules", headers=A, json={"kind": "domain", "pattern": "youtube.com", "category": "Training", "label": "productive", "priority": 100})
+    # reclassification: make facebook productive, history updates
+    c.post("/api/rules", headers=A, json={"kind": "domain", "pattern": "facebook.com", "category": "Training", "label": "productive", "priority": 100})
     s = c.get("/api/summary", headers=A, params={"user": "bob"}).json()
     assert s["seconds"]["productive"] == 900
 
