@@ -163,7 +163,16 @@ def main():
             threading.Thread(target=send_screenshot, args=(server, key, user, device, now, w["app"], title), daemon=True).start()
 
         if now - last_flush >= a.flush:
-            spool.push(agg.drain())
+            # keep_open=False: force-close whatever's currently open too, not
+            # just already-completed events. Without this, staying on one
+            # window (or staying idle) for longer than --flush means nothing
+            # is ever sent -- the open event just keeps growing in memory
+            # until it eventually closes (a window switch or idle toggle),
+            # which may be hours away, or never, for a single long session.
+            # The next add() simply starts a fresh segment of the same
+            # activity, so a long session is reported in --flush-sized
+            # chunks instead of only once it ends.
+            spool.push(agg.drain(keep_open=False))
             queued = spool.read()
             if queued and send_events(server, key, user, device, queued):
                 spool.drop(len(queued))
