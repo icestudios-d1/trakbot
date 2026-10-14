@@ -24,7 +24,7 @@ async function load(){
   try{
     const rows=await TB.api('/api/screenshots?'+TB.qs({user:$('#u').value,start:new Date($('#from').value)/1000,end:new Date($('#to').value)/1000}));
     $('#count').textContent=rows.length+' screenshot(s)';
-    $('#shots').innerHTML=rows.map(r=>`<div class="shot" data-id="${r.id}"><label><input type="checkbox" class="pick" aria-label="Select"><img alt="Screenshot of ${esc(r.app)}"></label><div class="meta">${TB.when(r.ts)} · ${esc(r.app)}<br>${esc((r.title||'').slice(0,60))}</div></div>`).join('')||'<span class="mut">No screenshots in this range.</span>';
+    $('#shots').innerHTML=rows.map(r=>`<div class="shot" data-id="${r.id}"><label><input type="checkbox" class="pick" aria-label="Select"><img alt="Screenshot of ${esc(r.name||r.app)}"></label><div class="meta">${TB.when(r.ts)} · ${esc(r.name||r.app)}<br>${esc((r.title||'').slice(0,60))}</div></div>`).join('')||'<span class="mut">No screenshots in this range.</span>';
     for(const d of $('#shots').querySelectorAll('.shot')){TB.blobUrl(`/api/screenshots/${d.dataset.id}/image`).then(u=>{const i=d.querySelector('img');i.src=u;i.style.cursor='zoom-in';i.onclick=e=>{e.preventDefault();window.open(u)}}).catch(()=>{})}
   }catch(e){TB.error(e)}
 }

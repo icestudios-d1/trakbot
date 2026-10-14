@@ -28,7 +28,7 @@ def _win_window():
             app = w.get_app_name_wmi(hwnd)
         except Exception:
             app = None
-    return {"app": app or "unknown", "title": w.get_window_title(hwnd) or ""}
+    return {"app": app or "unknown", "title": w.get_window_title(hwnd) or "", "hwnd": hwnd}
 
 
 _MAC = '''tell application "System Events"

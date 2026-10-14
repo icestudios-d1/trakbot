@@ -12,7 +12,7 @@
    <div class="cmd"><code id="inst">Loading…</code><button class="primary" data-copy="inst">Copy</button></div>
    <div class="mut sm">It downloads the agent from this server, checks it, installs it to start whenever someone logs on, then waits for the PC's first report and tells you whether it arrived (and, if not, why). Safe to run again: it updates in place.
    To report under a name instead of the Windows login, add <code>-User "Priya"</code> after the closing bracket. The command contains the agent key, so share it only with whoever sets up PCs.</div></li>
-  <li><h2>Watch it appear</h2><div class="mut">The machine shows up in the list on the right within a minute or two.</div></li>
+  <li><h2>Watch it appear</h2><div class="mut">The machine shows up in the list below within a minute or two, with a check for whether it can read web addresses and whether its screenshots are getting through.</div></li>
  </ol>
  <hr style="border:0;border-top:1px solid var(--bd);margin:6px 0 16px">
  <h2>Remove an agent</h2>
@@ -22,9 +22,10 @@
 </div>
 <div>
  <div class="card" style="margin-bottom:16px"><h2>Ready to install?</h2><div id="checks" style="margin-top:8px"></div></div>
- <div class="card"><h2>Machines reporting</h2><div class="sub" id="devSub">Updates every few seconds</div><div class="scroll"><table id="dev"></table></div></div>
+ </div>
 </div>
 </div>
+<div class="card" style="margin-top:16px"><h2>Machines reporting</h2><div class="sub" id="devSub">Updates every few seconds</div><div class="scroll"><table id="dev"></table></div>
 </main>
 <script src="/static/app.js"></script>
 <script>
@@ -46,9 +47,25 @@ async function devices(){
     const d=await TB.api('/api/devices'),now=Date.now()/1000;
     const fresh=known!==null?d.filter(x=>!known.has(x.device+'|'+x.user)):[];
     if(known===null)known=new Set(d.map(x=>x.device+'|'+x.user));
-    $('#dev').innerHTML=d.length?`<thead><tr><th>Machine</th><th>Login / name</th><th>Last report</th></tr></thead><tbody>`+d.map(x=>{
+    // What each agent says about itself: can it read web addresses, are screenshots getting through?
+    const web=st=>{
+      if(!st)return '<span class="mut" title="This agent build does not report its health yet. Update it.">–</span>';
+      const urls=(st.url_extension||0)+(st.url_uia||0),n=st.browser_samples||0;
+      if(!n)return '<span class="mut" title="No browser use seen yet">no browser use yet</span>';
+      if(urls)return `<span title="${esc(`${urls} of ${n} browser samples had an address (extension ${st.url_extension||0}, address bar ${st.url_uia||0})`)}">✓ ${Math.round(100*urls/n)}%</span>`;
+      const why=st.uia_error?`address bar reader failed: ${st.uia_error}`:st.uia_not_found?'address bar not found in the browser window':'no address read';
+      return `<span style="color:var(--c-u)" title="${esc(why)}">✕ can't read addresses</span><div class="mut sm">${esc(why.slice(0,70))}</div>`;
+    };
+    const shots=st=>{
+      if(!st)return '<span class="mut">–</span>';
+      const ok=st.shots_ok||0,bad=st.shots_failed||0;
+      if(bad&&!ok)return `<span style="color:var(--c-u)" title="${esc(st.last_error||'')}">✕ ${bad} failed</span><div class="mut sm">${esc((st.last_error||'').slice(0,80))}</div>`;
+      if(bad)return `<span title="${esc(st.last_error||'')}">${ok} sent · <span style="color:var(--c-u)">${bad} failed</span></span>`;
+      return ok?`✓ ${ok} sent`:'<span class="mut" title="The first one is taken after a program has been in front for a minute">none yet</span>';
+    };
+    $('#dev').innerHTML=d.length?`<thead><tr><th>Machine</th><th>Login / name</th><th>Last report</th><th>Websites</th><th>Screenshots</th></tr></thead><tbody>`+d.map(x=>{
       const ago=now-x.last_seen,on=ago<180,isNew=fresh.some(f=>f.device===x.device&&f.user===x.user);
-      return `<tr><td title="${esc(x.device)}" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.device)}</td><td>${TB.who(x.user)}${isNew?' <span class="tag productive">new</span>':''}</td><td class="nowrap"><span class="live ${on?'on':''}"></span>${on?'online':ago<3600?Math.round(ago/60)+' min ago':TB.when(x.last_seen)}</td></tr>`}).join('')+'</tbody>':'<tbody><tr><td class="empty">No machines have reported yet.</td></tr></tbody>';
+      return `<tr><td title="${esc(x.device)}" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.device)}</td><td>${TB.who(x.user)}${isNew?' <span class="tag productive">new</span>':''}</td><td class="nowrap"><span class="live ${on?'on':''}"></span>${on?'online':ago<3600?Math.round(ago/60)+' min ago':TB.when(x.last_seen)}</td><td>${web(x.status)}</td><td>${shots(x.status)}</td></tr>`}).join('')+'</tbody>':'<tbody><tr><td class="empty">No machines have reported yet.</td></tr></tbody>';
     $('#devSub').textContent=`${d.filter(x=>now-x.last_seen<180).length} online of ${d.length} · updates every few seconds`;
   }catch(e){TB.error(e)}
 }

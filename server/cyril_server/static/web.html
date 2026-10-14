@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Web activity · Cyril</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main>
+<div class="pagehead"><div><h1>Web activity</h1><p id="sub">Every page visited, with its full address. The other reports show just the site name.</p></div>
+<div class="noprint formrow"><input id="q" type="search" placeholder="Search address or page title" aria-label="Search" style="min-width:240px"><button id="csv">Download CSV</button></div></div>
+<div id="range"></div>
+<div id="err" class="callout" style="display:none"></div>
+<div class="grid g-main">
+ <div class="card"><h2>Pages</h2><div class="sub" id="pgSub"></div><div class="scroll"><table id="pages"></table></div></div>
+ <div class="card"><h2>Sites</h2><div class="sub">Click a site to filter the pages</div><div id="sites"></div></div>
+</div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+const {$,fmt,esc}=TB;let seq=0,data=null,site='';
+const rb=TB.rangeBar($('#range'),{user:true,userAll:'All employees',defDays:7,onChange:load});
+async function load(r){
+  const me=++seq;TB.error();
+  try{
+    const [d]=await Promise.all([TB.api('/api/web?'+TB.qs({user:r.user,start:r.start,end:r.end,tz:TB.tz})),TB.users()]);
+    if(me!==seq)return;data=d;site='';
+    $('#sub').textContent=TB.rangeLabel(r.start,r.end)+' · full addresses; private/incognito windows are not recorded here';
+    render();
+  }catch(e){if(me===seq)TB.error(e)}
+}
+const match=p=>{const q=$('#q').value.trim().toLowerCase();return (!site||p.name===site)&&(!q||(p.url+' '+p.title).toLowerCase().includes(q))};
+function render(){
+  if(!data)return;
+  const rows=data.pages.filter(match),multi=!rb.get().user,MAX=500;
+  $('#pgSub').textContent=`${rows.length} page${rows.length===1?'':'s'}${site?' on '+site:''}`+(data.total_pages>data.pages.length?` (showing the newest ${data.pages.length} of ${data.total_pages}; narrow the dates)`:'')+(rows.length>MAX?` · first ${MAX} shown, the CSV has all`:'');
+  $('#pages').innerHTML=rows.length?`<thead><tr><th>When</th>${multi?'<th>Employee</th>':''}<th class="right">For</th><th>Site</th><th>Page</th></tr></thead><tbody>`+rows.slice(0,MAX).map(p=>`<tr><td class="nowrap">${TB.when(p.ts)}</td>${multi?`<td class="nowrap">${esc(TB.dn(p.user))}</td>`:''}<td class="right num nowrap">${fmt(p.dur)}</td><td class="nowrap"><span class="dot" style="background:${TB.labelColor(p.label)}"></span>${esc(p.name)}</td><td style="min-width:260px;max-width:520px"><div>${esc(p.title||'')}</div><div class="mut sm" style="word-break:break-all;font-family:ui-monospace,Consolas,monospace">${esc(p.url)}</div></td></tr>`).join('')+'</tbody>':'<tbody><tr><td class="empty">No web activity matches. (Websites are read from the browser address bar; if this stays empty the agent may not be able to read it. See Install agents.)</td></tr></tbody>';
+  const mx=Math.max(1,...data.sites.map(s=>s.seconds));
+  $('#sites').innerHTML=data.sites.length?data.sites.map(s=>`<div class="hb" style="cursor:pointer;${site===s.name?'font-weight:600':''}" data-s="${esc(s.name)}" data-tip="${esc(`<b>${s.name}</b><br>${s.domain}<br>${fmt(s.seconds)} · ${s.visits} page${s.visits===1?'':'s'}<br>${s.category}`)}"><span class="nm"><span class="dot" style="background:${TB.labelColor(s.label)}"></span>${esc(s.name)}</span><span class="tr"><i style="width:${100*s.seconds/mx}%;background:${TB.labelColor(s.label)}"></i></span><span class="mut num right">${fmt(s.seconds)}</span></div>`).join('')+`<div class="legend">${TB.labelLegend}</div>`:'<div class="empty">No sites.</div>';
+  $('#sites').querySelectorAll('[data-s]').forEach(el=>el.onclick=()=>{site=site===el.dataset.s?'':el.dataset.s;render()});
+}
+$('#q').oninput=render;
+$('#csv').onclick=()=>{
+  if(!data)return;const r=rb.get(),rows=data.pages.filter(match);
+  TB.csv(`cyril-web-${r.user?r.user+'-':''}${r.start}_to_${r.end}.csv`,[['Date','Time','Employee','Duration (min)','Site','Page title','Full URL','Category','Productivity'],
+    ...rows.map(p=>{const d=new Date(p.ts*1000);return [d.toLocaleDateString('en-CA'),d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),TB.dn(p.user),(p.dur/60).toFixed(1),p.name,p.title,p.url,p.category,p.label]})]);
+};
+</script></body></html>

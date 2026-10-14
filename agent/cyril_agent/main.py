@@ -14,13 +14,19 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from .core import Aggregator, Spool, browser_url, data_dir, is_private, load_config, setup_logging
+from .core import (Aggregator, Spool, browser_url, data_dir, is_chromium_browser, is_private, load_config,
+                   normalize_url, setup_logging)
 from .platform.active_window import get_active_window, idle_seconds
 from .shots import ScreenshotThrottle, capture_jpeg_b64
-from .update import check_and_apply
+from .update import VERSION, check_and_apply
 
 ext_report = None  # latest {"url","title","at"} from the browser extension
 log = logging.getLogger("cyril-agent")
+
+# Health counters sent to the server after every flush, so the dashboard can show WHY websites or screenshots are
+# missing on a given PC without anyone reading logs on it.
+STATUS = {"version": VERSION, "session": None, "browser_samples": 0, "url_extension": 0, "url_uia": 0,
+          "uia_not_found": 0, "uia_error": "", "shots_ok": 0, "shots_failed": 0, "last_error": ""}
 
 
 def device_id() -> str:
@@ -87,6 +93,7 @@ def _post(server: str, path: str, key: str, payload: dict) -> bool:
         urllib.request.urlopen(req, timeout=20).read()
         return True
     except Exception as e:
+        STATUS["last_error"] = f"{path}: {e!r}"[:300]
         log.error("POST %s failed: %r", url, e)
         return False
 
@@ -99,10 +106,31 @@ def send_screenshot(server: str, key: str, user: str, device: str, ts: float, ap
     try:
         img = capture_jpeg_b64()
     except Exception as e:
+        STATUS["shots_failed"] += 1
+        STATUS["last_error"] = f"screenshot capture: {e!r}"[:300]
         log.error("screenshot capture failed: %r", e)
         return
-    _post(server, "/api/screenshot", key,
-          {"user": user, "device": device, "ts": ts, "app": app, "title": title, "image_b64": img})
+    ok = _post(server, "/api/screenshot", key,
+               {"user": user, "device": device, "ts": ts, "app": app, "title": title, "image_b64": img})
+    STATUS["shots_ok" if ok else "shots_failed"] += 1
+
+
+def read_browser_url(w: dict) -> str:
+    """Address of the page in the foreground Chromium browser, read from its address bar (Windows)."""
+    if sys.platform != "win32" or not w.get("hwnd") or not is_chromium_browser(w["app"]):
+        return ""
+    try:
+        from .platform.browser_url import read_address_bar
+        raw = read_address_bar(w["hwnd"])
+    except Exception as e:  # missing dependency, COM trouble, browser hung ...: never let this stop the agent
+        if STATUS["uia_error"] != repr(e)[:200]:
+            log.error("reading the browser address bar failed: %r", e)
+        STATUS["uia_error"] = repr(e)[:200]
+        return ""
+    if raw is None:
+        STATUS["uia_not_found"] += 1
+        return ""
+    return normalize_url(raw)
 
 
 def windows_session_id() -> int | None:
@@ -139,6 +167,11 @@ def main():
     ap.add_argument("--update-check-every", type=float, default=3600.0, help="seconds between self-update checks; 0 disables")
     a = ap.parse_args()
     if a.selftest:
+        if sys.platform == "win32":   # the address-bar reader must be inside the build, or websites go missing silently
+            try:
+                import uiautomation  # noqa: F401
+            except Exception:
+                sys.exit(3)
         return  # reaching here means every import above worked: that is all a build check needs
 
     cfg = load_config(a.config)
@@ -155,6 +188,7 @@ def main():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
     sess = windows_session_id()
+    STATUS["session"] = sess
     log.info("starting: user=%r device=%r server=%r flush_every=%ss session=%s pid=%s",
              user, device, server, a.flush, sess, os.getpid())
     if sess == 0:
@@ -190,6 +224,14 @@ def main():
         w = w or {"app": "", "title": ""}
         idle = idle_seconds() >= a.idle_after
         url = browser_url(w["app"], ext_report, now)
+        if is_chromium_browser(w["app"]) and not idle and not is_private(w["title"]):
+            STATUS["browser_samples"] += 1
+            if url:
+                STATUS["url_extension"] += 1
+            else:
+                url = read_browser_url(w)   # no extension needed
+                if url:
+                    STATUS["url_uia"] += 1
         title = ext_report["title"] if url and ext_report and not w["title"] else w["title"]
 
         private = is_private(title)
@@ -223,6 +265,7 @@ def main():
                     log.info("report %s: %d event(s)%s", "sent" if ok else "FAILED, will retry (spooled)", len(queued),
                              "" if ok else f" queued on disk at {spool_path}")
                     sent_ok = ok
+            _post(server, "/api/agent/status", key, {"user": user, "device": device, "info": dict(STATUS)})
             last_flush = now
         time.sleep(a.interval)
 

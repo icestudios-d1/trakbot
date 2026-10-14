@@ -118,3 +118,29 @@ def setup_logging(log_path: str) -> logging.Logger:
             sh.setFormatter(fmt)
             log.addHandler(sh)
     return log
+
+
+CHROMIUM_BROWSERS = ("msedge", "chrome", "chromium", "brave", "opera", "vivaldi")
+
+
+def is_chromium_browser(app: str) -> bool:
+    a = (app or "").lower()
+    return any(b in a for b in CHROMIUM_BROWSERS)
+
+
+def normalize_url(text: str | None) -> str:
+    """Turn what the address box shows into a URL, or "" if it is not an address (typed search words, internal
+    pages). Chromium hides the scheme when the box is not focused, so a bare "claude.ai/chat" gets https://."""
+    t = (text or "").strip()
+    if not t or any(c.isspace() for c in t):
+        return ""
+    if "://" not in t:
+        head = t.split("/")[0]
+        if t.split(":")[0].lower() in ("about", "edge", "chrome", "brave", "opera", "vivaldi", "view-source", "javascript", "data"):
+            return ""
+        if "." not in head and ":" not in head:   # one word: a search, not an address (localhost:3000 has a colon)
+            return ""
+        t = "https://" + t
+    if not t.lower().startswith(("http://", "https://")):
+        return ""
+    return t[:2048]

@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from .classify import LABELS, classify
+from .names import display_name, site_name
 
 ALL_LABELS = (*LABELS, "idle")
 MAX_SPAN_DAYS = 366
@@ -90,13 +91,14 @@ def aggregate(events: list[dict], rules: list[dict], tz: int | None, days: list[
             daily[i][lab] += dur
         if lab != "idle":
             heat[dt.weekday()][dt.hour] += dur
-            name = e["app"] or "unknown"
+            name = display_name(e["app"], e["domain"])   # the website if there is one, else the program
             apps[name] += dur
             meta_app.setdefault(name, (cat, lab))
             pu["apps"][name] += dur
             if e["domain"]:
-                sites[e["domain"]] += dur
-                meta_site.setdefault(e["domain"], (cat, lab))
+                site = site_name(e["domain"])
+                sites[site] += dur
+                meta_site.setdefault(site, (cat, lab))
             if is_creative(cat):
                 creative[name] += dur
             if i is not None:
@@ -174,8 +176,8 @@ def slotize(events: list[dict], slot_min: int, tz: int | None) -> list[dict]:
     out = []
     for (user, _idx, _off), b in buckets.items():
         active = sum(n["seconds"] for n in b["names"].values())
-        parts = sorted([(k, v["seconds"]) for k, v in b["names"].items()] + ([("Idle", b["idle"])] if b["idle"] else []),
-                       key=lambda kv: -kv[1])
+        parts = sorted([(display_name(v["rep"]["app"], v["rep"]["domain"]), v["seconds"]) for v in b["names"].values()]
+                       + ([("Idle", b["idle"])] if b["idle"] else []), key=lambda kv: -kv[1])
         if not b["names"] or b["idle"] >= active:
             ev = {"id": 0, "user": user, "device": b["device"], "ts": b["start"], "dur": b["total"], "app": "",
                   "title": "", "url": "", "domain": "", "idle": 1}

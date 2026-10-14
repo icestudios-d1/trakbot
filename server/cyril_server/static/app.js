@@ -55,7 +55,7 @@
   TB.setParams = (o) => { const p = new URLSearchParams(location.search); for (const [k, v] of Object.entries(o)) v ? p.set(k, v) : p.delete(k); history.replaceState(null, '', location.pathname + (p.toString() ? '?' + p : '')); };
 
   /* ---------- nav ---------- */
-  const NAV = [['/', 'Overview'], ['/employees', 'Employees'], ['/day', 'Day viewer'], ['/alerts', 'Alerts'], ['/screenshots', 'Screenshots'], ['/rules', 'Productivity rules'], ['/install', 'Install agents']];
+  const NAV = [['/', 'Overview'], ['/employees', 'Employees'], ['/day', 'Day viewer'], ['/web', 'Web activity'], ['/alerts', 'Alerts'], ['/screenshots', 'Screenshots'], ['/rules', 'Productivity rules'], ['/install', 'Install agents']];
   if (!isLogin) {
     const here = location.pathname === '/employee' ? '/employees' : location.pathname;
     const top = document.createElement('header');

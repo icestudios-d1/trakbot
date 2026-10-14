@@ -28,7 +28,7 @@
 const {$,fmt,esc}=TB;
 let events=[],shots=[],sel=-1,colorBy='app',keyOf,colorOf,t0=0,t1=0,seq=0;
 const urls={};
-const nameOf=e=>e.idle?'Idle / away':(e.domain||e.app||'unknown');
+const nameOf=e=>e.name||(e.idle?'Idle / away':(e.domain||e.app||'unknown'));
 const p0=TB.params();
 $('#d').value=p0.day||TB.ymd(new Date());
 $('#d').max=TB.ymd(new Date());
@@ -104,7 +104,7 @@ function timeline(){
       g+=`<rect x="${x}" y="0" width="${w}" height="${H}" fill="${colorOf(e)}" stroke="var(--card)" stroke-width=".6" data-ts="${e.ts+e.dur/2}" data-tip="${esc(tip)}"/>`});
     shots.forEach((s,i)=>{const x=X(s.ts),on=i===sel;
       g+=`<rect x="${x-1.5}" y="${H+3}" width="3" height="${on?M+2:M-4}" rx="1.5" fill="${on?'var(--accent)':'var(--mut)'}" opacity="${on?1:.55}"/>`+
-         `<rect x="${x-5}" y="${H+1}" width="10" height="${M+4}" fill="transparent" data-i="${i}" data-tip="${esc(`<b>${TB.clock(s.ts)}</b><br>${esc(s.app)}`)}"/>`});
+         `<rect x="${x-5}" y="${H+1}" width="10" height="${M+4}" fill="transparent" data-i="${i}" data-tip="${esc(`<b>${TB.clock(s.ts)}</b><br>${esc(s.name||s.app)}`)}"/>`});
     if(sel>=0){const x=X(shots[sel].ts);g+=`<line x1="${x}" x2="${x}" y1="-2" y2="${H}" stroke="var(--fg)" stroke-width="1.5" stroke-dasharray="3 2" pointer-events="none"/>`}
     el.innerHTML=`<svg viewBox="0 0 ${W} ${H+M+28}" height="${H+M+28}">${g}</svg>`};
   draw();el._redraw=draw;
@@ -130,7 +130,7 @@ let io;
 function film(){
   const f=$('#film');
   if(!shots.length){f.innerHTML='<span class="mut">No screenshots were captured on this day.</span>';return}
-  f.innerHTML=shots.map((s,i)=>`<button data-i="${i}" title="${esc(s.title||s.app)}"><img alt=""><span>${TB.clock(s.ts)} · ${esc(s.app)}</span></button>`).join('');
+  f.innerHTML=shots.map((s,i)=>`<button data-i="${i}" title="${esc(s.title||s.app)}"><img alt=""><span>${TB.clock(s.ts)} · ${esc(s.name||s.app)}</span></button>`).join('');
   f.onclick=e=>{const b=e.target.closest('button[data-i]');if(b)select(+b.dataset.i)};
   io&&io.disconnect();
   io=new IntersectionObserver(es=>es.forEach(en=>{if(en.isIntersecting){io.unobserve(en.target);img(shots[+en.target.parentElement.dataset.i]).then(u=>{en.target.src=u}).catch(()=>{})}}),{root:f,rootMargin:'400px'});
@@ -145,7 +145,7 @@ async function select(i,{scroll=true}={}){
   if(i<0){big.innerHTML=`<span>${shots.length?'Select a screenshot':'No screenshots captured on this day'}</span>`;$('#pinfo').innerHTML='';$('#pcount').textContent='';$('#sp').disabled=$('#sn').disabled=true;return}
   const s=shots[i],e=eventAt(s.ts);
   $('#pcount').textContent=`${i+1} / ${shots.length}`;$('#sp').disabled=i===0;$('#sn').disabled=i===shots.length-1;
-  $('#pinfo').innerHTML=`<b>${new Date(s.ts*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit',second:'2-digit'})}</b> · ${esc(s.app||'')}${e&&!e.idle?` <span class="tag ${e.label}">${e.label}</span> <span class="mut sm">${esc(e.category)}</span>`:''}<div class="mut sm" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.title||'')}</div>`;
+  $('#pinfo').innerHTML=`<b>${new Date(s.ts*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit',second:'2-digit'})}</b> · ${esc((e&&!e.idle?e.name:s.name)||s.app||'')}${e&&!e.idle?` <span class="tag ${e.label}">${e.label}</span> <span class="mut sm">${esc(e.category)}</span>`:''}<div class="mut sm" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.title||'')}</div>`;
   const b=document.querySelector(`#film button[data-i="${i}"]`);
   if(b&&scroll){const f=$('#film');f.scrollTo({left:b.offsetLeft-f.clientWidth/2+b.clientWidth/2})}
   big.innerHTML='<span>Loading…</span>';

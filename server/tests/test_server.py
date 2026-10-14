@@ -148,7 +148,7 @@ def _day():
 def test_pages_and_me():
     assert c.get("/api/me").status_code == 401
     assert c.get("/api/me", headers=A).json() == {"ok": True}
-    for path in ("/", "/login", "/employees", "/employee", "/day", "/install", "/alerts", "/screenshots", "/rules"):
+    for path in ("/", "/login", "/employees", "/employee", "/day", "/web", "/install", "/alerts", "/screenshots", "/rules"):
         r = c.get(path)
         assert r.status_code == 200 and "text/html" in r.headers["content-type"], path
     assert c.get("/static/app.js").status_code == 200
@@ -186,12 +186,12 @@ def test_overview_and_employee_reports():
     q = {"start": _day(), "end": _day(), "tz": 0}
     e = c.get("/api/employee", headers=A, params={"user": "dana", **q}).json()
     assert e["seconds"]["productive"] == 1800 and e["creative_seconds"] == 1800
-    assert e["creative_apps"][0]["name"] == "Photoshop.exe"
+    assert e["creative_apps"][0]["name"] == "Photoshop"
     assert len(e["daily"]) == 1 and len(e["hourly"]) == 24 and len(e["heatmap"]) == 7
     ov = c.get("/api/overview", headers=A, params=q).json()
     assert ov["creative_seconds"] >= 1800 and "dana" in ov["by_user"] and "previous" in ov
     tl = c.get("/api/timeline", headers=A, params={"user": "dana", "day": _day(), "tz": 0}).json()
-    assert [t["app"] for t in tl][:2] == ["Photoshop.exe", "chrome"] and tl[2]["idle"] and tl[0]["label"] == "productive"
+    assert [t["name"] for t in tl][:2] == ["Photoshop", "YouTube"] and tl[2]["idle"] and tl[0]["label"] == "productive"
 
 
 def test_rename_user():
@@ -318,7 +318,7 @@ def test_reporting_interval_setting_and_its_effect():
     assert exact["slot"] == 0 and exact["seconds"]["productive"] == 360 and exact["seconds"]["unproductive"] == 480
     macro = c.get("/api/employee", headers=A, params={**q, "slot": 15}).json()
     assert macro["slot"] == 15 and macro["seconds"]["unproductive"] == 840 and macro["seconds"]["productive"] == 0
-    assert macro["apps"][0]["name"] == "chrome"
+    assert macro["apps"][0]["name"] == "Reddit"
     assert c.get("/api/employee", headers=A, params={**q, "slot": 3}).status_code == 400
     # the saved setting is the default for every report, and ?slot= still overrides it
     assert c.put("/api/settings", headers=A, json={"report_interval": 15}).json()["report_interval"] == 15
@@ -328,8 +328,43 @@ def test_reporting_interval_setting_and_its_effect():
     assert ov["slot"] == 15
     tl = c.get("/api/timeline", headers=A, params={"user": "slotty", "day": "2031-06-02", "tz": 0}).json()
     assert len(tl) == 1 and tl[0]["slot"] is True and tl[0]["domain"] == "reddit.com" and tl[0]["dur"] == 840
-    assert tl[0]["breakdown"][0] == {"name": "reddit.com", "seconds": 480}
+    assert tl[0]["breakdown"][0] == {"name": "Reddit", "seconds": 480} and tl[0]["name"] == "Reddit"
     rows = c.get("/api/slots", headers=A, params={"user": "slotty", "start": "2031-06-02", "end": "2031-06-02", "tz": 0}).json()
     assert rows["slot"] == 15 and len(rows["rows"]) == 1 and rows["rows"][0]["label"] == "unproductive"
     assert c.get("/api/slots", headers=A, params={"user": "slotty", "start": "2031-01-01", "end": "2031-03-01"}).status_code == 400
     c.put("/api/settings", headers=A, json={"report_interval": 0})
+
+
+def test_web_report_has_full_urls_and_friendly_site_names():
+    assert c.get("/api/web").status_code == 401
+    base = time.mktime(time.strptime("2031-07-01 09:00", "%Y-%m-%d %H:%M")) - time.timezone
+    u1, u2 = "https://www.freepik.com/search?format=search&query=poster+mockup", "https://claude.ai/chat/abc-123"
+    c.post("/api/ingest", headers=K, json={"user": "webby", "device": "d", "events": [
+        {"ts": base, "dur": 120, "app": "msedge.exe", "title": "poster mockup | Freepik", "url": u1},
+        {"ts": base + 120, "dur": 60, "app": "msedge.exe", "title": "poster mockup | Freepik", "url": u1},   # same page, back to back
+        {"ts": base + 180, "dur": 300, "app": "msedge.exe", "title": "Claude", "url": u2},
+        {"ts": base + 480, "dur": 100, "app": "Photoshop.exe", "title": "x.psd"},                            # not web
+        {"ts": base + 580, "dur": 50, "idle": True}]})
+    r = c.get("/api/web", headers=A, params={"user": "webby", "start": "2031-07-01", "end": "2031-07-01", "tz": 0}).json()
+    assert [p["url"] for p in r["pages"]] == [u2, u1]                       # newest first, FULL urls kept
+    assert [p for p in r["pages"] if p["url"] == u1][0]["dur"] == 180       # merged
+    assert [(x["name"], x["seconds"], x["visits"]) for x in r["sites"]] == [("Claude", 300, 1), ("Freepik", 180, 1)]
+    # main reports use the friendly names and never show the browser for that time
+    e = c.get("/api/employee", headers=A, params={"user": "webby", "start": "2031-07-01", "end": "2031-07-01", "tz": 0}).json()
+    names = [a["name"] for a in e["apps"]]
+    assert names[:3] == ["Claude", "Freepik", "Photoshop"] and "Edge" not in names
+    assert [s_["name"] for s_ in e["sites"]] == ["Claude", "Freepik"]
+    assert c.get("/api/web", headers=A, params={"start": "2031-01-01", "end": "2031-06-01"}).status_code == 400
+
+
+def test_agent_status_shows_up_on_devices():
+    assert c.post("/api/agent/status", json={"user": "u", "device": "PC-ST", "info": {}}).status_code == 401
+    c.post("/api/ingest", headers=K, json={"user": "stu", "device": "PC-ST", "events": [{"ts": time.time(), "dur": 5, "app": "code"}]})
+    info = {"version": "0.2.0", "session": 1, "browser_samples": 12, "url_uia": 0, "uia_not_found": 12, "shots_ok": 0,
+            "shots_failed": 2, "last_error": "/api/screenshot: HTTPError 502"}
+    assert c.post("/api/agent/status", headers=K, json={"user": "stu", "device": "PC-ST", "info": info}).json() == {"ok": True}
+    d = [x for x in c.get("/api/devices", headers=A).json() if x["device"] == "PC-ST"][0]
+    assert d["status"]["shots_failed"] == 2 and d["status"]["uia_not_found"] == 12
+    info["shots_failed"] = 0
+    c.post("/api/agent/status", headers=K, json={"user": "stu", "device": "PC-ST", "info": info})   # upsert, not append
+    assert [x for x in c.get("/api/devices", headers=A).json() if x["device"] == "PC-ST"][0]["status"]["shots_failed"] == 0

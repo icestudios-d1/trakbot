@@ -26,6 +26,7 @@ from .classify import LABELS, classify, matching_rule
 from .db import DB
 from .default_rules import STUDIO_RULES
 from .reports import SLOT_CHOICES, aggregate, previous_span, slotize, span
+from .names import display_name, site_name
 from .objstore import ObjectStoreError, S3Store
 
 ADMIN_TOKEN = os.environ.get("CYRIL_ADMIN_TOKEN", "")
@@ -208,7 +209,8 @@ def _rows(events: list[dict], rules: list[dict]) -> list[dict]:
     for e in events:
         cat, lab = classify(e, rules)
         row = {"ts": e["ts"], "dur": e["dur"], "app": e["app"], "title": e["title"], "url": e["url"],
-               "domain": e["domain"], "idle": bool(e["idle"]), "category": cat, "label": lab}
+               "domain": e["domain"], "idle": bool(e["idle"]), "category": cat, "label": lab,
+               "name": "Idle / away" if e["idle"] else display_name(e["app"], e["domain"])}
         if e.get("slot"):
             row.update(slot=True, share=e["share"], breakdown=e["breakdown"])
         out.append(row)
@@ -220,6 +222,39 @@ def timeline(user: str, day: str | None = None, tz: int | None = Query(None, ge=
     """One person's day. With a reporting interval set, each block shows the app used most in that block."""
     start, end, _ = _span_or_400(day, day, tz)
     return _rows(slotize(_events(user, start, end), _slot(slot), tz), db.rules())
+
+
+@app.get("/api/web", dependencies=[Depends(admin)])
+def web_report(user: str | None = None, start: str | None = None, end: str | None = None,
+               tz: int | None = Query(None, ge=-840, le=840), limit: int = Query(5000, le=20000)):
+    """Detailed web report: every page visited with its FULL URL, plus per-site totals. Always exact (never
+    grouped into blocks). Private/incognito windows are not in here: their address is not recorded."""
+    s, e, days = _span_or_400(start, end, tz)
+    if len(days) > 31:
+        raise HTTPException(400, "the web report covers at most 31 days")
+    rules = db.rules()
+    pages, sites = [], {}
+    last = {}  # (user, url) -> page row, to merge back-to-back stretches on the same page
+    for ev in _events(user, s, e):
+        if ev["idle"] or not ev["url"]:
+            continue
+        cat, lab = classify(ev, rules)
+        prev = last.get((ev["user"], ev["url"]))
+        if prev and ev["ts"] - (prev["ts"] + prev["dur"]) <= 60:
+            prev["dur"] = ev["ts"] + ev["dur"] - prev["ts"]
+        else:
+            prev = {"ts": ev["ts"], "dur": ev["dur"], "user": ev["user"], "name": site_name(ev["domain"]) or ev["domain"],
+                    "domain": ev["domain"], "url": ev["url"], "title": ev["title"], "category": cat, "label": lab}
+            pages.append(prev)
+            last[(ev["user"], ev["url"])] = prev
+    for p in pages:
+        st = sites.setdefault(p["name"], {"name": p["name"], "domain": p["domain"], "seconds": 0, "visits": 0,
+                                          "category": p["category"], "label": p["label"]})
+        st["seconds"] += p["dur"]
+        st["visits"] += 1
+    pages.sort(key=lambda r: -r["ts"])
+    return {"sites": sorted(({**v, "seconds": round(v["seconds"])} for v in sites.values()), key=lambda v: -v["seconds"]),
+            "pages": pages[:limit], "total_pages": len(pages)}
 
 
 @app.get("/api/slots", dependencies=[Depends(admin)])
@@ -425,7 +460,8 @@ def list_alerts(unacked: bool = False, user: str | None = None, start: float | N
         args.append(end)
     q = "SELECT * FROM alerts" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY ts DESC LIMIT ?"
     with db.conn() as c:
-        return [dict(r) for r in c.execute(q, (*args, limit))]
+        rows = [dict(r) for r in c.execute(q, (*args, limit))]
+    return [{**r, "name": display_name(r["app"] or "", domain_of(r["url"] or ""))} for r in rows]
 
 
 @app.post("/api/alerts/{aid}/ack", dependencies=[Depends(admin)])
@@ -498,7 +534,7 @@ def list_screenshots(user: str, start: float, end: float, limit: int = Query(500
             "SELECT id,user,device,ts,app,title,bytes FROM screenshots "
             "WHERE user=? AND ts>=? AND ts<? ORDER BY ts LIMIT ?",
             (user, start, end, limit)).fetchall()
-    return [dict(r) for r in rows]
+    return [{**dict(r), "name": display_name(r["app"] or "")} for r in rows]
 
 
 @app.get("/api/screenshots/{sid}/image", dependencies=[Depends(admin)])
@@ -638,6 +674,24 @@ def install_info(request: Request):
             "version": (manifest or {}).get("version"), "build": (manifest or {}).get("build")}
 
 
+class AgentStatusIn(BaseModel):
+    user: str = Field(min_length=1, max_length=128)
+    device: str = Field(min_length=1, max_length=128)
+    info: dict
+
+
+@app.post("/api/agent/status", dependencies=[Depends(agent)])
+def agent_status(s: AgentStatusIn):
+    """Each agent reports its own health (can it read web addresses? are screenshots getting through?) so the
+    dashboard can say why something is missing on a PC instead of someone reading logs there."""
+    import json
+    blob = json.dumps(s.info)[:4000]
+    with db.conn() as c:
+        c.execute("INSERT INTO agent_status(device,user,ts,info) VALUES(?,?,?,?) ON CONFLICT(device) DO UPDATE SET "
+                  "user=excluded.user, ts=excluded.ts, info=excluded.info", (s.device, s.user, time.time(), blob))
+    return {"ok": True}
+
+
 @app.get("/api/agent/seen", dependencies=[Depends(agent)])
 def agent_seen(device: str = Query(min_length=1, max_length=128), since: float = 0):
     """Used by the installer to confirm a first report arrived. `with_app` counts samples where the agent saw a
@@ -652,12 +706,23 @@ def agent_seen(device: str = Query(min_length=1, max_length=128), since: float =
 
 @app.get("/api/devices", dependencies=[Depends(admin)])
 def devices():
-    """Every machine that has reported, newest first (drives the live list on the Install page)."""
+    """Every machine that has reported, newest first, with the health each agent reported about itself."""
+    import json
     with db.conn() as c:
         rows = c.execute(
-            "SELECT e.device, e.user, n.name, MAX(e.ts+e.dur) last_seen, MIN(e.ts) first_seen, COUNT(*) events "
-            "FROM events e LEFT JOIN user_names n ON n.user=e.user GROUP BY e.device, e.user ORDER BY last_seen DESC").fetchall()
-    return [dict(r) for r in rows]
+            "SELECT e.device, e.user, n.name, MAX(e.ts+e.dur) last_seen, MIN(e.ts) first_seen, COUNT(*) events, "
+            "st.info status, st.ts status_ts FROM events e "
+            "LEFT JOIN user_names n ON n.user=e.user LEFT JOIN agent_status st ON st.device=e.device "
+            "GROUP BY e.device, e.user ORDER BY last_seen DESC").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["status"] = json.loads(d["status"]) if d["status"] else None
+        except ValueError:
+            d["status"] = None
+        out.append(d)
+    return out
 
 
 def _build_id() -> str:
@@ -684,7 +749,7 @@ app.mount("/static", _Static(directory=str(STATIC)), name="static")
 # Pages are static HTML; each one checks the admin token client-side and bounces to /login. All data
 # comes from the token-protected /api/* endpoints, so serving the shells unauthenticated leaks nothing.
 PAGES = {"/": "index.html", "/login": "login.html", "/employees": "employees.html", "/employee": "employee.html",
-         "/day": "day.html", "/alerts": "alerts.html", "/install": "install.html", "/screenshots": "screenshots.html",
+         "/day": "day.html", "/web": "web.html", "/alerts": "alerts.html", "/install": "install.html", "/screenshots": "screenshots.html",
          "/rules": "rules.html"}
 
 

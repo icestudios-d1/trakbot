@@ -3,7 +3,7 @@
 <title>Employee report · Cyril</title><link rel="stylesheet" href="/static/app.css"></head>
 <body><main>
 <div class="pagehead"><div><h1 id="name">Employee</h1><p id="sub"></p></div>
-<div class="noprint formrow"><button id="rename">Rename</button><a class="chip" id="dayLink" href="/day" style="padding:6px 12px;border:1px solid var(--bd);border-radius:999px;color:var(--fg)">Day viewer</a><button id="csv">Download CSV</button><button id="print">Print / save PDF</button></div></div>
+<div class="noprint formrow"><button id="rename">Rename</button><a class="chip" id="webLink" href="/web" style="padding:6px 12px;border:1px solid var(--bd);border-radius:999px;color:var(--fg)">Web activity</a><a class="chip" id="dayLink" href="/day" style="padding:6px 12px;border:1px solid var(--bd);border-radius:999px;color:var(--fg)">Day viewer</a><button id="csv">Download CSV</button><button id="print">Print / save PDF</button></div></div>
 <div id="range"></div>
 <div id="err" class="callout" style="display:none"></div>
 <div id="body">
@@ -18,7 +18,7 @@
 </div>
 <div class="grid g3">
   <div class="card"><h2>Creative tools</h2><div class="sub">Hands-on design / motion / 3D / video time</div><div id="creative"></div></div>
-  <div class="card"><h2>Applications</h2><div id="apps"></div></div>
+  <div class="card"><h2>Top activity</h2><div class="sub">Websites and programs, by time. Browser time is counted under the site.</div><div id="apps"></div></div>
   <div class="card"><h2>Websites</h2><div id="sites"></div></div>
 </div>
 <div class="grid g2">
@@ -44,6 +44,7 @@ async function load(r){
     if(me!==seq)return;cur=o;
     $('#name').innerHTML=TB.who(r.user);
     $('#dayLink').href='/day?'+TB.qs({user:r.user,day:r.end});
+    $('#webLink').href='/web?'+TB.qs({user:r.user,start:r.start,end:r.end});
     const n=o.days.length,s=o.seconds;
     $('#sub').textContent=TB.rangeLabel(r.start,r.end)+TB.slotNote(o.slot)+(o.devices.length?` · ${o.devices.length} device${o.devices.length>1?'s':''}`:'')+` · active on ${o.days_active} of ${n} day${n>1?'s':''}`;
     const cshare=o.active_seconds?Math.round(100*o.creative_seconds/o.active_seconds):0;
@@ -81,7 +82,7 @@ async function load(r){
 }
 const hm=ts=>new Date(ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
 const dayOf=ts=>new Date(ts*1000).toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'});
-const what=x=>x.idle?'Idle / away':(x.domain||x.app||'unknown');
+const what=x=>x.name||(x.idle?'Idle / away':(x.domain||x.app||'unknown'));
 function renderSlots(n){
   slotMin=n;
   $('#slotTitle').textContent=n?`Time slots (${n}-minute blocks)`:'Activity log (exact)';

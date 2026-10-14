@@ -1,5 +1,5 @@
 import os
-from cyril_agent.core import Aggregator, Spool, browser_url, is_private, load_config, data_dir, setup_logging
+from cyril_agent.core import Aggregator, Spool, browser_url, is_private, load_config, data_dir, setup_logging, normalize_url, is_chromium_browser
 
 
 def test_merge_and_drain():
@@ -83,3 +83,22 @@ def test_setup_logging_writes_file(tmp_path):
     for h in logging.getLogger("cyril-agent").handlers:
         h.flush()
     assert "hello world" in path.read_text()
+
+
+def test_normalize_url_from_the_address_box():
+    # Chromium hides the scheme when the box is not focused
+    assert normalize_url("claude.ai/chat/abc") == "https://claude.ai/chat/abc"
+    assert normalize_url("https://www.freepik.com/search?q=a+b") == "https://www.freepik.com/search?q=a+b"
+    assert normalize_url("localhost:3000/x") == "https://localhost:3000/x"
+    assert normalize_url("  youtube.com  ") == "https://youtube.com"
+    # not addresses: typed searches, internal pages, empty
+    for bad in ("", None, "how to make a poster", "poster", "edge://settings", "chrome://flags", "about:blank",
+                "view-source:https://a.com", "javascript:alert(1)", "ftp://x.com/a"):
+        assert normalize_url(bad) == "", bad
+
+
+def test_chromium_detection():
+    for app in ("msedge.exe", "chrome.exe", "Google-chrome", "brave.exe", "opera.exe", "vivaldi.exe"):
+        assert is_chromium_browser(app), app
+    for app in ("Photoshop.exe", "firefox.exe", "", "code"):
+        assert not is_chromium_browser(app), app

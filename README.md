@@ -74,6 +74,22 @@ same as how Chrome or any managed EDR patches itself — but every step is writt
 endpoint, so the rollout is fully auditable even though it isn't interruptive. A checksum mismatch aborts
 the update rather than applying anything.
 
+### Names, websites and the web report
+
+Reports use plain names: **YouTube, Claude, Freepik, PowerShell, Photoshop**, never `youtube.com` or `Photoshop.exe`.
+Time in a browser is counted under the **website** (so it is "YouTube", not "Edge"); when the address can't be read it
+falls back to the browser's name. Unknown domains/programs are tidied automatically (`app.freepik.com` -> Freepik,
+`Some_Tool.exe` -> Some Tool); common brands are in `server/cyril_server/names.py`. Rules still match the raw
+app/domain, so nothing about productivity labels changes.
+
+The **Web activity** page is the detailed report: every page with its **full URL** and title, per-site totals, search,
+and CSV download. Private/incognito windows are not in it (their address is not recorded).
+
+On Windows the agent reads the address of the foreground Chromium browser (Edge, Chrome, Brave, Opera, Vivaldi)
+straight from the browser window through UI Automation, so **no browser extension is needed** (the extension remains an
+optional fallback). Each agent also reports its own health, shown per machine on **Install agents**: whether web
+addresses are readable and whether screenshots are getting through, with the last error.
+
 ### Reporting interval ("Group by")
 
 The agent always samples every few seconds; **Group by** only changes how that data is *reported*. Pick **1, 5, 10,

@@ -22,7 +22,7 @@ def test_app_used_most_in_the_block_is_reported():
     [slot] = slotize(evs, 15, IST)
     assert slot["domain"] == "youtube.com" and slot["ts"] == T0 and slot["dur"] == 900
     assert slot["share"] == 0.533 and slot["slot"] is True
-    assert [b["name"] for b in slot["breakdown"]] == ["youtube.com", "Photoshop.exe"]
+    assert [b["name"] for b in slot["breakdown"]] == ["YouTube", "Photoshop"]
 
 
 def test_block_is_idle_when_idle_time_is_at_least_all_activity():
