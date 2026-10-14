@@ -22,7 +22,7 @@ pip install --quiet -r "$root\agent\requirements.txt"
 pyinstaller --onefile --noconsole --name cyril `
   --paths "$root\agent" `
   --distpath $out --workpath "$root\build" --specpath "$root\build" `
-  "$root\agent\cyril_agent\__main__.py"
+  "$root\agent\cyril_entry.py"
 
 Compress-Archive -Path "$root\browser-extension\*" -DestinationPath "$out\cyril-extension.zip" -Force
 

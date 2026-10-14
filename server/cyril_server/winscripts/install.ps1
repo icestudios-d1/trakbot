@@ -181,6 +181,9 @@ function Show-Diagnostics {
     $log = Join-Path $dataDir "agent.log"
     if (Test-Path $log) { Write-Host "    last lines of $log :"; Get-Content $log -Tail 12 | ForEach-Object { Write-Host "      $_" } }
     else { Write-Host "    no agent log yet at $log (the agent never started)" }
+    $crash = Join-Path $dataDir "crash.log"
+    if (Test-Path $crash) { Write-Host "    the agent crashed on startup, $crash :" -ForegroundColor Red; Get-Content $crash -Tail 15 | ForEach-Object { Write-Host "      $_" } }
+    elseif ($info -and $info.LastTaskResult -ne 0 -and -not $procs) { Write-Host "    the task ran but the agent exited at once (result 0x$('{0:X}' -f $info.LastTaskResult)): it crashed before it could log. Try running it by hand: & '$exe' --config '$cfgFile'" }
 }
 
 Write-Host ""
