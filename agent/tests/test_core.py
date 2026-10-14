@@ -1,4 +1,4 @@
-from trakbot_agent.core import Aggregator, Spool, browser_url, is_private
+from cyril_agent.core import Aggregator, Spool, browser_url, is_private
 
 
 def test_merge_and_drain():
@@ -16,6 +16,23 @@ def test_gap_splits():
     a.add(0, 5, "x", "", "", False)
     a.add(100, 5, "x", "", "", False)
     assert len(a.events) == 2
+
+
+def test_drain_keep_open_false_flushes_the_open_event_too():
+    """main.py calls drain(keep_open=False) on every periodic flush. Without
+    that, a user who never switches windows (or stays idle) longer than
+    --flush never has anything sent at all -- the event just keeps growing
+    in memory until it happens to close, which may be hours away or never."""
+    a = Aggregator()
+    for t in (0, 5, 10):
+        a.add(t, 5, "code", "f.py", "", False)  # same window the whole time
+    out = a.drain(keep_open=False)
+    assert len(out) == 1 and out[0]["dur"] == 15
+    assert a.events == []  # nothing left open afterwards
+
+    # the same ongoing activity continues normally in a fresh segment
+    a.add(15, 5, "code", "f.py", "", False)
+    assert len(a.events) == 1 and a.events[0]["dur"] == 5
 
 
 def test_browser_url():
@@ -41,7 +58,7 @@ def test_spool(tmp_path):
 
 
 def test_background_audio_splits_events_and_expires():
-    from trakbot_agent.core import background_audio
+    from cyril_agent.core import background_audio
     a = Aggregator()
     a.add(0, 5, "photoshop", "x", "", False, ("youtube.com",))
     a.add(5, 5, "photoshop", "x", "", False, ("youtube.com",))

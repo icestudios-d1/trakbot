@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Employee report · TrakBot</title><link rel="stylesheet" href="/static/app.css"></head>
+<title>Employee report · Cyril</title><link rel="stylesheet" href="/static/app.css"></head>
 <body><main>
 <div class="pagehead"><div><h1 id="name">Employee</h1><p id="sub"></p></div>
 <div class="noprint formrow"><button id="csv">Download CSV</button><button id="print">Print / save PDF</button></div></div>
@@ -82,7 +82,7 @@ async function load(r){
 $('#print').onclick=()=>print();
 $('#csv').onclick=()=>{
   if(!cur)return;const r=rb.get();
-  TB.csv(`trakbot-${cur.user}-${r.start}_to_${r.end}.csv`,[['Day','First activity','Last activity','Active (min)','Productive (min)','Unproductive (min)','Neutral (min)','Idle (min)','Productivity %'],
+  TB.csv(`cyril-${cur.user}-${r.start}_to_${r.end}.csv`,[['Day','First activity','Last activity','Active (min)','Productive (min)','Unproductive (min)','Neutral (min)','Idle (min)','Productivity %'],
     ...cur.daily.map(d=>[d.day,d.first?new Date(d.first*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'',d.last?new Date(d.last*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'',Math.round((d.productive+d.unproductive+d.neutral)/60),Math.round(d.productive/60),Math.round(d.unproductive/60),Math.round(d.neutral/60),Math.round(d.idle/60),d.pct??''])]);
 };
 </script></body></html>

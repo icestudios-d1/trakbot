@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Active vs background · TrakBot</title><link rel="stylesheet" href="/static/app.css"></head>
+<title>Active vs background · Cyril</title><link rel="stylesheet" href="/static/app.css"></head>
 <body><main>
 <div class="pagehead"><div><h1>Active vs background usage</h1><p id="sub">Separates what people are <b>using</b> from what is just <b>playing behind their work</b>.</p></div></div>
 <div id="range"></div>
@@ -12,10 +12,10 @@
     <div class="sub"><span class="dot" style="background:var(--c-a)"></span>Active: in the foreground while the person is present &nbsp; <span class="dot" style="background:var(--c-b)"></span>Passive: playing audio behind another app, or after they stepped away</div>
     <div id="src"></div></div>
   <div class="card"><h2>How to read this</h2>
-    <p class="sm">Normal activity tracking credits the whole session to whichever window is in front. A tab left open for music then looks like heavy YouTube use. TrakBot separates the two:</p>
+    <p class="sm">Normal activity tracking credits the whole session to whichever window is in front. A tab left open for music then looks like heavy YouTube use. Cyril separates the two:</p>
     <p class="sm"><b>Active</b> time is only when the app or site is in front of someone who is not idle. <b>Passive</b> time is when a site is playing audio while something else is in front (Photoshop, Illustrator…) or the person is away.</p>
-    <p class="sm">Productivity percentages elsewhere in TrakBot use <b>active time only</b>, so background music never counts against anyone.</p>
-    <p class="sm mut">Detected from audible browser tabs via the TrakBot browser extension (v0.2+). Desktop music apps like Spotify are visible only while in front.</p></div>
+    <p class="sm">Productivity percentages elsewhere in Cyril use <b>active time only</b>, so background music never counts against anyone.</p>
+    <p class="sm mut">Detected from audible browser tabs via the Cyril browser extension (v0.2+). Desktop music apps like Spotify are visible only while in front.</p></div>
 </div>
 <div class="card" style="margin-bottom:16px"><h2>Who plays what in the background</h2><div class="sub">Per employee in this range</div><div class="scroll"><table id="users"></table></div></div>
 <div class="card"><div class="pagehead" style="margin-bottom:8px"><div><h2>Day timeline</h2><div class="sub" style="margin:0">Foreground app (top lane) with background audio (bottom lane). Pick an employee above.</div></div>
@@ -31,7 +31,7 @@ async function load(r){
   try{
     const o=await TB.api('/api/overlap?'+TB.qs({user:r.user,start:r.start,end:r.end,tz:TB.tz}));
     if(me!==seq)return;
-    $('#nodata').innerHTML=o.has_background_data?'':`<div class="callout"><b>No background-audio data in this range yet.</b> Background detection needs the updated agent plus the TrakBot browser extension <b>v0.2</b> (it reports which tabs are playing sound). Earlier history only knows the foreground app, so everything below will show as active.</div>`;
+    $('#nodata').innerHTML=o.has_background_data?'':`<div class="callout"><b>No background-audio data in this range yet.</b> Background detection needs the updated agent plus the Cyril browser extension <b>v0.2</b> (it reports which tabs are playing sound). Earlier history only knows the foreground app, so everything below will show as active.</div>`;
     const pctOf=(a,b)=>b?Math.round(100*a/b)+'%':'–';
     $('#kpis').innerHTML=
       TB.kpi('Active time',fmt(o.active_seconds),'<span class="dl mut">in front, person present</span>')+

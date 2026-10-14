@@ -1,4 +1,4 @@
-/* TrakBot dashboard shared code: auth guard, nav, API, date-range bar, small SVG/HTML chart helpers. */
+/* Cyril dashboard shared code: auth guard, nav, API, date-range bar, small SVG/HTML chart helpers. */
 (function () {
   const TB = (window.TB = {});
   const KEY = 'tb_tok';
@@ -60,7 +60,7 @@
     const here = location.pathname === '/employee' ? '/employees' : location.pathname;
     const top = document.createElement('header');
     top.className = 'top';
-    top.innerHTML = `<a class="brand" href="/"><i></i>TrakBot</a><nav>${NAV.map(([h, t]) => `<a href="${h}" class="${h === here ? 'on' : ''}">${t}${h === '/alerts' ? '<span id="alertBadge"></span>' : ''}</a>`).join('')}</nav><button class="out" id="signout">Sign out</button>`;
+    top.innerHTML = `<a class="brand" href="/"><i></i>Cyril</a><nav>${NAV.map(([h, t]) => `<a href="${h}" class="${h === here ? 'on' : ''}">${t}${h === '/alerts' ? '<span id="alertBadge"></span>' : ''}</a>`).join('')}</nav><button class="out" id="signout">Sign out</button>`;
     document.body.prepend(top);
     $('#signout').onclick = TB.signOut;
     TB.api('/api/alerts?' + TB.qs({ unacked: 'true', limit: 1000 })).then((a) => { if (a.length) $('#alertBadge').outerHTML = `<span class="badge">${a.length}</span>`; }).catch(() => {});

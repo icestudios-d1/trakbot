@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS screenshots(
   id INTEGER PRIMARY KEY, user TEXT NOT NULL, device TEXT NOT NULL,
   ts REAL NOT NULL, app TEXT, title TEXT, path TEXT NOT NULL, bytes INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS ss_user_ts ON screenshots(user, ts);
+CREATE TABLE IF NOT EXISTS update_log(
+  id INTEGER PRIMARY KEY, ts REAL NOT NULL, user TEXT NOT NULL, device TEXT NOT NULL,
+  from_version TEXT, to_version TEXT, ok INTEGER NOT NULL, detail TEXT);
+CREATE INDEX IF NOT EXISTS ul_ts ON update_log(ts);
 """
 
 

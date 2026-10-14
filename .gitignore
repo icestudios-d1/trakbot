@@ -4,3 +4,10 @@ __pycache__/
 data/
 *.db
 .env
+build/
+node_modules/
+
+# Built agent binaries/zips land here (windows/build.ps1); keep the folder
+# (via dist/.gitkeep) but not its build output.
+server/dist/*
+!server/dist/.gitkeep

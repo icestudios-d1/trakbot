@@ -1,4 +1,4 @@
-# TrakBot
+# Cyril
 
 Self-hosted employee activity monitoring (an ActivTrak-style tool without the seat limit):
 a lightweight **agent** on each company device reports the foreground app, window title and browser
@@ -8,7 +8,7 @@ charts. No keystroke logging.
 
 ## Feature map vs. ActivTrak
 
-| ActivTrak | TrakBot |
+| ActivTrak | Cyril |
 |---|---|
 | App & website usage tracking | ✅ agent (Windows/macOS/Linux) + browser extension for URLs |
 | Productivity labels (productive/unproductive/undefined) | ✅ rule engine (app / domain / title), re-labels history on edit |
@@ -18,52 +18,88 @@ charts. No keystroke logging.
 | Active vs passive usage (e.g. YouTube music behind Photoshop) | ✅ "Active vs background" page; needs browser extension v0.2+ (audible tabs) |
 | Design-studio productivity rules | ✅ Photoshop/Illustrator/InDesign/After Effects/Figma/Blender… preset, uncategorised-app finder, rule tester |
 | Alerts for risky activity | ✅ rules with `alert` flag (piracy, gambling, private browsing pre-seeded) |
-| Screenshots | ✅ one per app per minute once it's held the foreground 60s+; gallery with range-select + delete |
+| Screenshots | ✅ one per app every 3 min once it's held the foreground 60s+ (`--screenshot-every`); gallery with range-select + delete |
 | Windows rollout | ✅ one PowerShell command, no Python/git/npm needed on the target machine |
 | Reports | ✅ in-app only, no email reports (by request) |
 | Keystroke logging, workload/utilisation, teams/groups, SSO | ❌ not built (keylogging intentionally omitted) |
 
-## Run
+## Architecture
+
+Self-hosted on your own office server (Docker Compose), on purpose: if the server goes down, agents keep
+sampling and spool everything locally (`agent/cyril_agent/core.py:Spool`), then flush the backlog as soon as
+it's reachable again — no cloud dependency, no data lost to an outage.
+
+| Piece | Where it runs |
+|---|---|
+| API + dashboard + installer scripts + self-update manifest | **FastAPI** (`server/cyril_server/`), in a Docker container |
+| Events, rules, alerts, screenshot metadata, update log | **SQLite** (a file on a Docker volume) |
+| Screenshot images | **SeaweedFS** (self-hosted, S3-compatible; replaces MinIO — see `server/docker-compose.yml`) |
+| Agent (per device) | Python, built to a single `cyril.exe` via PyInstaller |
+
+Screenshots never touch the app container's own disk: the agent posts them to the server, which stores them
+in SeaweedFS (private — no port published to the host, reachable only from the `server` container) and keeps
+just the object key in SQLite. The dashboard views images through the server (admin-token-authenticated
+proxy endpoint), and a daily sweep (run it via cron/Task Scheduler hitting a maintenance script, or add an
+APScheduler job) deletes screenshots older than retention.
+
+## Deploy (office server, Docker)
 
 ```bash
-# server
-pip install -r server/requirements.txt
-export TRAKBOT_ADMIN_TOKEN=<long-random>  TRAKBOT_AGENT_KEY=<long-random>
-cd server && uvicorn trakbot_server.app:app --host 0.0.0.0 --port 8000   # put behind HTTPS (nginx/caddy)
-# open http://host:8000 -> sign-in page, paste the admin token
-
-# agent, run directly (on each device; Linux also needs `xprop` and `xprintidle`)
-cd agent && pip install -r requirements.txt
-TRAKBOT_SERVER=https://trakbot.example.com TRAKBOT_AGENT_KEY=<key> python -m trakbot_agent
+cd server
+cp .env.example .env            # fill in CYRIL_ADMIN_TOKEN, CYRIL_AGENT_KEY, CYRIL_S3_ACCESS_KEY/SECRET_KEY
+docker compose up -d --build    # starts the server + bundled SeaweedFS
 ```
-Load `browser-extension/` as an unpacked extension (or deploy by Chrome/Edge policy) to capture URLs.
-Tests: `cd server && pytest`, `cd agent && pytest`.
+
+That's it — no cloud account, no external DNS required for a LAN-only deployment (point agents at the
+office server's internal hostname/IP). Put it behind a reverse proxy with TLS (Caddy/nginx) if any device
+reaches it off-LAN (VPN, remote staff).
+
+Tests: `cd server && pytest` (SeaweedFS is faked in-process, no container needed to run them), `cd agent && pytest`.
+
+### Agent updates (built once, applied automatically fleet-wide)
+
+```powershell
+# On IT's build machine only (Python/PyInstaller never touches employee machines):
+.\windows\build.ps1 -Version 0.2.1
+```
+
+This writes `cyril.exe`, `cyril-extension.zip` and `manifest.json` (with a SHA-256 of the new build) into
+`server/dist/`, which is bind-mounted straight into the running container — nothing to restart. Every
+already-installed agent polls `/api/agent/version` hourly (`--update-check-every`, default 3600s); on seeing
+a newer version it downloads the new build, verifies the checksum, and swaps itself in, restarting via the
+same Scheduled Task that already auto-restarts it (see `agent/cyril_agent/update.py`). There's no popup —
+same as how Chrome or any managed EDR patches itself — but every step is written to a local log
+(`~/.cyril-update.log` by default) and reported to `/api/agent/update-log`, visible to admins at that
+endpoint, so the rollout is fully auditable even though it isn't interruptive. A checksum mismatch aborts
+the update rather than applying anything.
 
 ### Windows rollout (one PowerShell command, no dev tools on the target machine)
 
 Python/PyInstaller is only needed **once**, on a machine IT uses to build the agent:
 
 ```powershell
-# one-time, on a Windows box with Python 3.11+ (IT's machine, not target employee machines)
-git clone <this repo>; cd trakbot
-.\windows\build.ps1
-# copy dist\trakbot-agent.exe and dist\trakbot-extension.zip into the server's dist/ folder
-#   (set TRAKBOT_DIST_DIR on the server, or just drop them in server/<cwd>/dist)
+git clone <this repo>; cd cyril
+.\windows\build.ps1      # writes server\dist\cyril.exe + cyril-extension.zip + manifest.json
+cd server; docker compose up -d --build
 ```
 
 Then, on each target machine (elevated PowerShell, nothing but PowerShell itself required):
 
 ```powershell
-$cfg = Invoke-RestMethod https://trakbot.example.com/install.ps1
-& ([scriptblock]::Create($cfg)) -ServerUrl https://trakbot.example.com -AgentKey <agent key>
+$cfg = Invoke-RestMethod http://<office-server>:8000/install.ps1
+& ([scriptblock]::Create($cfg)) -ServerUrl http://<office-server>:8000 -AgentKey <agent key>
 ```
 
-This installs the agent under `Program Files\TrakBot`, stores the server URL/API key in
-`ProgramData\TrakBot\config.json` (ACL'd to SYSTEM/Administrators only), and registers a Scheduled Task
-that runs it at boot as `SYSTEM` with auto-restart — so a non-admin employee can't stop or uninstall it,
-but it's not hidden: it shows up in Task Manager and installed-software listings under its real name, same
-as any other IT-managed agent (see "What we deliberately didn't build" below). Uninstall with
-`uninstall.ps1` from the same server.
+Run the agent directly on Linux/macOS (Linux also needs `xprop` and `xprintidle`):
+`cd agent && pip install -r requirements.txt && CYRIL_SERVER=http://<office-server>:8000 CYRIL_AGENT_KEY=... python -m cyril_agent`.
+Load `browser-extension/` as an unpacked extension (or deploy by Chrome/Edge policy) to capture URLs.
+
+The installer puts the agent at `Program Files\Cyril\cyril.exe`, stores the server URL/API key in
+`ProgramData\Cyril\config.json` (ACL'd to SYSTEM/Administrators only), and registers a Scheduled Task named
+"Cyril Agent" that runs it at boot as `SYSTEM` with auto-restart — so a non-admin employee can't stop or
+uninstall it, but it's not hidden: it shows up in Task Manager as `cyril.exe` and in `Get-ScheduledTask`
+under its real name, same as any other IT-managed agent (see "What we deliberately didn't build" below).
+Uninstall with `uninstall.ps1` from the same server.
 
 ### How the agent knows which machine it's on
 
@@ -81,7 +117,7 @@ The employee ("user") is a separate field — by default the OS login name, or s
 ## Incognito / private browsing
 
 Private-mode browser windows deliberately withhold the page URL from extensions and history — that's a
-browser security boundary, not a TrakBot limitation, and we don't try to defeat it. Instead:
+browser security boundary, not a Cyril limitation, and we don't try to defeat it. Instead:
 1. The agent recognizes the window title pattern ("Incognito", "InPrivate", "Private Browsing") and logs it
    as a flagged **Private/Incognito Browsing** category/alert — time spent is tracked, the actual page title
    and URL are not (redacted before leaving the device).
@@ -94,22 +130,27 @@ browser security boundary, not a TrakBot limitation, and we don't try to defeat 
 ## What we deliberately didn't build
 
 Keystroke logging was dropped per request. We also didn't build **stealth/anti-detection**: hiding the
-process from Task Manager, faking its name, or blocking it from "installed apps." Legitimate, disclosed
-monitoring software (this one included) runs as a visible, clearly-named background service — what it
-hardens is *tamper resistance* (running as SYSTEM so a standard user can't kill or remove it), not
-*invisibility to the person it's installed on*. Techniques that hide an agent from the OS's own inspection
-tools are what separate disclosed workplace monitoring from spyware, regardless of employer authorization,
-so that's out of scope here.
+process from Task Manager/Activity Monitor, faking its name, or using kernel-level/driver tricks to
+conceal it from the OS's own process-inspection APIs. This holds even with disclosed, signed-off consent
+(e.g. a TOS naming the agent and its persistence/auto-update behavior) — consent changes whether monitoring
+is disclosed, not what a concealment *technique* is reusable for elsewhere. Legitimate, disclosed monitoring
+software (this one included) runs as a visible, clearly-named background service — what it hardens is
+*tamper resistance* (running as SYSTEM so a standard user can't kill or remove it, auto-restarting if
+killed, auto-updating without a popup), not *invisibility to the OS's own inspection tools*. Practically,
+true process-hiding is also exactly what EDR/antivirus is built to flag and quarantine as malicious — it
+would get `cyril.exe` killed on the machines it's meant to run on. Self-update (new in this version) is
+silent in the sense of "no interruptive UI," never in the sense of "no record": every check and apply is
+logged locally and reported to `/api/agent/update-log`.
 
 ## Scope & compliance
 
-TrakBot records app name, window title, URL, idle state, and periodic screenshots. No keystroke logging.
+Cyril records app name, window title, URL, idle state, and periodic screenshots. No keystroke logging.
 Even with a clear employment-agreement notice and legal sign-off, many jurisdictions (GDPR/UK, several US
 states, India's DPDP Act, etc.) also expect: a specific notice of what's collected and why, limited
 retention (screenshots can be bulk-deleted by date range from the dashboard for this), restricted access to
 the data (the admin token gates all of it), and sometimes works-council consent. Run it only on
 company-owned devices, tell employees what is collected, and have counsel review the policy — you noted
-legal has already cleared this and is updating the agreement to name TrakBot specifically, which is the
+legal has already cleared this and is updating the agreement to name Cyril specifically, which is the
 right order of operations.
 
 

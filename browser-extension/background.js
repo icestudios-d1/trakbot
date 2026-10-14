@@ -1,5 +1,5 @@
 // Sends the active tab's URL/title, plus the sites currently playing audio, to the
-// local agent (127.0.0.1 only). Audible tabs let TrakBot tell "YouTube open for
+// local agent (127.0.0.1 only). Audible tabs let Cyril tell "YouTube open for
 // background music" apart from "actively watching YouTube".
 const AGENT = "http://127.0.0.1:7077/";
 const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };

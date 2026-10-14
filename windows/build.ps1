@@ -1,22 +1,43 @@
 # Run ONCE on a Windows machine with Python 3.11+ installed (this is the only
 # place Python is needed -- target employee machines need nothing but PowerShell).
-# Produces dist\trakbot-agent.exe and dist\trakbot-extension.zip, which you then
-# upload to the TrakBot server's dist/ folder (TRAKBOT_DIST_DIR) so install.ps1
-# can fetch them.
+# Produces cyril.exe, cyril-extension.zip and manifest.json, and places them
+# where the server's CYRIL_DIST_DIR volume expects them so install.ps1 (first
+# install) and the agent's own update check (later releases) can fetch them.
+#
+# Usage:
+#   .\windows\build.ps1                  # first build
+#   .\windows\build.ps1 -Version 0.2.1   # a release meant to replace a running 0.2.0 fleet
+param(
+    [string]$Version = "0.1.0",
+    [string]$OutDir = $null  # defaults to the server's dist volume mountpoint
+)
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path "$PSScriptRoot\.."
+$out = if ($OutDir) { $OutDir } else { "$root\server\dist" }
+New-Item -ItemType Directory -Force -Path $out | Out-Null
 
 pip install --quiet pyinstaller pywin32 mss pillow
 pip install --quiet -r "$root\agent\requirements.txt"
 
-pyinstaller --onefile --noconsole --name trakbot-agent `
+pyinstaller --onefile --noconsole --name cyril `
   --paths "$root\agent" `
-  --distpath "$root\dist" --workpath "$root\build" --specpath "$root\build" `
-  "$root\agent\trakbot_agent\__main__.py"
+  --distpath $out --workpath "$root\build" --specpath "$root\build" `
+  "$root\agent\cyril_agent\__main__.py"
 
-Compress-Archive -Path "$root\browser-extension\*" -DestinationPath "$root\dist\trakbot-extension.zip" -Force
+Compress-Archive -Path "$root\browser-extension\*" -DestinationPath "$out\cyril-extension.zip" -Force
 
-Write-Host "Built:"
-Write-Host "  $root\dist\trakbot-agent.exe"
-Write-Host "  $root\dist\trakbot-extension.zip"
-Write-Host "Copy both into the TrakBot server's dist/ folder (TRAKBOT_DIST_DIR), then run install.ps1 on target machines."
+$hash = (Get-FileHash "$out\cyril.exe" -Algorithm SHA256).Hash.ToLower()
+$manifest = @{
+    version      = $Version
+    windows_exe  = @{ url = "/dist/cyril.exe"; sha256 = $hash }
+} | ConvertTo-Json -Depth 5
+Set-Content -Path "$out\manifest.json" -Value $manifest -Encoding UTF8
+
+$mb = [math]::Round((Get-Item "$out\cyril.exe").Length / 1MB, 1)
+Write-Host "Built (version $Version):"
+Write-Host "  $out\cyril.exe ($mb MB), sha256 $hash"
+Write-Host "  $out\cyril-extension.zip"
+Write-Host "  $out\manifest.json"
+Write-Host ""
+Write-Host "First install: copy these into the cyril_dist Docker volume, or set it as a bind mount, then on target machines run install.ps1 (see README)."
+Write-Host "Fleet update: same copy step. Agents already running poll /api/agent/version hourly and update themselves within that window -- no action needed on target machines."

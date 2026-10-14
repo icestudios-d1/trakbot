@@ -1,0 +1,9 @@
+# Shell scripts get bind-mounted straight into Linux containers (see
+# server/docker-compose.yml). A CRLF line ending there breaks the shell
+# ("illegal option --" on `set -eu`) -- force LF on checkout regardless of
+# the cloning machine's core.autocrlf setting.
+*.sh text eol=lf
+
+# Windows PowerShell scripts are fine either way, but keep them CRLF by
+# convention since that's what they're authored/edited as on Windows.
+*.ps1 text eol=crlf

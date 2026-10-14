@@ -1,5 +1,5 @@
-"""TrakBot agent: samples the foreground app/window + idle state, reports to
-the TrakBot server, and takes periodic screenshots of long-running apps.
+"""Cyril agent: samples the foreground app/window + idle state, reports to
+the Cyril server, and takes periodic screenshots of long-running apps.
 Config via env vars, a --config JSON file (used by the Windows installer), or flags."""
 import argparse
 import base64
@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from .core import Aggregator, Spool, background_audio, browser_url, is_private
 from .platform.active_window import get_active_window, idle_seconds
 from .shots import ScreenshotThrottle, capture_jpeg_b64
+from .update import check_and_apply
 
 ext_report = None  # latest {"url","title","at"} from the browser extension
 
@@ -74,15 +75,23 @@ class ExtHandler(BaseHTTPRequestHandler):
         pass
 
 
+USER_AGENT = "CyrilAgent/1.0"
+
+
 def _post(server: str, path: str, key: str, payload: dict) -> bool:
+    url = server.rstrip("/") + path
     req = urllib.request.Request(
-        server.rstrip("/") + path,
-        json.dumps(payload).encode(),
-        {"Content-Type": "application/json", "X-Api-Key": key})
+        url, json.dumps(payload).encode(),
+        {"Content-Type": "application/json", "X-Api-Key": key, "User-Agent": USER_AGENT})
     try:
         urllib.request.urlopen(req, timeout=20).read()
         return True
-    except Exception:
+    except Exception as e:
+        # Previously silent: a network/TLS/auth failure here looked
+        # identical from the outside to "the agent just isn't reporting
+        # anything", with no way to tell which. Print it so a failure is
+        # visible on the console (or wherever stderr is redirected) instead.
+        print(f"[cyril-agent] POST {url} failed: {e!r}", file=sys.stderr)
         return False
 
 
@@ -112,18 +121,19 @@ def load_config(path: str | None) -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", help="JSON file with server/key/user (written by the Windows installer)")
-    ap.add_argument("--server", default=os.environ.get("TRAKBOT_SERVER", "http://localhost:8000"))
-    ap.add_argument("--key", default=os.environ.get("TRAKBOT_AGENT_KEY", ""))
-    ap.add_argument("--user", default=os.environ.get("TRAKBOT_USER", getpass.getuser()))
+    ap.add_argument("--server", default=os.environ.get("CYRIL_SERVER", "http://localhost:8000"))
+    ap.add_argument("--key", default=os.environ.get("CYRIL_AGENT_KEY", ""))
+    ap.add_argument("--user", default=os.environ.get("CYRIL_USER", getpass.getuser()))
     ap.add_argument("--device", default=None)
     ap.add_argument("--interval", type=float, default=5.0)
     ap.add_argument("--idle-after", type=float, default=120.0)
     ap.add_argument("--flush", type=float, default=60.0)
     ap.add_argument("--ext-port", type=int, default=7077)
     ap.add_argument("--screenshot-after", type=float, default=60.0, help="seconds an app must hold the foreground before the first shot")
-    ap.add_argument("--screenshot-every", type=float, default=60.0, help="seconds between shots while that app stays foreground")
+    ap.add_argument("--screenshot-every", type=float, default=180.0, help="seconds between shots while that app stays foreground")
     ap.add_argument("--no-screenshots", action="store_true")
-    ap.add_argument("--spool", default=os.path.expanduser("~/.trakbot-spool.jsonl"))
+    ap.add_argument("--spool", default=os.path.expanduser("~/.cyril-spool.jsonl"))
+    ap.add_argument("--update-check-every", type=float, default=3600.0, help="seconds between self-update checks; 0 disables")
     a = ap.parse_args()
 
     cfg = load_config(a.config)
@@ -135,10 +145,20 @@ def main():
     srv = HTTPServer(("127.0.0.1", a.ext_port), ExtHandler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
+    print(f"[cyril-agent] user={user!r} device={device!r} server={server!r} flush_every={a.flush}s")
+
     agg, spool, last_flush = Aggregator(), Spool(a.spool), time.time()
     shot_throttle = ScreenshotThrottle(a.screenshot_after, a.screenshot_every)
+    last_update_check = time.time()
     while True:
         now = time.time()
+
+        if a.update_check_every and now - last_update_check >= a.update_check_every:
+            last_update_check = now
+            try:
+                check_and_apply(server, key, user, device)  # returns only if no update was applied
+            except Exception:
+                pass
         w = get_active_window() or {"app": "", "title": ""}
         idle = idle_seconds() >= a.idle_after
         url = browser_url(w["app"], ext_report, now)
@@ -157,7 +177,16 @@ def main():
             threading.Thread(target=send_screenshot, args=(server, key, user, device, now, w["app"], title), daemon=True).start()
 
         if now - last_flush >= a.flush:
-            spool.push(agg.drain())
+            # keep_open=False: force-close whatever's currently open too, not
+            # just already-completed events. Without this, staying on one
+            # window (or staying idle) for longer than --flush means nothing
+            # is ever sent -- the open event just keeps growing in memory
+            # until it eventually closes (a window switch or idle toggle),
+            # which may be hours away, or never, for a single long session.
+            # The next add() simply starts a fresh segment of the same
+            # activity, so a long session is reported in --flush-sized
+            # chunks instead of only once it ends.
+            spool.push(agg.drain(keep_open=False))
             queued = spool.read()
             if queued and send_events(server, key, user, device, queued):
                 spool.drop(len(queued))

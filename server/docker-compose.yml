@@ -1,0 +1,73 @@
+version: "3.8"
+
+# Office-server deployment: both services run on one box, and both keep
+# state on local volumes, so an office-server reboot/outage loses nothing --
+# agents spool locally while this is down and flush once it's back (see
+# agent/cyril_agent/core.py Spool). Nothing here depends on an internet
+# connection once images are pulled.
+services:
+  server:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      CYRIL_ADMIN_TOKEN: ${CYRIL_ADMIN_TOKEN}
+      CYRIL_AGENT_KEY: ${CYRIL_AGENT_KEY}
+      CYRIL_DB: /data/cyril.db
+      CYRIL_DIST_DIR: /dist
+      CYRIL_S3_ENDPOINT: seaweedfs:8333
+      CYRIL_S3_ACCESS_KEY: ${CYRIL_S3_ACCESS_KEY}
+      CYRIL_S3_SECRET_KEY: ${CYRIL_S3_SECRET_KEY}
+      CYRIL_S3_BUCKET: cyril-screenshots
+    volumes:
+      - cyril_db:/data
+      # Bind mount, not a named volume: windows/build.ps1 writes cyril.exe,
+      # cyril-extension.zip and manifest.json straight into ./dist on the
+      # host, and they're immediately served from /dist -- no copy step,
+      # and the agent's self-update check picks up a new manifest.json as
+      # soon as it's dropped in, with no server restart needed.
+      - ./dist:/dist
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+
+  # MinIO replacement: SeaweedFS's S3 gateway, self-hosted, single binary,
+  # no cluster-layout bootstrap needed for one node.
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest  # pin to a specific tag from Docker Hub before production use
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    environment:
+      CYRIL_S3_ACCESS_KEY: ${CYRIL_S3_ACCESS_KEY}
+      CYRIL_S3_SECRET_KEY: ${CYRIL_S3_SECRET_KEY}
+    volumes:
+      - cyril_screenshots:/data
+      - ./seaweedfs/entrypoint.sh:/entrypoint.sh:ro
+    # No ports published to the host: only the `server` service talks to it,
+    # over the compose-internal network. Screenshots are never reachable
+    # directly, only through the server's admin-authenticated proxy
+    # endpoint (/api/screenshots/{id}/image).
+    healthcheck:
+      # `server` waits for this (condition: service_healthy above) instead of
+      # racing SeaweedFS's startup -- this is what the earlier "Name or
+      # service not known" crash was: `server` resolved/connected before the
+      # S3 gateway was actually accepting connections.
+      #
+      # Checks the SeaweedFS *master*'s admin UI on 9333, not the S3 gateway
+      # on 8333: an unauthenticated request to the S3 API correctly returns
+      # 403 (it's parsing the request fine, just refusing it with no
+      # credentials), but the minimal wget in this image can't tell "got an
+      # HTTP error response" apart from "nothing's listening" -- both just
+      # fail the check. The master's root page returns a plain 200 with no
+      # auth, side-stepping that, and master+filer+volume+S3 all come up
+      # together in one `weed server` process a couple seconds apart.
+      test: ["CMD-SHELL", "wget -q -O /dev/null -T 3 http://127.0.0.1:9333/ || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  cyril_db:
+  cyril_screenshots:

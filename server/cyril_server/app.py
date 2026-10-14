@@ -1,16 +1,24 @@
-"""TrakBot server: ingest API, reports, rule + alert management, dashboard."""
+"""Cyril server: ingest API, reports, rule + alert management, dashboard.
+
+Self-hosted (office server, Docker). Screenshots live in SeaweedFS, not on
+the app container's disk, so they survive container rebuilds and don't
+bloat the SQLite file. Events/rules/alerts stay in SQLite -- small, and the
+whole point of self-hosting is that nothing here depends on cloud
+reachability; agents spool locally and catch up whenever this server is back.
+"""
 import base64
+import hashlib
 import hmac
 import os
 import re
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -18,22 +26,31 @@ from .classify import LABELS, classify, matching_rule
 from .db import DB
 from .default_rules import STUDIO_RULES
 from .reports import aggregate, overlap, previous_span, span
+from .objstore import ObjectStoreError, S3Store
 
-ADMIN_TOKEN = os.environ.get("TRAKBOT_ADMIN_TOKEN", "")
-AGENT_KEY = os.environ.get("TRAKBOT_AGENT_KEY", "")
-DB_PATH = os.environ.get("TRAKBOT_DB", "data/trakbot.db")
+ADMIN_TOKEN = os.environ.get("CYRIL_ADMIN_TOKEN", "")
+AGENT_KEY = os.environ.get("CYRIL_AGENT_KEY", "")
+DB_PATH = os.environ.get("CYRIL_DB", "data/cyril.db")
 MAX_EVENT_SECONDS = 3600
 MAX_SHOT_B64 = 3_000_000  # ~2.2MB decoded; agent targets far smaller JPEGs
 
-app = FastAPI(title="TrakBot")
+app = FastAPI(title="Cyril")
 db = DB(DB_PATH)
 STATIC = Path(__file__).parent / "static"
-SCREENSHOT_DIR = Path(os.environ.get("TRAKBOT_SCREENSHOT_DIR", "data/screenshots"))
-SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-DIST_DIR = Path(os.environ.get("TRAKBOT_DIST_DIR", "dist"))
+DIST_DIR = Path(os.environ.get("CYRIL_DIST_DIR", "dist"))
 if DIST_DIR.exists():
     app.mount("/dist", StaticFiles(directory=str(DIST_DIR)), name="dist")
 WINSCRIPTS = Path(__file__).parent / "winscripts"
+
+# SeaweedFS's S3 gateway (bundled as the `seaweedfs` service in docker-compose.yml).
+store = S3Store(
+    endpoint=os.environ.get("CYRIL_S3_ENDPOINT", "seaweedfs:8333"),
+    access_key=os.environ.get("CYRIL_S3_ACCESS_KEY", ""),
+    secret_key=os.environ.get("CYRIL_S3_SECRET_KEY", ""),
+    bucket=os.environ.get("CYRIL_S3_BUCKET", "cyril-screenshots"),
+    secure=os.environ.get("CYRIL_S3_SECURE", "false").lower() == "true",
+)
+store.ensure_bucket()
 
 
 def _check(given: str | None, expected: str):
@@ -374,14 +391,21 @@ def upload_screenshot(s: ScreenshotIn):
         data = base64.b64decode(s.image_b64, validate=True)
     except Exception:
         raise HTTPException(400, "bad image data")
-    folder = SCREENSHOT_DIR / _SAFE.sub("_", s.user)
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{int(s.ts * 1000)}_{_SAFE.sub('_', s.device)}.jpg"
-    path.write_bytes(data)
+    user_dir = _SAFE.sub("_", s.user)
+    key = f"{user_dir}/{int(s.ts * 1000)}_{_SAFE.sub('_', s.device)}.jpg"
+    try:
+        store.put(key, data)
+    except ObjectStoreError as e:
+        # Previously silent: the agent (and anyone reading `docker compose
+        # logs server`) only ever saw a bare 502 with no indication of what
+        # SeaweedFS actually said -- auth mismatch, bucket missing, disk
+        # full, unreachable, etc. all looked identical from the outside.
+        print(f"screenshot upload failed, image store error: {e!r}")
+        raise HTTPException(502, "image store unavailable")
     with db.conn() as c:
         cur = c.execute(
             "INSERT INTO screenshots(user,device,ts,app,title,path,bytes) VALUES(?,?,?,?,?,?,?)",
-            (s.user, s.device, s.ts, s.app, s.title, str(path), len(data)))
+            (s.user, s.device, s.ts, s.app, s.title, key, len(data)))
     return {"id": cur.lastrowid}
 
 
@@ -401,10 +425,12 @@ def get_screenshot(sid: int):
         row = c.execute("SELECT path FROM screenshots WHERE id=?", (sid,)).fetchone()
     if not row:
         raise HTTPException(404)
-    p = Path(row["path"])
-    if not p.is_file():
+    try:
+        data = store.get(row["path"])
+    except ObjectStoreError as e:
+        print(f"screenshot fetch failed, image store error: {e!r}")
         raise HTTPException(404)
-    return FileResponse(p, media_type="image/jpeg")
+    return Response(content=data, media_type="image/jpeg")
 
 
 class ScreenshotDelete(BaseModel):
@@ -419,12 +445,51 @@ def delete_screenshots(d: ScreenshotDelete):
     with db.conn() as c:
         rows = c.execute(f"SELECT id, path FROM screenshots WHERE id IN ({marks})", d.ids).fetchall()
         for r in rows:
-            try:
-                os.remove(r["path"])
-            except FileNotFoundError:
-                pass
+            store.delete(r["path"])
         c.execute(f"DELETE FROM screenshots WHERE id IN ({marks})", d.ids)
     return {"deleted": len(rows)}
+
+
+# ------------------------------------------------------------- agent updates
+# Visible, logged self-update: IT drops a new build + manifest in CYRIL_DIST_DIR
+# (see windows/build.ps1 and README "Shipping an agent update"). Agents poll this
+# once an hour; the update itself runs with no popup (same as any managed IT
+# agent's background patching -- Chrome, CrowdStrike, etc. all do this), but
+# every step is written to the agent's own log file and to this server's
+# update_log table, so it is fully auditable, never hidden from inspection, and
+# never alters what Task Manager / the Scheduled Task list shows.
+@app.get("/api/agent/version")
+def agent_version():
+    manifest_path = DIST_DIR / "manifest.json"
+    if not manifest_path.exists():
+        return {"version": None}
+    import json
+    return json.loads(manifest_path.read_text())
+
+
+class UpdateLogIn(BaseModel):
+    user: str = Field(min_length=1, max_length=128)
+    device: str = Field(min_length=1, max_length=128)
+    from_version: str = Field(max_length=64)
+    to_version: str = Field(max_length=64)
+    ok: bool
+    detail: str = Field(default="", max_length=2000)
+
+
+@app.post("/api/agent/update-log", dependencies=[Depends(agent)])
+def agent_update_log(u: UpdateLogIn):
+    with db.conn() as c:
+        c.execute(
+            "INSERT INTO update_log(ts,user,device,from_version,to_version,ok,detail) VALUES(?,?,?,?,?,?,?)",
+            (time.time(), u.user, u.device, u.from_version, u.to_version, int(u.ok), u.detail))
+    return {"ok": True}
+
+
+@app.get("/api/agent/update-log", dependencies=[Depends(admin)])
+def list_update_log(limit: int = Query(200, le=1000)):
+    with db.conn() as c:
+        rows = c.execute("SELECT * FROM update_log ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
 
 
 @app.get("/install.ps1")
