@@ -43,7 +43,8 @@ $manifest = @{
     selftest     = $true   # tells install.ps1 this exe understands --selftest
     windows_exe  = @{ url = "/dist/cyril.exe"; sha256 = $hash }
 } | ConvertTo-Json -Depth 5
-Set-Content -Path "$out\manifest.json" -Value $manifest -Encoding UTF8
+# UTF-8 without BOM (Windows PowerShell 5.1's "-Encoding UTF8" adds one, which breaks JSON readers).
+[IO.File]::WriteAllText("$out\manifest.json", $manifest, (New-Object Text.UTF8Encoding $false))
 
 $mb = [math]::Round((Get-Item "$out\cyril.exe").Length / 1MB, 1)
 Write-Host "Built (version $Version):"

@@ -488,7 +488,12 @@ def agent_version():
     if not manifest_path.exists():
         return {"version": None}
     import json
-    return json.loads(manifest_path.read_text())
+    try:
+        # utf-8-sig: Windows PowerShell 5.1 writes a BOM with `Set-Content -Encoding UTF8`, which plain
+        # json.loads rejects (that made this endpoint 500 and the installer see "no checksum").
+        return json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except ValueError:
+        raise HTTPException(500, "dist/manifest.json is not valid JSON; rebuild with windows\\build.ps1")
 
 
 class UpdateLogIn(BaseModel):
@@ -566,7 +571,7 @@ def install_info(request: Request):
     if (DIST_DIR / "manifest.json").exists():
         import json
         try:
-            manifest = json.loads((DIST_DIR / "manifest.json").read_text())
+            manifest = json.loads((DIST_DIR / "manifest.json").read_text(encoding="utf-8-sig"))
         except ValueError:
             pass
     return {"server_url": base, **_agent_one_liners(base, AGENT_KEY),

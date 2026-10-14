@@ -288,3 +288,17 @@ def test_dist_files_are_never_cached():
     r = c.get("/dist/probe.bin")
     assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
     assert c.get("/static/app.css").headers["cache-control"] == "no-cache"
+
+
+def test_manifest_with_utf8_bom_is_readable():
+    # Windows PowerShell 5.1 writes a BOM; this used to 500 and the installer then saw "no checksum"
+    d = os.environ["CYRIL_DIST_DIR"]
+    with open(os.path.join(d, "manifest.json"), "wb") as f:
+        f.write(b"\xef\xbb\xbf" + b'{"version": "0.3.0", "build": "abc", "windows_exe": {"url": "/dist/cyril.exe", "sha256": "ff"}}')
+    r = c.get("/api/agent/version")
+    assert r.status_code == 200 and r.json()["windows_exe"]["sha256"] == "ff"
+    assert c.get("/api/install-info", headers=A).json()["version"] == "0.3.0"
+    with open(os.path.join(d, "manifest.json"), "w") as f:
+        f.write("{not json")
+    assert c.get("/api/agent/version").status_code == 500  # clear error rather than a crash trace
+    os.remove(os.path.join(d, "manifest.json"))
