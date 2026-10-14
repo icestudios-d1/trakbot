@@ -74,14 +74,19 @@ class ExtHandler(BaseHTTPRequestHandler):
 
 
 def _post(server: str, path: str, key: str, payload: dict) -> bool:
+    url = server.rstrip("/") + path
     req = urllib.request.Request(
-        server.rstrip("/") + path,
-        json.dumps(payload).encode(),
+        url, json.dumps(payload).encode(),
         {"Content-Type": "application/json", "X-Api-Key": key})
     try:
         urllib.request.urlopen(req, timeout=20).read()
         return True
-    except Exception:
+    except Exception as e:
+        # Previously silent: a network/TLS/auth failure here looked
+        # identical from the outside to "the agent just isn't reporting
+        # anything", with no way to tell which. Print it so a failure is
+        # visible on the console (or wherever stderr is redirected) instead.
+        print(f"[cyril-agent] POST {url} failed: {e!r}", file=sys.stderr)
         return False
 
 
@@ -134,6 +139,8 @@ def main():
 
     srv = HTTPServer(("127.0.0.1", a.ext_port), ExtHandler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    print(f"[cyril-agent] user={user!r} device={device!r} server={server!r} flush_every={a.flush}s")
 
     agg, spool, last_flush = Aggregator(), Spool(a.spool), time.time()
     shot_throttle = ScreenshotThrottle(a.screenshot_after, a.screenshot_every)
