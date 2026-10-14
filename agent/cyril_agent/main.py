@@ -13,7 +13,7 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from .core import Aggregator, Spool, browser_url, is_private
+from .core import Aggregator, Spool, browser_url, is_private, load_config
 from .platform.active_window import get_active_window, idle_seconds
 from .shots import ScreenshotThrottle, capture_jpeg_b64
 from .update import check_and_apply
@@ -104,16 +104,6 @@ def send_screenshot(server: str, key: str, user: str, device: str, ts: float, ap
         return
     _post(server, "/api/screenshot", key,
           {"user": user, "device": device, "ts": ts, "app": app, "title": title, "image_b64": img})
-
-
-def load_config(path: str | None) -> dict:
-    if not path:
-        return {}
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except OSError:
-        return {}
 
 
 def main():

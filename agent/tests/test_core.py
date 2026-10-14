@@ -1,4 +1,4 @@
-from cyril_agent.core import Aggregator, Spool, browser_url, is_private
+from cyril_agent.core import Aggregator, Spool, browser_url, is_private, load_config
 
 
 def test_merge_and_drain():
@@ -55,3 +55,13 @@ def test_spool(tmp_path):
     assert s.read(2) == [{"a": 1}, {"a": 2}]
     s.drop(2)
     assert s.read() == [{"a": 3}]
+
+
+def test_load_config_accepts_bom_and_plain(tmp_path):
+    # Windows PowerShell 5.1 writes a UTF-8 BOM; PowerShell 7 / other tools don't.
+    bom, plain = tmp_path / "bom.json", tmp_path / "plain.json"
+    bom.write_bytes(b'\xef\xbb\xbf{"server": "https://x", "key": "k", "user": "Priya"}')
+    plain.write_text('{"server": "https://x", "key": "k"}', encoding="utf-8")
+    assert load_config(str(bom)) == {"server": "https://x", "key": "k", "user": "Priya"}
+    assert load_config(str(plain))["server"] == "https://x"
+    assert load_config(str(tmp_path / "missing.json")) == {} and load_config(None) == {}

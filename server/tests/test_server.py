@@ -148,7 +148,7 @@ def _day():
 def test_pages_and_me():
     assert c.get("/api/me").status_code == 401
     assert c.get("/api/me", headers=A).json() == {"ok": True}
-    for path in ("/", "/login", "/employees", "/employee", "/day", "/alerts", "/screenshots", "/rules"):
+    for path in ("/", "/login", "/employees", "/employee", "/day", "/install", "/alerts", "/screenshots", "/rules"):
         r = c.get(path)
         assert r.status_code == 200 and "text/html" in r.headers["content-type"], path
     assert c.get("/static/app.js").status_code == 200
@@ -227,3 +227,33 @@ def test_uncategorized_and_alert_filters():
     u = c.get("/api/uncategorized", headers=A).json()
     assert any(a["name"] == "mystery.exe" for a in u["apps"]) and any(x["name"] == "weird.example" for x in u["sites"])
     assert all(a["user"] == "priv" for a in c.get("/api/alerts", headers=A, params={"user": "priv"}).json())
+
+
+def test_install_script_is_personalised_per_request():
+    plain = c.get("/install.ps1").text
+    assert "{{" not in plain
+    assert "[string]$ServerUrl = 'http://testserver'" in plain and "[string]$AgentKey = ''" in plain
+    keyed = c.get("/install.ps1", params={"key": "agent"}, headers={"Host": "cyril.icestudios.in", "X-Forwarded-Proto": "https"}).text
+    assert "[string]$ServerUrl = 'https://cyril.icestudios.in'" in keyed and "[string]$AgentKey = 'agent'" in keyed
+    assert c.get("/install.ps1", params={"key": "nope"}).status_code == 401
+    assert c.get("/install.ps1", headers={"Host": "evil host;x"}).status_code == 400
+    assert c.get("/install.ps1", params={"key": "agent"}).headers["cache-control"] == "no-store"
+    from cyril_server.app import _ps_quote
+    assert _ps_quote("a'b") == "a''b"
+
+
+def test_windows_scripts_are_ascii_only():
+    # Windows PowerShell 5.1 mis-decodes non-ASCII served as text/plain without a BOM
+    for f in ("install.ps1", "uninstall.ps1"):
+        text = c.get("/" + f).text
+        assert text.isascii(), f
+
+
+def test_install_info_and_devices():
+    assert c.get("/api/install-info").status_code == 401 and c.get("/api/devices").status_code == 401
+    i = c.get("/api/install-info", headers=A).json()
+    assert i["install"] == "& ([scriptblock]::Create((irm 'http://testserver/install.ps1?key=agent')))"
+    assert i["uninstall"].endswith("/uninstall.ps1')))") and i["exe_published"] is False
+    c.post("/api/ingest", headers=K, json={"user": "devy", "device": "PC-DEVY", "events": [{"ts": time.time(), "dur": 5, "app": "code"}]})
+    d = [x for x in c.get("/api/devices", headers=A).json() if x["device"] == "PC-DEVY"]
+    assert len(d) == 1 and d[0]["user"] == "devy" and d[0]["events"] == 1

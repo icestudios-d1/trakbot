@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Install agents · Cyril</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main>
+<div class="pagehead"><div><h1>Install agents</h1><p>Put the Cyril agent on a Windows PC with one pasted command. Removing it is one command too.</p></div></div>
+<div id="err" class="callout" style="display:none"></div>
+<div class="grid g-main">
+<div class="card">
+ <ol class="steps">
+  <li><h2>Open PowerShell as administrator</h2><div class="mut">On the employee's PC: Start menu, type <b>PowerShell</b>, right-click, <b>Run as administrator</b>.</div></li>
+  <li><h2>Paste and run this</h2>
+   <div class="cmd"><code id="inst">Loading…</code><button class="primary" data-copy="inst">Copy</button></div>
+   <div class="mut sm">It downloads the agent from this server, checks it, installs it to start with Windows, and prints what it did. Safe to run again: it updates in place.
+   To report under a name instead of the Windows login, add <code>-User "Priya"</code> after the closing bracket. The command contains the agent key, so share it only with whoever sets up PCs.</div></li>
+  <li><h2>Watch it appear</h2><div class="mut">The machine shows up in the list on the right within a minute or two.</div></li>
+ </ol>
+ <hr style="border:0;border-top:1px solid var(--bd);margin:6px 0 16px">
+ <h2>Remove an agent</h2>
+ <div class="mut sm">Same elevated PowerShell on that PC. Needs administrator rights on purpose, so staff cannot remove it themselves.</div>
+ <div class="cmd"><code id="uninst">Loading…</code><button data-copy="uninst">Copy</button></div>
+ <div class="mut sm">Stops and deletes the scheduled task, the program, its config and key, local spool files, and any Incognito policy the installer set, then lists each item it removed. History already on the server stays until you delete it.</div>
+</div>
+<div>
+ <div class="card" style="margin-bottom:16px"><h2>Ready to install?</h2><div id="checks" style="margin-top:8px"></div></div>
+ <div class="card"><h2>Machines reporting</h2><div class="sub" id="devSub">Updates every few seconds</div><div class="scroll"><table id="dev"></table></div></div>
+</div>
+</div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+const {$,esc}=TB;let known=null,nowTick;
+const chk=(ok,t,d)=>`<div class="chk"><span class="ic ${ok?'y':'n'}">${ok?'✓':'✕'}</span><div><b>${t}</b><div class="mut sm">${d}</div></div></div>`;
+async function info(){
+  try{
+    const i=await TB.api('/api/install-info');
+    $('#inst').textContent=i.install;$('#uninst').textContent=i.uninstall;
+    $('#checks').innerHTML=
+      chk(true,'Server address',`Agents will use <code>${esc(i.server_url)}</code>${i.server_url.startsWith('http://')?' <b>(not HTTPS)</b>':''}`)+
+      chk(i.exe_published,'Agent program (cyril.exe)',i.exe_published?`Published${i.version?' · version '+esc(i.version):''}`:'Not on the server yet. Run <code>windows\\build.ps1</code> on a Windows build PC and copy its output into the server\'s <code>dist</code> folder. Installs will fail until then.')+
+      chk(i.extension_published,'Browser extension (optional)',i.extension_published?'Published':'Not published; installs still work without it, but website addresses will not be captured.');
+  }catch(e){TB.error(e)}
+}
+async function devices(){
+  try{
+    await TB.users();
+    const d=await TB.api('/api/devices'),now=Date.now()/1000;
+    const fresh=known!==null?d.filter(x=>!known.has(x.device+'|'+x.user)):[];
+    if(known===null)known=new Set(d.map(x=>x.device+'|'+x.user));
+    $('#dev').innerHTML=d.length?`<thead><tr><th>Machine</th><th>Login / name</th><th>Last report</th></tr></thead><tbody>`+d.map(x=>{
+      const ago=now-x.last_seen,on=ago<180,isNew=fresh.some(f=>f.device===x.device&&f.user===x.user);
+      return `<tr><td title="${esc(x.device)}" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.device)}</td><td>${TB.who(x.user)}${isNew?' <span class="tag productive">new</span>':''}</td><td class="nowrap"><span class="live ${on?'on':''}"></span>${on?'online':ago<3600?Math.round(ago/60)+' min ago':TB.when(x.last_seen)}</td></tr>`}).join('')+'</tbody>':'<tbody><tr><td class="empty">No machines have reported yet.</td></tr></tbody>';
+    $('#devSub').textContent=`${d.filter(x=>now-x.last_seen<180).length} online of ${d.length} · updates every few seconds`;
+  }catch(e){TB.error(e)}
+}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-copy]');if(!b)return;
+  const t=$('#'+b.dataset.copy).textContent;
+  (navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).catch(()=>{const r=document.createRange();r.selectNodeContents($('#'+b.dataset.copy));getSelection().removeAllRanges();getSelection().addRange(r);document.execCommand('copy')});
+  const o=b.textContent;b.textContent='Copied';setTimeout(()=>b.textContent=o,1500)});
+info();devices();setInterval(devices,5000);setInterval(info,30000);
+</script></body></html>

@@ -70,3 +70,15 @@ class Spool:
                 f.writelines(rest)
         except FileNotFoundError:
             pass
+
+
+def load_config(path: str | None) -> dict:
+    """Read the installer's JSON config. `utf-8-sig` because Windows PowerShell 5.1 writes a BOM
+    with `Set-Content -Encoding UTF8`, which plain json.load rejects (the agent then never started)."""
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            return json.load(f)
+    except OSError:
+        return {}

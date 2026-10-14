@@ -129,3 +129,15 @@ td input,td select{width:100%;min-height:30px;padding:3px 6px}
 .log tr.cur td{background:color-mix(in srgb,var(--accent) 12%,transparent)}
 .log tr{cursor:pointer}
 #tl svg [data-ts],#tl svg [data-i]{cursor:pointer}
+
+/* install page */
+.cmd{display:flex;gap:8px;align-items:stretch;margin:8px 0}
+.cmd code{flex:1;min-width:0;background:var(--hover);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;font:12.5px/1.5 ui-monospace,Consolas,monospace;overflow-x:auto;white-space:pre;display:block}
+.chk{display:flex;gap:10px;align-items:flex-start;padding:6px 0}
+.chk .ic{flex:none;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:12px;margin-top:1px}
+.chk .ic.y{background:var(--c-p)}.chk .ic.n{background:var(--c-u)}
+.live{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--c-n);margin-right:7px}
+.live.on{background:var(--c-p);box-shadow:0 0 0 3px color-mix(in srgb,var(--c-p) 25%,transparent)}
+.steps{counter-reset:s;list-style:none;padding:0;margin:0}
+.steps>li{counter-increment:s;position:relative;padding-left:38px;margin-bottom:18px}
+.steps>li::before{content:counter(s);position:absolute;left:0;top:0;width:26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;display:grid;place-items:center;font-weight:600;font-size:13px}

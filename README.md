@@ -84,12 +84,21 @@ git clone <this repo>; cd cyril
 cd server; docker compose up -d --build
 ```
 
-Then, on each target machine (elevated PowerShell, nothing but PowerShell itself required):
+Then, on each target machine, open PowerShell **as administrator** and paste the one-liner from the dashboard's
+**Install agents** page (it has the right server address and agent key filled in, plus a Copy button):
 
 ```powershell
-$cfg = Invoke-RestMethod http://<office-server>:8000/install.ps1
-& ([scriptblock]::Create($cfg)) -ServerUrl http://<office-server>:8000 -AgentKey <agent key>
+& ([scriptblock]::Create((irm 'https://cyril.icestudios.in/install.ps1?key=<agent key>')))
 ```
+
+It checks the server and the download, installs, starts the agent, and the machine appears on the Install page
+within a minute or two. Running it again updates in place (a failed update leaves the old agent running).
+Add `-User "Priya"` to report under a name instead of the Windows login, or `-SkipBrowserPolicy` to leave
+Incognito alone. Set `CYRIL_PUBLIC_URL` on the server if it sits behind a proxy and the detected address is wrong.
+
+**Remove it:** same elevated PowerShell, `& ([scriptblock]::Create((irm 'https://cyril.icestudios.in/uninstall.ps1')))`.
+It lists each thing it removes (scheduled task, process, `Program Files\Cyril`, `ProgramData\Cyril`, local spool
+files, and the Incognito policy only if the installer set it). History already on the server is untouched.
 
 Run the agent directly on Linux/macOS (Linux also needs `xprop` and `xprintidle`):
 `cd agent && pip install -r requirements.txt && CYRIL_SERVER=http://<office-server>:8000 CYRIL_AGENT_KEY=... python -m cyril_agent`.
@@ -100,7 +109,6 @@ The installer puts the agent at `Program Files\Cyril\cyril.exe`, stores the serv
 "Cyril Agent" that runs it at boot as `SYSTEM` with auto-restart — so a non-admin employee can't stop or
 uninstall it, but it's not hidden: it shows up in Task Manager as `cyril.exe` and in `Get-ScheduledTask`
 under its real name, same as any other IT-managed agent (see "What we deliberately didn't build" below).
-Uninstall with `uninstall.ps1` from the same server.
 
 ### How the agent knows which machine it's on
 

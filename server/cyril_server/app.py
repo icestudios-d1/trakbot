@@ -15,10 +15,10 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import FileResponse, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -501,14 +501,73 @@ def list_update_log(limit: int = Query(200, le=1000)):
     return [dict(r) for r in rows]
 
 
+PUBLIC_URL = os.environ.get("CYRIL_PUBLIC_URL", "").rstrip("/")
+_HOST_OK = re.compile(r"^[A-Za-z0-9.\-]+(:\d{1,5})?$")
+
+
+def _base_url(request: Request) -> str:
+    """The address agents should use: CYRIL_PUBLIC_URL if set, else whatever the browser/proxy used to reach us."""
+    if PUBLIC_URL:
+        return PUBLIC_URL
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
+    host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",")[0].strip()
+    if proto not in ("http", "https") or not _HOST_OK.match(host):
+        raise HTTPException(400, "cannot work out the server address; set CYRIL_PUBLIC_URL")
+    return f"{proto}://{host}"
+
+
+def _ps_quote(v: str) -> str:
+    return v.replace("'", "''")  # for use inside a PowerShell single-quoted string
+
+
+def _agent_one_liners(base: str, key: str) -> dict:
+    return {
+        "install": f"& ([scriptblock]::Create((irm '{base}/install.ps1?key={quote(key, safe='')}')))",
+        "uninstall": f"& ([scriptblock]::Create((irm '{base}/uninstall.ps1')))",
+    }
+
+
 @app.get("/install.ps1")
-def install_script():
-    return FileResponse(WINSCRIPTS / "install.ps1", media_type="text/plain")
+def install_script(request: Request, key: str | None = None):
+    """The agent installer with this server's address (and, if the right key is given, the key) filled in,
+    so a machine only needs the one-liner. Without a key it still works if -AgentKey is passed explicitly."""
+    if key is not None and not (AGENT_KEY and hmac.compare_digest(key, AGENT_KEY)):
+        raise HTTPException(401, "wrong agent key in the install URL")
+    text = (WINSCRIPTS / "install.ps1").read_text(encoding="utf-8")
+    text = text.replace("{{SERVER_URL}}", _ps_quote(_base_url(request))).replace("{{AGENT_KEY}}", _ps_quote(key or ""))
+    return PlainTextResponse(text, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/uninstall.ps1")
 def uninstall_script():
-    return FileResponse(WINSCRIPTS / "uninstall.ps1", media_type="text/plain")
+    return PlainTextResponse((WINSCRIPTS / "uninstall.ps1").read_text(encoding="utf-8"), headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/install-info", dependencies=[Depends(admin)])
+def install_info(request: Request):
+    """What the dashboard's Install page shows: the copy-paste commands and whether the agent build is published."""
+    base = _base_url(request)
+    manifest = None
+    if (DIST_DIR / "manifest.json").exists():
+        import json
+        try:
+            manifest = json.loads((DIST_DIR / "manifest.json").read_text())
+        except ValueError:
+            pass
+    return {"server_url": base, **_agent_one_liners(base, AGENT_KEY),
+            "exe_published": (DIST_DIR / "cyril.exe").is_file(),
+            "extension_published": (DIST_DIR / "cyril-extension.zip").is_file(),
+            "version": (manifest or {}).get("version")}
+
+
+@app.get("/api/devices", dependencies=[Depends(admin)])
+def devices():
+    """Every machine that has reported, newest first (drives the live list on the Install page)."""
+    with db.conn() as c:
+        rows = c.execute(
+            "SELECT e.device, e.user, n.name, MAX(e.ts+e.dur) last_seen, MIN(e.ts) first_seen, COUNT(*) events "
+            "FROM events e LEFT JOIN user_names n ON n.user=e.user GROUP BY e.device, e.user ORDER BY last_seen DESC").fetchall()
+    return [dict(r) for r in rows]
 
 
 @app.get("/api/health")
@@ -521,7 +580,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 # Pages are static HTML; each one checks the admin token client-side and bounces to /login. All data
 # comes from the token-protected /api/* endpoints, so serving the shells unauthenticated leaks nothing.
 PAGES = {"/": "index.html", "/login": "login.html", "/employees": "employees.html", "/employee": "employee.html",
-         "/day": "day.html", "/alerts": "alerts.html", "/screenshots": "screenshots.html",
+         "/day": "day.html", "/alerts": "alerts.html", "/install": "install.html", "/screenshots": "screenshots.html",
          "/rules": "rules.html"}
 
 
