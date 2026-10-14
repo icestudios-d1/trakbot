@@ -28,23 +28,27 @@ def capture_jpeg_b64() -> str:
 
 
 class ScreenshotThrottle:
-    """True once `app` has held the foreground continuously for >= `after`
-    seconds, then at most once every `every` seconds after that."""
+    """True once `app` has held the foreground continuously for >= `after` seconds, then at most once every
+    `every` seconds after that. Private/incognito windows hide their URL from us, so the screen is the only
+    record of what was viewed: they get a quicker first shot and a tighter cadence."""
 
-    def __init__(self, after: float = 60.0, every: float = 60.0):
+    def __init__(self, after: float = 60.0, every: float = 60.0, private_after: float = 10.0, private_every: float = 60.0):
         self.after, self.every = after, every
-        self.app = None
+        self.private_after, self.private_every = private_after, private_every
+        self.key = None
         self.app_since = 0.0
-        self.last_shot = 0.0
+        self.last_shot = float("-inf")  # -inf = no shot taken yet for this window
 
-    def tick(self, now: float, app: str, idle: bool) -> bool:
+    def tick(self, now: float, app: str, idle: bool, private: bool = False) -> bool:
         if idle or not app:
-            self.app = None
+            self.key = None
             return False
-        if app != self.app:
-            self.app, self.app_since, self.last_shot = app, now, 0.0
+        key = (app, private)
+        if key != self.key:
+            self.key, self.app_since, self.last_shot = key, now, float("-inf")
+        after, every = (self.private_after, self.private_every) if private else (self.after, self.every)
         held = now - self.app_since
-        if held >= self.after and now - self.last_shot >= self.every:
+        if held >= after and now - self.last_shot >= every:
             self.last_shot = now
             return True
         return False

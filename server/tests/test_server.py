@@ -265,3 +265,17 @@ def test_static_files_always_revalidate_and_health_reports_build():
     assert c.get("/", headers={}).headers["cache-control"] == "no-cache"
     h = c.get("/api/health").json()
     assert h["ok"] and len(h["build"]) == 8
+
+
+def test_agent_seen_for_installer_verification():
+    now = time.time()
+    q = {"device": "PC-SEEN", "since": now - 60}
+    assert c.get("/api/agent/seen", params=q).status_code == 401           # needs the agent key
+    assert c.get("/api/agent/seen", params=q, headers=A).status_code == 401  # admin token is not enough
+    assert c.get("/api/agent/seen", params=q, headers=K).json()["seen"] is False
+    c.post("/api/ingest", headers=K, json={"user": "u", "device": "PC-SEEN", "events": [
+        {"ts": now - 20, "dur": 10, "app": "", "title": "", "idle": False},   # blind sample (no window)
+        {"ts": now - 10, "dur": 10, "app": "Photoshop.exe", "title": "x"}]})
+    r = c.get("/api/agent/seen", params=q, headers=K).json()
+    assert r["seen"] and r["events"] == 2 and r["with_app"] == 1
+    assert c.get("/api/agent/seen", params={"device": "PC-SEEN", "since": now + 600}, headers=K).json()["seen"] is False

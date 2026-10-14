@@ -560,6 +560,18 @@ def install_info(request: Request):
             "version": (manifest or {}).get("version")}
 
 
+@app.get("/api/agent/seen", dependencies=[Depends(agent)])
+def agent_seen(device: str = Query(min_length=1, max_length=128), since: float = 0):
+    """Used by the installer to confirm a first report arrived. `with_app` counts samples where the agent saw a
+    real foreground window while the user was active; zero with `events` > 0 means it reports but is blind
+    (typically running outside the user's desktop session)."""
+    with db.conn() as c:
+        r = c.execute(
+            "SELECT COUNT(*) n, COALESCE(SUM(app<>'' AND idle=0),0) with_app, MAX(ts+dur) last "
+            "FROM events WHERE device=? AND ts+dur>=?", (device, since)).fetchone()
+    return {"seen": r["n"] > 0, "events": r["n"], "with_app": r["with_app"], "last_seen": r["last"]}
+
+
 @app.get("/api/devices", dependencies=[Depends(admin)])
 def devices():
     """Every machine that has reported, newest first (drives the live list on the Install page)."""

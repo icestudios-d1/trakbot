@@ -1,4 +1,5 @@
-from cyril_agent.core import Aggregator, Spool, browser_url, is_private, load_config
+import os
+from cyril_agent.core import Aggregator, Spool, browser_url, is_private, load_config, data_dir, setup_logging
 
 
 def test_merge_and_drain():
@@ -65,3 +66,20 @@ def test_load_config_accepts_bom_and_plain(tmp_path):
     assert load_config(str(bom)) == {"server": "https://x", "key": "k", "user": "Priya"}
     assert load_config(str(plain))["server"] == "https://x"
     assert load_config(str(tmp_path / "missing.json")) == {} and load_config(None) == {}
+
+
+def test_data_dir_next_to_config_else_home(tmp_path):
+    cfg = tmp_path / "config.json"
+    cfg.write_text("{}")
+    assert data_dir(str(cfg)) == str(tmp_path / "data") and (tmp_path / "data").is_dir()
+    assert data_dir(None) == os.path.expanduser("~")
+
+
+def test_setup_logging_writes_file(tmp_path):
+    import logging
+    logging.getLogger("cyril-agent").handlers.clear()
+    path = tmp_path / "agent.log"
+    setup_logging(str(path)).info("hello %s", "world")
+    for h in logging.getLogger("cyril-agent").handlers:
+        h.flush()
+    assert "hello world" in path.read_text()

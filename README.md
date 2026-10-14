@@ -101,24 +101,34 @@ Then, on each target machine, open PowerShell **as administrator** and paste the
 & ([scriptblock]::Create((irm 'https://cyril.icestudios.in/install.ps1?key=<agent key>')))
 ```
 
-It checks the server and the download, installs, starts the agent, and the machine appears on the Install page
-within a minute or two. Running it again updates in place (a failed update leaves the old agent running).
-Add `-User "Priya"` to report under a name instead of the Windows login, or `-SkipBrowserPolicy` to leave
-Incognito alone. Set `CYRIL_PUBLIC_URL` on the server if it sits behind a proxy and the detected address is wrong.
+It checks the server and the download, installs, starts the agent, then **waits for the machine's first report and
+tells you the result**. If nothing arrives (or the agent can't see the desktop) it prints why: which session the
+process runs in, the task result and the tail of the agent log. The machine also appears on the Install page.
+Running it again updates in place (a failed update leaves the old agent running).
+Add `-User "Priya"` to report under a name instead of the Windows login. Set `CYRIL_PUBLIC_URL` on the server if it sits behind a proxy and the detected address is wrong.
 
 **Remove it:** same elevated PowerShell, `& ([scriptblock]::Create((irm 'https://cyril.icestudios.in/uninstall.ps1')))`.
 It lists each thing it removes (scheduled task, process, `Program Files\Cyril`, `ProgramData\Cyril`, local spool
-files, and the Incognito policy only if the installer set it). History already on the server is untouched.
+files; and it restores Incognito if an older installer had disabled it). History already on the server is untouched.
 
 Run the agent directly on Linux/macOS (Linux also needs `xprop` and `xprintidle`):
 `cd agent && pip install -r requirements.txt && CYRIL_SERVER=http://<office-server>:8000 CYRIL_AGENT_KEY=... python -m cyril_agent`.
 Load `browser-extension/` as an unpacked extension (or deploy by Chrome/Edge policy) to capture URLs.
 
-The installer puts the agent at `Program Files\Cyril\cyril.exe`, stores the server URL/API key in
-`ProgramData\Cyril\config.json` (ACL'd to SYSTEM/Administrators only), and registers a Scheduled Task named
-"Cyril Agent" that runs it at boot as `SYSTEM` with auto-restart — so a non-admin employee can't stop or
-uninstall it, but it's not hidden: it shows up in Task Manager as `cyril.exe` and in `Get-ScheduledTask`
-under its real name, same as any other IT-managed agent (see "What we deliberately didn't build" below).
+The installer puts the agent at `Program Files\Cyril\cyril.exe` and stores the server URL/agent key in
+`ProgramData\Cyril\config.json` (only administrators can change it; the agent's own log and spool live in
+`ProgramData\Cyril\data`). It registers two scheduled tasks:
+- **Cyril Agent** runs `cyril.exe` **inside the logged-in user's session**: at every logon, and re-launched every
+  5 minutes if it was closed. It has to run there: a service or boot-time `SYSTEM` task lives in Windows session 0,
+  which has no desktop, so it cannot see windows, screenshots or input. Running as the user also means reports carry
+  the real Windows login rather than `PCNAME$`.
+- **Cyril Updater** runs as `SYSTEM` daily at about 03:00 and re-runs the installer; nothing happens unless a new build
+  is published to the server, so a new `windows\build.ps1` build reaches every PC within a day.
+
+It's not hidden: `cyril.exe` shows in Task Manager and both tasks show in `Get-ScheduledTask` under their real names.
+Trade-off to know about: because the agent runs as the employee, an employee *can* end the process and can read
+the agent key from the config file. Ending it is undone within 5 minutes by the re-launch; only administrators can
+disable or delete the tasks. The key only allows submitting reports, not reading anything.
 
 ### How the agent knows which machine it's on
 
@@ -142,9 +152,10 @@ browser security boundary, not a Cyril limitation, and we don't try to defeat it
    and URL are not (redacted before leaving the device).
 2. **Screenshots are the real backstop.** They capture the screen itself, which private mode cannot hide,
    and fire automatically once a browser window's been open 60+ seconds.
-3. `install.ps1` also sets the Chrome/Edge `IncognitoModeAvailability` enterprise policy to disabled by
-   default — the simplest fix if you'd rather block incognito outright. Remove that block from the script
-   if you want employees to be able to use it (then rely on 1+2 above for visibility into it).
+3. Private windows get **quicker, tighter screenshots** than normal ones (first shot after ~10 s, then every minute).
+4. Cyril does **not** disable Incognito: staff can use it (e.g. to open a site without leaving their normal session),
+   it is simply monitored through 1-3. Earlier installer versions did disable it by browser policy; re-running the
+   installer (or uninstalling) reverts that.
 
 ## What we deliberately didn't build
 
@@ -154,8 +165,7 @@ conceal it from the OS's own process-inspection APIs. This holds even with discl
 (e.g. a TOS naming the agent and its persistence/auto-update behavior) — consent changes whether monitoring
 is disclosed, not what a concealment *technique* is reusable for elsewhere. Legitimate, disclosed monitoring
 software (this one included) runs as a visible, clearly-named background service — what it hardens is
-*tamper resistance* (running as SYSTEM so a standard user can't kill or remove it, auto-restarting if
-killed, auto-updating without a popup), not *invisibility to the OS's own inspection tools*. Practically,
+*tamper resistance* (admin-only install/removal, auto-relaunch if closed, auto-updating without a popup), not *invisibility to the OS's own inspection tools*. Practically,
 true process-hiding is also exactly what EDR/antivirus is built to flag and quarantine as malicious — it
 would get `cyril.exe` killed on the machines it's meant to run on. Self-update (new in this version) is
 silent in the sense of "no interruptive UI," never in the sense of "no record": every check and apply is

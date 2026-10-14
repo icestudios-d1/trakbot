@@ -10,7 +10,7 @@
   <li><h2>Open PowerShell as administrator</h2><div class="mut">On the employee's PC: Start menu, type <b>PowerShell</b>, right-click, <b>Run as administrator</b>.</div></li>
   <li><h2>Paste and run this</h2>
    <div class="cmd"><code id="inst">Loading…</code><button class="primary" data-copy="inst">Copy</button></div>
-   <div class="mut sm">It downloads the agent from this server, checks it, installs it to start with Windows, and prints what it did. Safe to run again: it updates in place.
+   <div class="mut sm">It downloads the agent from this server, checks it, installs it to start whenever someone logs on, then waits for the PC's first report and tells you whether it arrived (and, if not, why). Safe to run again: it updates in place.
    To report under a name instead of the Windows login, add <code>-User "Priya"</code> after the closing bracket. The command contains the agent key, so share it only with whoever sets up PCs.</div></li>
   <li><h2>Watch it appear</h2><div class="mut">The machine shows up in the list on the right within a minute or two.</div></li>
  </ol>
@@ -18,7 +18,7 @@
  <h2>Remove an agent</h2>
  <div class="mut sm">Same elevated PowerShell on that PC. Needs administrator rights on purpose, so staff cannot remove it themselves.</div>
  <div class="cmd"><code id="uninst">Loading…</code><button data-copy="uninst">Copy</button></div>
- <div class="mut sm">Stops and deletes the scheduled task, the program, its config and key, local spool files, and any Incognito policy the installer set, then lists each item it removed. History already on the server stays until you delete it.</div>
+ <div class="mut sm">Stops and deletes both scheduled tasks, the program, its config, key, log and spool files, and restores Incognito if an older installer had disabled it, then lists each item it removed. History already on the server stays until you delete it.</div>
 </div>
 <div>
  <div class="card" style="margin-bottom:16px"><h2>Ready to install?</h2><div id="checks" style="margin-top:8px"></div></div>

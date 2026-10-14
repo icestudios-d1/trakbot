@@ -4,10 +4,10 @@ PowerShell on purpose: a standard employee cannot remove it (see README, tamper 
 
   & ([scriptblock]::Create((irm 'https://cyril.example.com/uninstall.ps1')))
 
-Removes: the "Cyril Agent" scheduled task, the running process, C:\Program Files\Cyril,
-C:\ProgramData\Cyril (config + key), the agent's local spool/log files, and any browser
-policy value the installer itself created. Policy values that were already there before
-Cyril are left alone. Data already stored on the server is not touched.
+Removes: the "Cyril Agent" and "Cyril Updater" scheduled tasks, the running process,
+C:\Program Files\Cyril, C:\ProgramData\Cyril (config, key, agent log and spool), any
+leftover spool/log files from older versions, and the Incognito setting if an older
+installer had disabled it. Data already stored on the server is not touched.
 #>
 $ErrorActionPreference = "Stop"
 
@@ -30,13 +30,15 @@ $cfgDir     = Join-Path $env:ProgramData "Cyril"
 $regKey     = "HKLM:\SOFTWARE\Cyril"
 $failures   = 0
 
-# Task first, so it cannot restart the process we are about to stop.
-if (Get-ScheduledTask -TaskName "Cyril Agent" -ErrorAction SilentlyContinue) {
-    try { Stop-ScheduledTask -TaskName "Cyril Agent" -ErrorAction SilentlyContinue
-          Unregister-ScheduledTask -TaskName "Cyril Agent" -Confirm:$false
-          Row "Scheduled task" $true "removed" }
-    catch { Row "Scheduled task" $false $_.Exception.Message; $failures++ }
-} else { Row "Scheduled task" $true "was not present" }
+# Tasks first, so nothing can restart the process we are about to stop.
+foreach ($t in @("Cyril Agent", "Cyril Updater")) {
+    if (Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue) {
+        try { Stop-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue
+              Unregister-ScheduledTask -TaskName $t -Confirm:$false
+              Row "Scheduled task '$t'" $true "removed" }
+        catch { Row "Scheduled task '$t'" $false $_.Exception.Message; $failures++ }
+    } else { Row "Scheduled task '$t'" $true "was not present" }
+}
 
 $procs = Get-Process -Name "cyril" -ErrorAction SilentlyContinue
 if ($procs) {
@@ -61,7 +63,7 @@ foreach ($pr in $profiles) {
     }
 }
 
-# Browser policy: only what the installer created.
+# Incognito/InPrivate: older installers disabled it by browser policy; restore exactly what they set.
 if (Test-Path $regKey) {
     $set = (Get-ItemProperty -Path $regKey -Name "IncognitoPolicySetFor" -ErrorAction SilentlyContinue).IncognitoPolicySetFor
     foreach ($b in @("$set" -split ";" | Where-Object { $_ })) {

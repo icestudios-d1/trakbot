@@ -1,5 +1,8 @@
 """Sampling + aggregation. Pure logic so it can be unit tested."""
 import json
+import logging
+import logging.handlers
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -82,3 +85,36 @@ def load_config(path: str | None) -> dict:
             return json.load(f)
     except OSError:
         return {}
+
+
+def data_dir(config_path: str | None) -> str:
+    """Where spool + log live. Next to the installer's config (ProgramData\\Cyril\\data, writable by the
+    logged-in user the agent runs as); otherwise the home directory (running by hand)."""
+    if config_path:
+        d = os.path.join(os.path.dirname(os.path.abspath(config_path)), "data")
+        try:
+            os.makedirs(d, exist_ok=True)
+            return d
+        except OSError:
+            pass
+    return os.path.expanduser("~")
+
+
+def setup_logging(log_path: str) -> logging.Logger:
+    """Rotating file log (the Windows build has no console, so without this every failure is invisible)."""
+    log = logging.getLogger("cyril-agent")
+    log.setLevel(logging.INFO)
+    if not log.handlers:
+        fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+        try:
+            fh = logging.handlers.RotatingFileHandler(log_path, maxBytes=1_000_000, backupCount=2, encoding="utf-8")
+            fh.setFormatter(fmt)
+            log.addHandler(fh)
+        except OSError:
+            pass
+        import sys
+        if sys.stderr:  # None in a --noconsole build
+            sh = logging.StreamHandler()
+            sh.setFormatter(fmt)
+            log.addHandler(sh)
+    return log

@@ -5,6 +5,7 @@ import argparse
 import base64
 import getpass
 import json
+import logging
 import os
 import platform
 import sys
@@ -13,12 +14,13 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from .core import Aggregator, Spool, browser_url, is_private, load_config
+from .core import Aggregator, Spool, browser_url, data_dir, is_private, load_config, setup_logging
 from .platform.active_window import get_active_window, idle_seconds
 from .shots import ScreenshotThrottle, capture_jpeg_b64
 from .update import check_and_apply
 
 ext_report = None  # latest {"url","title","at"} from the browser extension
+log = logging.getLogger("cyril-agent")
 
 
 def device_id() -> str:
@@ -85,11 +87,7 @@ def _post(server: str, path: str, key: str, payload: dict) -> bool:
         urllib.request.urlopen(req, timeout=20).read()
         return True
     except Exception as e:
-        # Previously silent: a network/TLS/auth failure here looked
-        # identical from the outside to "the agent just isn't reporting
-        # anything", with no way to tell which. Print it so a failure is
-        # visible on the console (or wherever stderr is redirected) instead.
-        print(f"[cyril-agent] POST {url} failed: {e!r}", file=sys.stderr)
+        log.error("POST %s failed: %r", url, e)
         return False
 
 
@@ -100,10 +98,25 @@ def send_events(server: str, key: str, user: str, device: str, events: list) -> 
 def send_screenshot(server: str, key: str, user: str, device: str, ts: float, app: str, title: str) -> None:
     try:
         img = capture_jpeg_b64()
-    except Exception:
+    except Exception as e:
+        log.error("screenshot capture failed: %r", e)
         return
     _post(server, "/api/screenshot", key,
           {"user": user, "device": device, "ts": ts, "app": app, "title": title, "image_b64": img})
+
+
+def windows_session_id() -> int | None:
+    """Windows session this process runs in. 0 = the non-interactive services session, which has no desktop:
+    no foreground window, no screen to capture, no keyboard/mouse input to measure."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        sid = ctypes.c_ulong()
+        ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(sid))
+        return sid.value
+    except Exception:
+        return None
 
 
 def main():
@@ -120,7 +133,8 @@ def main():
     ap.add_argument("--screenshot-after", type=float, default=60.0, help="seconds an app must hold the foreground before the first shot")
     ap.add_argument("--screenshot-every", type=float, default=180.0, help="seconds between shots while that app stays foreground")
     ap.add_argument("--no-screenshots", action="store_true")
-    ap.add_argument("--spool", default=os.path.expanduser("~/.cyril-spool.jsonl"))
+    ap.add_argument("--spool", default=None, help="default: <data dir>/spool.jsonl")
+    ap.add_argument("--log", default=None, help="default: <data dir>/agent.log")
     ap.add_argument("--update-check-every", type=float, default=3600.0, help="seconds between self-update checks; 0 disables")
     a = ap.parse_args()
 
@@ -130,12 +144,25 @@ def main():
     user = cfg.get("user", a.user)
     device = cfg.get("device") or a.device or device_id()
 
+    ddir = data_dir(a.config)
+    spool_path = a.spool or os.path.join(ddir, "spool.jsonl")
+    setup_logging(a.log or os.path.join(ddir, "agent.log"))
+
     srv = HTTPServer(("127.0.0.1", a.ext_port), ExtHandler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
-    print(f"[cyril-agent] user={user!r} device={device!r} server={server!r} flush_every={a.flush}s")
+    sess = windows_session_id()
+    log.info("starting: user=%r device=%r server=%r flush_every=%ss session=%s pid=%s",
+             user, device, server, a.flush, sess, os.getpid())
+    if sess == 0:
+        log.warning("running in Windows session 0 (services): this cannot see any user's windows, screen or input. "
+                    "The agent must run in the logged-in user's session (scheduled task 'At log on').")
+    if not key:
+        log.error("no agent key configured: the server will reject every report")
 
-    agg, spool, last_flush = Aggregator(), Spool(a.spool), time.time()
+    agg, spool, last_flush = Aggregator(), Spool(spool_path), time.time()
+    no_window = 0
+    sent_ok = None
     shot_throttle = ScreenshotThrottle(a.screenshot_after, a.screenshot_every)
     last_update_check = time.time()
     while True:
@@ -147,19 +174,30 @@ def main():
                 check_and_apply(server, key, user, device)  # returns only if no update was applied
             except Exception:
                 pass
-        w = get_active_window() or {"app": "", "title": ""}
+        w = get_active_window()
+        if w is None:
+            no_window += 1
+            if no_window == 12:  # a minute of samples with no foreground window
+                log.warning("no foreground window visible for 1 minute (session=%s). Normal if the screen is locked or "
+                            "nobody is logged in; otherwise the agent is not running inside the user's desktop.", sess)
+        else:
+            if no_window >= 12:
+                log.info("foreground window visible again")
+            no_window = 0
+        w = w or {"app": "", "title": ""}
         idle = idle_seconds() >= a.idle_after
         url = browser_url(w["app"], ext_report, now)
         title = ext_report["title"] if url and ext_report and not w["title"] else w["title"]
 
-        if is_private(title):
+        private = is_private(title)
+        if private:
             # We can see a private-browsing window is open, but not its content
             # (that's the browser's own privacy boundary) -- don't store the title/URL.
             title, url = "(private/incognito browsing)", ""
 
         agg.add(now, a.interval, "" if idle else w["app"], "" if idle else title, "" if idle else url, idle)
 
-        if not a.no_screenshots and shot_throttle.tick(now, w["app"], idle):
+        if not a.no_screenshots and shot_throttle.tick(now, w["app"], idle, private):
             threading.Thread(target=send_screenshot, args=(server, key, user, device, now, w["app"], title), daemon=True).start()
 
         if now - last_flush >= a.flush:
@@ -174,8 +212,14 @@ def main():
             # chunks instead of only once it ends.
             spool.push(agg.drain(keep_open=False))
             queued = spool.read()
-            if queued and send_events(server, key, user, device, queued):
-                spool.drop(len(queued))
+            if queued:
+                ok = send_events(server, key, user, device, queued)
+                if ok:
+                    spool.drop(len(queued))
+                if ok != sent_ok:  # log changes (first success, outage start, recovery), not every minute
+                    log.info("report %s: %d event(s)%s", "sent" if ok else "FAILED, will retry (spooled)", len(queued),
+                             "" if ok else f" queued on disk at {spool_path}")
+                    sent_ok = ok
             last_flush = now
         time.sleep(a.interval)
 
