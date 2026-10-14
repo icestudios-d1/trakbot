@@ -75,7 +75,7 @@ async function load(){
  try{
   const u=await api('/api/users');const cur=$('user').value;
   $('user').innerHTML='<option value="">All employees</option>'+u.map(x=>`<option ${x.user===cur?'selected':''}>${esc(x.user)}</option>`).join('');
-  const TZ=-new Date().getTimezoneOffset();const q=new URLSearchParams({day:$('day').value,days:$('days').value,tz:TZ});if($('user').value)q.set('user',$('user').value);
+  const q=new URLSearchParams({day:$('day').value,days:$('days').value});if($('user').value)q.set('user',$('user').value);
   const s=await api('/api/summary?'+q);
   $('pct').textContent=s.productivity_pct==null?'–':s.productivity_pct+'% productive';
   const t=s.seconds,tot=(t.productive+t.unproductive+t.neutral+t.idle)||1;
@@ -89,7 +89,7 @@ async function load(){
   $('alerts').innerHTML='<tr><th>When</th><th>Employee</th><th>Category</th><th>Activity</th><th></th></tr>'+al.map(a=>`<tr><td>${new Date(a.ts*1000).toLocaleString()}</td><td>${esc(a.user)}</td><td>${esc(a.category)}</td><td>${esc(a.url||a.app)} <span class="mut">${esc(a.title)}</span></td><td>${a.acked?'':`<button onclick="ack(${a.id})">Ack</button>`}</td></tr>`).join('');
   const r=await api('/api/rules');
   $('rules').innerHTML='<tr><th>Type</th><th>Pattern</th><th>Category</th><th>Label</th><th>Alert</th><th></th></tr>'+r.map(x=>`<tr><td>${x.kind}</td><td>${esc(x.pattern)}</td><td>${esc(x.category)}</td><td>${x.label}</td><td>${x.alert?'yes':''}</td><td><button onclick="delr(${x.id})">×</button></td></tr>`).join('');
-  const tr=await api('/api/trend?'+new URLSearchParams({days:30,tz:TZ,...($('user').value?{user:$('user').value}:{})}));
+  const tr=await api('/api/trend?'+new URLSearchParams({days:30,...($('user').value?{user:$('user').value}:{})}));
   drawTrend(tr);
  }catch(e){$('err').textContent=e.message}
 }

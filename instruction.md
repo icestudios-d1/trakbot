@@ -18,20 +18,23 @@ data-protection exposure. It never means hiding Cyril from the employee. Out of 
 
 | Data | Where captured | Where stored | Notes |
 |---|---|---|---|
-| Employee login name, device ID (machine GUID) | Agent | Cloudflare D1 | On every record |
-| Foreground app name | Agent | D1 `events` | Every ~5s, merged into intervals |
-| **Window title** (full text) | Agent | D1 `events`, D1 `alerts` | Titles often contain names, email subjects, document names, account numbers |
-| **Full browser URL** incl. path, query string, fragment | Browser extension → agent | D1 `events`, `alerts` | Query strings can carry tokens, search terms, IDs |
-| Idle/active state | Agent | D1 | |
-| **Screenshots of the entire screen, all monitors** | Agent (~1/min while an app is foreground ≥60s) | Image in **ImageKit** (private); metadata + file id in D1 | Captures whatever is visible: personal email, banking, chats, passwords being shown |
-| Private/incognito windows | Agent | D1 | Only the *fact* is stored; title/URL redacted on-device. Screenshots still occur |
+| Employee login name, device ID (machine GUID) | Agent | SQLite, on the office server | On every record |
+| Foreground app name | Agent | SQLite `events` | Every ~5s, merged into intervals |
+| **Window title** (full text) | Agent | SQLite `events`, `alerts` | Titles often contain names, email subjects, document names, account numbers |
+| **Full browser URL** incl. path, query string, fragment | Browser extension → agent | SQLite `events`, `alerts` | Query strings can carry tokens, search terms, IDs |
+| Idle/active state | Agent | SQLite | |
+| **Screenshots of the entire screen, all monitors** | Agent (every 3 min while an app is foreground ≥60s) | Image in **SeaweedFS**, self-hosted on the office server; metadata + object key in SQLite | Captures whatever is visible: personal email, banking, chats, passwords being shown |
+| Private/incognito windows | Agent | SQLite | Only the *fact* is stored; title/URL redacted on-device. Screenshots still occur |
+| Agent self-update outcome (version before/after, success) | Agent | SQLite `update_log` | No activity content, just patch-rollout audit trail |
 
-Existing retention: screenshots auto-deleted after 90 days (configurable), manual bulk delete available.
+Existing retention: screenshots auto-deleted after a configurable window, manual bulk delete available.
 **Events, titles, URLs and alerts currently have no retention limit.**
 
-Third parties that process this data: **Cloudflare** (Workers, D1) and **ImageKit** (screenshots).
-Legal should confirm DPAs, sub-processor lists, data-residency/transfer position (esp. for GDPR/UK, India DPDP)
-for both before go-live — this is independent of masking but affects which masking is mandatory.
+Everything above now stays on company-owned infrastructure (the office server running the Docker Compose
+stack) — no third-party cloud processor is involved for storage. Legal should still confirm the physical/
+network security of that server (who has access, backup location, whether it's reachable off-LAN) and the
+usual jurisdiction-specific notice/retention/access requirements below, since "self-hosted" changes *who*
+holds the data, not *what* obligations apply to holding it.
 
 ## 3. Proposed masking features
 
@@ -60,7 +63,7 @@ Suggested priority: A = recommend building, B = recommend if Legal wants it, C =
   3. **On-device blur/redaction**: downscale + blur regions known to be sensitive (password fields, notification toasts, windows matching M2), or an overall "low-detail" mode (e.g. 640px wide, heavier blur) so the image shows *what kind* of activity, not readable content.
 - **How:** change `agent/cyril_agent/shots.py` (capture region, optional blur via Pillow) and the throttle logic in `main.py`. Capture mode becomes a server-pushed setting (`full-screen` / `active-window` / `blurred`).
 - **Trade-off:** blurred/low-detail shots weaken their value as evidence for disciplinary matters (flagged-content alerts). Legal should decide whether evidential value or minimisation wins, possibly per alert category (e.g. full detail only *after* an alert fires).
-- **Side benefit:** smaller images → fits the ImageKit free tier (3 GB) for more employees.
+- **Side benefit:** smaller images mean less disk on the office server's SeaweedFS volume.
 - **Legal decides:** capture mode default; whether alert-triggered captures may be higher-detail.
 
 ### M4 (A) — Automatic PII scrubbing of titles and URLs
@@ -71,8 +74,8 @@ Suggested priority: A = recommend building, B = recommend if Legal wants it, C =
 
 ### M5 (B) — Pseudonymised dashboard with audited "unmask"
 - **What:** dashboards show **employee codes** (`EMP-0412`) or initials by default. Revealing the real name, opening a person's timeline/titles, or viewing screenshots requires a recorded **reason** (and optionally approval by a second person, e.g. HR + manager).
-- **How:** add a mapping table `user → pseudonym` (D1); the API returns pseudonyms unless the request carries an authorised "reveal" grant. Add an append-only `access_log` table (who, when, which employee, which screen, reason). Screenshot image requests are logged individually.
-- **Prerequisite:** today there is **one shared admin token** for everyone. This feature needs per-person logins and roles (e.g. Cloudflare Access / SSO) — a separate piece of work the developer must scope.
+- **How:** add a mapping table `user → pseudonym` (SQLite); the API returns pseudonyms unless the request carries an authorised "reveal" grant. Add an append-only `access_log` table (who, when, which employee, which screen, reason). Screenshot image requests are logged individually.
+- **Prerequisite:** today there is **one shared admin token** for everyone. This feature needs per-person logins and roles (e.g. SSO in front of the dashboard, or a small auth layer in the server) — a separate piece of work the developer must scope.
 - **Legal decides:** who may unmask; whether two-person approval is required; log retention; whether employees can request their own access log (DSAR support).
 
 ### M6 (B) — Tiered retention ("age-out masking")
@@ -96,7 +99,7 @@ Suggested priority: A = recommend building, B = recommend if Legal wants it, C =
 - **Legal decides:** which roles are exempt; works-council / union requirements.
 
 ## 4. Cross-cutting requirements for the implementer
-1. **Mask at the source.** Where possible, redaction runs in the agent so sensitive text never travels or reaches Cloudflare/ImageKit. Server-side masking is a backstop only.
+1. **Mask at the source.** Where possible, redaction runs in the agent so sensitive text never travels to the office server or SeaweedFS at all. Server-side masking is a backstop only.
 2. **Changes to masking policy are versioned and logged** (who, when, old → new).
 3. **Existing data:** masking applies going forward. A backfill/purge job for already-stored data (titles, URLs, screenshots) is a separate item for Legal to decide on.
 4. **Documentation:** employee notice, privacy policy and DPIA/PIA must be updated to describe the final masked state — and must not overstate it (best-effort ≠ guaranteed).
@@ -106,8 +109,8 @@ Suggested priority: A = recommend building, B = recommend if Legal wants it, C =
 ## 5. Open questions for Legal (beyond individual items)
 - Lawful basis / consent model per jurisdiction in which employees sit, and whether works-council consultation is needed.
 - Is screenshotting the whole desktop proportionate at all, versus M3 options? (Strongest single risk reducer.)
-- Cross-border transfer: data goes to Cloudflare (D1 location) and ImageKit (storage region). Acceptable? DPAs signed?
-- Who is the data controller contact for employee requests (access, erasure, objection) and how will it be fulfilled from D1 + ImageKit?
+- Physical/network security of the office server: who has admin access to it, where backups live, whether it's reachable outside the LAN (VPN, remote staff), and whether that reachability needs its own access controls.
+- Who is the data controller contact for employee requests (access, erasure, objection) and how will it be fulfilled from the SQLite database + SeaweedFS store on the office server?
 - Personal-device or BYOD exclusion confirmed? (Cyril is intended for company-owned devices only.)
 
 ## 6. Approval sheet

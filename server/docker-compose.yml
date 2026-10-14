@@ -1,0 +1,54 @@
+version: "3.8"
+
+# Office-server deployment: both services run on one box, and both keep
+# state on local volumes, so an office-server reboot/outage loses nothing --
+# agents spool locally while this is down and flush once it's back (see
+# agent/cyril_agent/core.py Spool). Nothing here depends on an internet
+# connection once images are pulled.
+services:
+  server:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      CYRIL_ADMIN_TOKEN: ${CYRIL_ADMIN_TOKEN}
+      CYRIL_AGENT_KEY: ${CYRIL_AGENT_KEY}
+      CYRIL_DB: /data/cyril.db
+      CYRIL_DIST_DIR: /dist
+      CYRIL_S3_ENDPOINT: seaweedfs:8333
+      CYRIL_S3_ACCESS_KEY: ${CYRIL_S3_ACCESS_KEY}
+      CYRIL_S3_SECRET_KEY: ${CYRIL_S3_SECRET_KEY}
+      CYRIL_S3_BUCKET: cyril-screenshots
+    volumes:
+      - cyril_db:/data
+      # Bind mount, not a named volume: windows/build.ps1 writes cyril.exe,
+      # cyril-extension.zip and manifest.json straight into ./dist on the
+      # host, and they're immediately served from /dist -- no copy step,
+      # and the agent's self-update check picks up a new manifest.json as
+      # soon as it's dropped in, with no server restart needed.
+      - ./dist:/dist
+    depends_on:
+      - seaweedfs
+
+  # MinIO replacement: SeaweedFS's S3 gateway, self-hosted, single binary,
+  # no cluster-layout bootstrap needed for one node.
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest  # pin to a specific tag from Docker Hub before production use
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    environment:
+      CYRIL_S3_ACCESS_KEY: ${CYRIL_S3_ACCESS_KEY}
+      CYRIL_S3_SECRET_KEY: ${CYRIL_S3_SECRET_KEY}
+    volumes:
+      - cyril_screenshots:/data
+      - ./seaweedfs/entrypoint.sh:/entrypoint.sh:ro
+      - ./seaweedfs/s3config.json.template:/etc/seaweedfs/s3config.json.template:ro
+    # No ports published to the host: only the `server` service talks to it,
+    # over the compose-internal network. Screenshots are never reachable
+    # directly, only through the server's admin-authenticated proxy
+    # endpoint (/api/screenshots/{id}/image).
+
+volumes:
+  cyril_db:
+  cyril_screenshots:

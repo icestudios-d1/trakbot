@@ -1,25 +1,43 @@
 # Run ONCE on a Windows machine with Python 3.11+ installed (this is the only
 # place Python is needed -- target employee machines need nothing but PowerShell).
-# Produces cyril-agent.exe and cyril-extension.zip directly in server\public\dist,
-# so the next `wrangler deploy` ships them as static assets and install.ps1 can fetch them.
+# Produces cyril.exe, cyril-extension.zip and manifest.json, and places them
+# where the server's CYRIL_DIST_DIR volume expects them so install.ps1 (first
+# install) and the agent's own update check (later releases) can fetch them.
+#
+# Usage:
+#   .\windows\build.ps1                  # first build
+#   .\windows\build.ps1 -Version 0.2.1   # a release meant to replace a running 0.2.0 fleet
+param(
+    [string]$Version = "0.1.0",
+    [string]$OutDir = $null  # defaults to the server's dist volume mountpoint
+)
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path "$PSScriptRoot\.."
-$out = "$root\server\public\dist"
+$out = if ($OutDir) { $OutDir } else { "$root\server\dist" }
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
 pip install --quiet pyinstaller pywin32 mss pillow
 pip install --quiet -r "$root\agent\requirements.txt"
 
-pyinstaller --onefile --noconsole --name cyril-agent `
+pyinstaller --onefile --noconsole --name cyril `
   --paths "$root\agent" `
   --distpath $out --workpath "$root\build" --specpath "$root\build" `
   "$root\agent\cyril_agent\__main__.py"
 
 Compress-Archive -Path "$root\browser-extension\*" -DestinationPath "$out\cyril-extension.zip" -Force
 
-$mb = [math]::Round((Get-Item "$out\cyril-agent.exe").Length / 1MB, 1)
-Write-Host "Built:"
-Write-Host "  $out\cyril-agent.exe ($mb MB)"
+$hash = (Get-FileHash "$out\cyril.exe" -Algorithm SHA256).Hash.ToLower()
+$manifest = @{
+    version      = $Version
+    windows_exe  = @{ url = "/dist/cyril.exe"; sha256 = $hash }
+} | ConvertTo-Json -Depth 5
+Set-Content -Path "$out\manifest.json" -Value $manifest -Encoding UTF8
+
+$mb = [math]::Round((Get-Item "$out\cyril.exe").Length / 1MB, 1)
+Write-Host "Built (version $Version):"
+Write-Host "  $out\cyril.exe ($mb MB), sha256 $hash"
 Write-Host "  $out\cyril-extension.zip"
-if ($mb -ge 25) { Write-Warning "Cloudflare static assets cap files at 25 MiB. Host the .exe on R2 instead (see README)." }
-Write-Host "Now run: cd server; npx wrangler deploy"
+Write-Host "  $out\manifest.json"
+Write-Host ""
+Write-Host "First install: copy these into the cyril_dist Docker volume, or set it as a bind mount, then on target machines run install.ps1 (see README)."
+Write-Host "Fleet update: same copy step. Agents already running poll /api/agent/version hourly and update themselves within that window -- no action needed on target machines."

@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from .core import Aggregator, Spool, browser_url, is_private
 from .platform.active_window import get_active_window, idle_seconds
 from .shots import ScreenshotThrottle, capture_jpeg_b64
+from .update import check_and_apply
 
 ext_report = None  # latest {"url","title","at"} from the browser extension
 
@@ -119,9 +120,10 @@ def main():
     ap.add_argument("--flush", type=float, default=60.0)
     ap.add_argument("--ext-port", type=int, default=7077)
     ap.add_argument("--screenshot-after", type=float, default=60.0, help="seconds an app must hold the foreground before the first shot")
-    ap.add_argument("--screenshot-every", type=float, default=60.0, help="seconds between shots while that app stays foreground")
+    ap.add_argument("--screenshot-every", type=float, default=180.0, help="seconds between shots while that app stays foreground")
     ap.add_argument("--no-screenshots", action="store_true")
     ap.add_argument("--spool", default=os.path.expanduser("~/.cyril-spool.jsonl"))
+    ap.add_argument("--update-check-every", type=float, default=3600.0, help="seconds between self-update checks; 0 disables")
     a = ap.parse_args()
 
     cfg = load_config(a.config)
@@ -135,8 +137,16 @@ def main():
 
     agg, spool, last_flush = Aggregator(), Spool(a.spool), time.time()
     shot_throttle = ScreenshotThrottle(a.screenshot_after, a.screenshot_every)
+    last_update_check = time.time()
     while True:
         now = time.time()
+
+        if a.update_check_every and now - last_update_check >= a.update_check_every:
+            last_update_check = now
+            try:
+                check_and_apply(server, key, user, device)  # returns only if no update was applied
+            except Exception:
+                pass
         w = get_active_window() or {"app": "", "title": ""}
         idle = idle_seconds() >= a.idle_after
         url = browser_url(w["app"], ext_report, now)

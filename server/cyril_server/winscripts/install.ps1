@@ -26,7 +26,7 @@ $cfgDir = Join-Path $env:ProgramData "Cyril"
 New-Item -ItemType Directory -Force -Path $installDir, $cfgDir | Out-Null
 
 Write-Host "Downloading agent from $ServerUrl ..."
-Invoke-WebRequest -Uri "$ServerUrl/dist/cyril-agent.exe" -OutFile "$installDir\cyril-agent.exe"
+Invoke-WebRequest -Uri "$ServerUrl/dist/cyril.exe" -OutFile "$installDir\cyril.exe"
 Invoke-WebRequest -Uri "$ServerUrl/dist/cyril-extension.zip" -OutFile "$installDir\cyril-extension.zip"
 Expand-Archive -Force "$installDir\cyril-extension.zip" "$installDir\extension"
 
@@ -40,7 +40,7 @@ icacls $cfgDir /grant:r "SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" | 
 # Run at startup as SYSTEM (not the logged-in user) so a non-admin employee
 # can't stop or uninstall it without admin rights, and it restarts if killed.
 Unregister-ScheduledTask -TaskName "Cyril Agent" -Confirm:$false -ErrorAction SilentlyContinue
-$action    = New-ScheduledTaskAction -Execute "$installDir\cyril-agent.exe" -Argument "--config `"$cfgDir\config.json`""
+$action    = New-ScheduledTaskAction -Execute "$installDir\cyril.exe" -Argument "--config `"$cfgDir\config.json`""
 $trigger   = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `

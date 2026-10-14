@@ -16,81 +16,88 @@ charts. No keystroke logging.
 | Productivity %, top apps/sites, categories, hourly activity, trend chart | ✅ dashboard + `/api/summary`, `/api/trend` |
 | Per-employee drill-down / timeline | ✅ `/api/timeline` |
 | Alerts for risky activity | ✅ rules with `alert` flag (piracy, gambling, private browsing pre-seeded) |
-| Screenshots | ✅ one per app per minute once it's held the foreground 60s+; gallery with range-select + delete |
+| Screenshots | ✅ one per app every 3 min once it's held the foreground 60s+ (`--screenshot-every`); gallery with range-select + delete |
 | Windows rollout | ✅ one PowerShell command, no Python/git/npm needed on the target machine |
 | Reports | ✅ in-app only, no email reports (by request) |
 | Keystroke logging, workload/utilisation, teams/groups, SSO | ❌ not built (keylogging intentionally omitted) |
 
 ## Architecture
 
+Self-hosted on your own office server (Docker Compose), on purpose: if the server goes down, agents keep
+sampling and spool everything locally (`agent/cyril_agent/core.py:Spool`), then flush the backlog as soon as
+it's reachable again — no cloud dependency, no data lost to an outage.
+
 | Piece | Where it runs |
 |---|---|
-| API + dashboard + installer scripts | **Cloudflare Worker** (`server/`, TypeScript + Hono) |
-| Events, rules, alerts, screenshot metadata | **Cloudflare D1** (SQLite) |
-| Screenshot images | **ImageKit** (private files, signed-URL access only; Worker holds the key) |
-| Agent (per device) | Python, unchanged: samples the foreground window, reports to the Worker |
+| API + dashboard + installer scripts + self-update manifest | **FastAPI** (`server/cyril_server/`), in a Docker container |
+| Events, rules, alerts, screenshot metadata, update log | **SQLite** (a file on a Docker volume) |
+| Screenshot images | **SeaweedFS** (self-hosted, S3-compatible; replaces MinIO — see `server/docker-compose.yml`) |
+| Agent (per device) | Python, built to a single `cyril.exe` via PyInstaller |
 
-Screenshots never touch D1/Workers storage: the agent posts them to the Worker, which uploads to ImageKit as
-*private* files and keeps only the file id in D1. The dashboard views images through the Worker (admin-authenticated,
-60-second signed URL), and a daily Cron Trigger deletes screenshots older than `SCREENSHOT_RETENTION_DAYS` (default 90).
+Screenshots never touch the app container's own disk: the agent posts them to the server, which stores them
+in SeaweedFS (private — no port published to the host, reachable only from the `server` container) and keeps
+just the object key in SQLite. The dashboard views images through the server (admin-token-authenticated
+proxy endpoint), and a daily sweep (run it via cron/Task Scheduler hitting a maintenance script, or add an
+APScheduler job) deletes screenshots older than retention.
 
-## Deploy
+## Deploy (office server, Docker)
 
 ```bash
-cd server && npm install
-npx wrangler login
-npx wrangler d1 create cyril                 # paste the printed database_id into wrangler.toml
-npm run db:init                              # creates tables in the remote D1
-# wrangler.toml: set IMAGEKIT_URL_ENDPOINT (ImageKit dashboard > Developer options) and DEFAULT_TZ_OFFSET_MIN
-npx wrangler secret put CYRIL_ADMIN_TOKEN    # long random; what managers paste into the dashboard
-npx wrangler secret put CYRIL_AGENT_KEY      # long random; goes on every device
-npx wrangler secret put IMAGEKIT_PRIVATE_KEY # ImageKit dashboard > Developer options > Private key
-npx wrangler deploy
+cd server
+cp .env.example .env            # fill in CYRIL_ADMIN_TOKEN, CYRIL_AGENT_KEY, CYRIL_S3_ACCESS_KEY/SECRET_KEY
+docker compose up -d --build    # starts the server + bundled SeaweedFS
 ```
 
-Local dev: `npm run db:init:local && npx wrangler dev` (put the three secrets in `server/.dev.vars`, gitignored).
-Tests: `cd server && npm test` (Workers runtime via Miniflare, ImageKit mocked), `cd agent && pytest`.
+That's it — no cloud account, no external DNS required for a LAN-only deployment (point agents at the
+office server's internal hostname/IP). Put it behind a reverse proxy with TLS (Caddy/nginx) if any device
+reaches it off-LAN (VPN, remote staff).
 
-### Plan limits that matter (checked Oct 2026 against search results of vendor pages; re-check before relying on them)
-- **ImageKit Free:** 3 GB DAM storage (hard cap, uploads blocked when full) and 20 GB/month delivery bandwidth
-  (delivery stops when exhausted). Some aggregator sites still list 25 GB / 5 GB, so confirm on imagekit.io/plans.
-- **Screenshot volume vs 3 GB:** at the default cadence (one ~60-150 KB JPEG per minute of active use) one employee
-  produces roughly 30-70 MB per working day, i.e. **~2-4 GB over 3 months**. The free tier therefore holds about *one*
-  full-time employee for 90 days. For a team, either lower the cadence (`--screenshot-every 600` = 1 per 10 min),
-  shorten `SCREENSHOT_RETENTION_DAYS`, or move to a paid ImageKit plan.
-- **Workers Free** allows 10 ms CPU per request; dashboard reports over many users/days can exceed that.
-  Workers Paid ($5/mo) is recommended for real use. D1 Free has daily row read/write caps (enforced on
-  the Free plan from 1 Sep 2026).
-- **Agent installer hosting:** `cyril-agent.exe` is served from `server/public/dist` as a Worker static asset
-  (25 MiB per-file cap). If your PyInstaller build is larger, put it in R2 and change the download URL in `install.ps1`.
+Tests: `cd server && pytest` (SeaweedFS is faked in-process, no container needed to run them), `cd agent && pytest`.
+
+### Agent updates (built once, applied automatically fleet-wide)
+
+```powershell
+# On IT's build machine only (Python/PyInstaller never touches employee machines):
+.\windows\build.ps1 -Version 0.2.1
+```
+
+This writes `cyril.exe`, `cyril-extension.zip` and `manifest.json` (with a SHA-256 of the new build) into
+`server/dist/`, which is bind-mounted straight into the running container — nothing to restart. Every
+already-installed agent polls `/api/agent/version` hourly (`--update-check-every`, default 3600s); on seeing
+a newer version it downloads the new build, verifies the checksum, and swaps itself in, restarting via the
+same Scheduled Task that already auto-restarts it (see `agent/cyril_agent/update.py`). There's no popup —
+same as how Chrome or any managed EDR patches itself — but every step is written to a local log
+(`~/.cyril-update.log` by default) and reported to `/api/agent/update-log`, visible to admins at that
+endpoint, so the rollout is fully auditable even though it isn't interruptive. A checksum mismatch aborts
+the update rather than applying anything.
 
 ### Windows rollout (one PowerShell command, no dev tools on the target machine)
 
-Python/PyInstaller is only needed **once**, on a Windows machine IT uses to build the agent:
+Python/PyInstaller is only needed **once**, on a machine IT uses to build the agent:
 
 ```powershell
 git clone <this repo>; cd cyril
-.\windows\build.ps1      # writes server\public\dist\cyril-agent.exe + cyril-extension.zip
-cd server; npx wrangler deploy
+.\windows\build.ps1      # writes server\dist\cyril.exe + cyril-extension.zip + manifest.json
+cd server; docker compose up -d --build
 ```
 
 Then, on each target machine (elevated PowerShell, nothing but PowerShell itself required):
 
 ```powershell
-$cfg = Invoke-RestMethod https://cyril.<your-subdomain>.workers.dev/install.ps1
-& ([scriptblock]::Create($cfg)) -ServerUrl https://cyril.<your-subdomain>.workers.dev -AgentKey <agent key>
+$cfg = Invoke-RestMethod http://<office-server>:8000/install.ps1
+& ([scriptblock]::Create($cfg)) -ServerUrl http://<office-server>:8000 -AgentKey <agent key>
 ```
 
 Run the agent directly on Linux/macOS (Linux also needs `xprop` and `xprintidle`):
-`cd agent && pip install -r requirements.txt && CYRIL_SERVER=https://... CYRIL_AGENT_KEY=... python -m cyril_agent`.
+`cd agent && pip install -r requirements.txt && CYRIL_SERVER=http://<office-server>:8000 CYRIL_AGENT_KEY=... python -m cyril_agent`.
 Load `browser-extension/` as an unpacked extension (or deploy by Chrome/Edge policy) to capture URLs.
 
-The installer puts the agent under `Program Files\Cyril`, stores the server URL/API key in
-`ProgramData\Cyril\config.json` (ACL'd to SYSTEM/Administrators only), and registers a Scheduled Task
-that runs it at boot as `SYSTEM` with auto-restart — so a non-admin employee can't stop or uninstall it,
-but it's not hidden: it shows up in Task Manager and installed-software listings under its real name, same
-as any other IT-managed agent (see "What we deliberately didn't build" below). Uninstall with
-`uninstall.ps1` from the same server.
+The installer puts the agent at `Program Files\Cyril\cyril.exe`, stores the server URL/API key in
+`ProgramData\Cyril\config.json` (ACL'd to SYSTEM/Administrators only), and registers a Scheduled Task named
+"Cyril Agent" that runs it at boot as `SYSTEM` with auto-restart — so a non-admin employee can't stop or
+uninstall it, but it's not hidden: it shows up in Task Manager as `cyril.exe` and in `Get-ScheduledTask`
+under its real name, same as any other IT-managed agent (see "What we deliberately didn't build" below).
+Uninstall with `uninstall.ps1` from the same server.
 
 ### How the agent knows which machine it's on
 
@@ -121,12 +128,17 @@ browser security boundary, not a Cyril limitation, and we don't try to defeat it
 ## What we deliberately didn't build
 
 Keystroke logging was dropped per request. We also didn't build **stealth/anti-detection**: hiding the
-process from Task Manager, faking its name, or blocking it from "installed apps." Legitimate, disclosed
-monitoring software (this one included) runs as a visible, clearly-named background service — what it
-hardens is *tamper resistance* (running as SYSTEM so a standard user can't kill or remove it), not
-*invisibility to the person it's installed on*. Techniques that hide an agent from the OS's own inspection
-tools are what separate disclosed workplace monitoring from spyware, regardless of employer authorization,
-so that's out of scope here.
+process from Task Manager/Activity Monitor, faking its name, or using kernel-level/driver tricks to
+conceal it from the OS's own process-inspection APIs. This holds even with disclosed, signed-off consent
+(e.g. a TOS naming the agent and its persistence/auto-update behavior) — consent changes whether monitoring
+is disclosed, not what a concealment *technique* is reusable for elsewhere. Legitimate, disclosed monitoring
+software (this one included) runs as a visible, clearly-named background service — what it hardens is
+*tamper resistance* (running as SYSTEM so a standard user can't kill or remove it, auto-restarting if
+killed, auto-updating without a popup), not *invisibility to the OS's own inspection tools*. Practically,
+true process-hiding is also exactly what EDR/antivirus is built to flag and quarantine as malicious — it
+would get `cyril.exe` killed on the machines it's meant to run on. Self-update (new in this version) is
+silent in the sense of "no interruptive UI," never in the sense of "no record": every check and apply is
+logged locally and reported to `/api/agent/update-log`.
 
 ## Scope & compliance
 
