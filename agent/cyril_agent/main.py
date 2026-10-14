@@ -1,5 +1,5 @@
-"""TrakBot agent: samples the foreground app/window + idle state, reports to
-the TrakBot server, and takes periodic screenshots of long-running apps.
+"""Cyril agent: samples the foreground app/window + idle state, reports to
+the Cyril server, and takes periodic screenshots of long-running apps.
 Config via env vars, a --config JSON file (used by the Windows installer), or flags."""
 import argparse
 import base64
@@ -110,9 +110,9 @@ def load_config(path: str | None) -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", help="JSON file with server/key/user (written by the Windows installer)")
-    ap.add_argument("--server", default=os.environ.get("TRAKBOT_SERVER", "http://localhost:8000"))
-    ap.add_argument("--key", default=os.environ.get("TRAKBOT_AGENT_KEY", ""))
-    ap.add_argument("--user", default=os.environ.get("TRAKBOT_USER", getpass.getuser()))
+    ap.add_argument("--server", default=os.environ.get("CYRIL_SERVER", "http://localhost:8000"))
+    ap.add_argument("--key", default=os.environ.get("CYRIL_AGENT_KEY", ""))
+    ap.add_argument("--user", default=os.environ.get("CYRIL_USER", getpass.getuser()))
     ap.add_argument("--device", default=None)
     ap.add_argument("--interval", type=float, default=5.0)
     ap.add_argument("--idle-after", type=float, default=120.0)
@@ -121,7 +121,7 @@ def main():
     ap.add_argument("--screenshot-after", type=float, default=60.0, help="seconds an app must hold the foreground before the first shot")
     ap.add_argument("--screenshot-every", type=float, default=60.0, help="seconds between shots while that app stays foreground")
     ap.add_argument("--no-screenshots", action="store_true")
-    ap.add_argument("--spool", default=os.path.expanduser("~/.trakbot-spool.jsonl"))
+    ap.add_argument("--spool", default=os.path.expanduser("~/.cyril-spool.jsonl"))
     a = ap.parse_args()
 
     cfg = load_config(a.config)

@@ -1,22 +1,25 @@
 # Run ONCE on a Windows machine with Python 3.11+ installed (this is the only
 # place Python is needed -- target employee machines need nothing but PowerShell).
-# Produces dist\trakbot-agent.exe and dist\trakbot-extension.zip, which you then
-# upload to the TrakBot server's dist/ folder (TRAKBOT_DIST_DIR) so install.ps1
-# can fetch them.
+# Produces cyril-agent.exe and cyril-extension.zip directly in server\public\dist,
+# so the next `wrangler deploy` ships them as static assets and install.ps1 can fetch them.
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path "$PSScriptRoot\.."
+$out = "$root\server\public\dist"
+New-Item -ItemType Directory -Force -Path $out | Out-Null
 
 pip install --quiet pyinstaller pywin32 mss pillow
 pip install --quiet -r "$root\agent\requirements.txt"
 
-pyinstaller --onefile --noconsole --name trakbot-agent `
+pyinstaller --onefile --noconsole --name cyril-agent `
   --paths "$root\agent" `
-  --distpath "$root\dist" --workpath "$root\build" --specpath "$root\build" `
-  "$root\agent\trakbot_agent\__main__.py"
+  --distpath $out --workpath "$root\build" --specpath "$root\build" `
+  "$root\agent\cyril_agent\__main__.py"
 
-Compress-Archive -Path "$root\browser-extension\*" -DestinationPath "$root\dist\trakbot-extension.zip" -Force
+Compress-Archive -Path "$root\browser-extension\*" -DestinationPath "$out\cyril-extension.zip" -Force
 
+$mb = [math]::Round((Get-Item "$out\cyril-agent.exe").Length / 1MB, 1)
 Write-Host "Built:"
-Write-Host "  $root\dist\trakbot-agent.exe"
-Write-Host "  $root\dist\trakbot-extension.zip"
-Write-Host "Copy both into the TrakBot server's dist/ folder (TRAKBOT_DIST_DIR), then run install.ps1 on target machines."
+Write-Host "  $out\cyril-agent.exe ($mb MB)"
+Write-Host "  $out\cyril-extension.zip"
+if ($mb -ge 25) { Write-Warning "Cloudflare static assets cap files at 25 MiB. Host the .exe on R2 instead (see README)." }
+Write-Host "Now run: cd server; npx wrangler deploy"

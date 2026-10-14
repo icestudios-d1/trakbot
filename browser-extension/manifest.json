@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "TrakBot Browser Helper",
+  "name": "Cyril Browser Helper",
   "version": "0.1.0",
-  "description": "Reports the active tab URL to the local TrakBot agent.",
+  "description": "Reports the active tab URL to the local Cyril agent.",
   "permissions": ["tabs", "alarms"],
   "host_permissions": ["http://127.0.0.1:7077/*"],
   "background": { "service_worker": "background.js" }

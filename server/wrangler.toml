@@ -1,0 +1,37 @@
+name = "cyril"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+
+# Dashboard (public/index.html + public/dist/*). The API and the PowerShell
+# installers are served by the Worker itself.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/api/*", "/install.ps1", "/uninstall.ps1"]
+
+# Ship the .ps1 installers inside the Worker bundle as text.
+[[rules]]
+type = "Text"
+globs = ["**/*.ps1"]
+fallthrough = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cyril"
+database_id = "REPLACE_WITH_ID_FROM_wrangler_d1_create"
+
+# Daily retention sweep (deletes screenshots older than SCREENSHOT_RETENTION_DAYS).
+[triggers]
+crons = ["17 3 * * *"]
+
+[vars]
+SCREENSHOT_RETENTION_DAYS = "90"
+IMAGEKIT_URL_ENDPOINT = "https://ik.imagekit.io/REPLACE_WITH_YOUR_ID"
+# Minutes east of UTC used for "today" and the hourly chart when the dashboard
+# doesn't send its own offset (e.g. 330 = India).
+DEFAULT_TZ_OFFSET_MIN = "0"
+
+# Secrets (never put these in this file):
+#   wrangler secret put CYRIL_ADMIN_TOKEN
+#   wrangler secret put CYRIL_AGENT_KEY
+#   wrangler secret put IMAGEKIT_PRIVATE_KEY

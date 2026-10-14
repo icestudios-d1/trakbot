@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TrakBot</title>
+<title>Cyril</title>
 <style>
 :root{--bg:#f6f7f9;--fg:#1c2330;--card:#fff;--mut:#667085;--bd:#e4e7ec;--p:#2e9e6b;--u:#d9534f;--n:#98a2b3;--i:#d0d5dd}
 @media(prefers-color-scheme:dark){:root{--bg:#10141b;--fg:#e6e9ef;--card:#181e28;--mut:#98a2b3;--bd:#2a3342;--i:#3a4456}}
@@ -21,7 +21,7 @@ table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:4px 6px;
 .shot .meta{font-size:11px;color:var(--mut);display:flex;gap:4px;align-items:center;margin-top:2px}
 @media(max-width:600px){main{padding:12px}}
 </style></head><body>
-<header><h1>TrakBot</h1>
+<header><h1>Cyril</h1>
 <input id="tok" type="password" placeholder="Admin token" size="14">
 <select id="user"><option value="">All employees</option></select>
 <input id="day" type="date"><select id="days"><option value="1">Day</option><option value="7">7 days</option><option value="30">30 days</option></select>
@@ -75,7 +75,7 @@ async function load(){
  try{
   const u=await api('/api/users');const cur=$('user').value;
   $('user').innerHTML='<option value="">All employees</option>'+u.map(x=>`<option ${x.user===cur?'selected':''}>${esc(x.user)}</option>`).join('');
-  const q=new URLSearchParams({day:$('day').value,days:$('days').value});if($('user').value)q.set('user',$('user').value);
+  const TZ=-new Date().getTimezoneOffset();const q=new URLSearchParams({day:$('day').value,days:$('days').value,tz:TZ});if($('user').value)q.set('user',$('user').value);
   const s=await api('/api/summary?'+q);
   $('pct').textContent=s.productivity_pct==null?'–':s.productivity_pct+'% productive';
   const t=s.seconds,tot=(t.productive+t.unproductive+t.neutral+t.idle)||1;
@@ -89,7 +89,7 @@ async function load(){
   $('alerts').innerHTML='<tr><th>When</th><th>Employee</th><th>Category</th><th>Activity</th><th></th></tr>'+al.map(a=>`<tr><td>${new Date(a.ts*1000).toLocaleString()}</td><td>${esc(a.user)}</td><td>${esc(a.category)}</td><td>${esc(a.url||a.app)} <span class="mut">${esc(a.title)}</span></td><td>${a.acked?'':`<button onclick="ack(${a.id})">Ack</button>`}</td></tr>`).join('');
   const r=await api('/api/rules');
   $('rules').innerHTML='<tr><th>Type</th><th>Pattern</th><th>Category</th><th>Label</th><th>Alert</th><th></th></tr>'+r.map(x=>`<tr><td>${x.kind}</td><td>${esc(x.pattern)}</td><td>${esc(x.category)}</td><td>${x.label}</td><td>${x.alert?'yes':''}</td><td><button onclick="delr(${x.id})">×</button></td></tr>`).join('');
-  const tr=await api('/api/trend?'+new URLSearchParams({days:30,...($('user').value?{user:$('user').value}:{})}));
+  const tr=await api('/api/trend?'+new URLSearchParams({days:30,tz:TZ,...($('user').value?{user:$('user').value}:{})}));
   drawTrend(tr);
  }catch(e){$('err').textContent=e.message}
 }

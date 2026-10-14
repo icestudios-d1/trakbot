@@ -1,4 +1,4 @@
-from trakbot_agent.core import Aggregator, Spool, browser_url, is_private
+from cyril_agent.core import Aggregator, Spool, browser_url, is_private
 
 
 def test_merge_and_drain():
