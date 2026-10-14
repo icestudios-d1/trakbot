@@ -1,10 +1,10 @@
 """Cyril server: ingest API, reports, rule + alert management, dashboard.
 
-Self-hosted (office server, Docker). Screenshots live in MinIO, not on the
-app container's disk, so they survive container rebuilds and don't bloat the
-SQLite file. Events/rules/alerts stay in SQLite -- small, and the whole
-point of self-hosting is that nothing here depends on cloud reachability;
-agents spool locally and catch up whenever this server is back.
+Self-hosted (office server, Docker). Screenshots live in SeaweedFS, not on
+the app container's disk, so they survive container rebuilds and don't
+bloat the SQLite file. Events/rules/alerts stay in SQLite -- small, and the
+whole point of self-hosting is that nothing here depends on cloud
+reachability; agents spool locally and catch up whenever this server is back.
 """
 import base64
 import hashlib
@@ -264,7 +264,12 @@ def upload_screenshot(s: ScreenshotIn):
     key = f"{user_dir}/{int(s.ts * 1000)}_{_SAFE.sub('_', s.device)}.jpg"
     try:
         store.put(key, data)
-    except ObjectStoreError:
+    except ObjectStoreError as e:
+        # Previously silent: the agent (and anyone reading `docker compose
+        # logs server`) only ever saw a bare 502 with no indication of what
+        # SeaweedFS actually said -- auth mismatch, bucket missing, disk
+        # full, unreachable, etc. all looked identical from the outside.
+        print(f"screenshot upload failed, image store error: {e!r}")
         raise HTTPException(502, "image store unavailable")
     with db.conn() as c:
         cur = c.execute(
@@ -291,7 +296,8 @@ def get_screenshot(sid: int):
         raise HTTPException(404)
     try:
         data = store.get(row["path"])
-    except ObjectStoreError:
+    except ObjectStoreError as e:
+        print(f"screenshot fetch failed, image store error: {e!r}")
         raise HTTPException(404)
     return Response(content=data, media_type="image/jpeg")
 
