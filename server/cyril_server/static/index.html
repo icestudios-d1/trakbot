@@ -29,14 +29,14 @@
 <script src="/static/app.js"></script>
 <script>
 const {$,fmt,esc}=TB;let seq=0;
-const rb=TB.rangeBar($('#range'),{defDays:7,onChange:load});
+const rb=TB.rangeBar($('#range'),{defDays:7,slot:true,onChange:load});
 async function load(r){
   const me=++seq;TB.error();
   try{
     const [o]=await Promise.all([TB.api('/api/overview?'+TB.qs({start:r.start,end:r.end,tz:TB.tz})),TB.users()]);
     if(me!==seq)return;
     const n=o.days.length,single=n===1;
-    $('#sub').textContent=TB.rangeLabel(r.start,r.end);
+    $('#sub').textContent=TB.rangeLabel(r.start,r.end)+TB.slotNote(o.slot);
     const s=o.seconds,users=Object.keys(o.by_user).length,tracked=TB.sum(s);
     const cshare=o.active_seconds?Math.round(100*o.creative_seconds/o.active_seconds):0;
     $('#kpis').innerHTML=

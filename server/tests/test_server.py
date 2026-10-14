@@ -302,3 +302,34 @@ def test_manifest_with_utf8_bom_is_readable():
         f.write("{not json")
     assert c.get("/api/agent/version").status_code == 500  # clear error rather than a crash trace
     os.remove(os.path.join(d, "manifest.json"))
+
+
+def test_reporting_interval_setting_and_its_effect():
+    assert c.get("/api/settings").status_code == 401
+    assert c.get("/api/settings", headers=A).json() == {"report_interval": 0, "report_interval_choices": [0, 1, 5, 10, 15, 30]}
+    assert c.put("/api/settings", headers=A, json={"report_interval": 7}).status_code == 400
+    # two apps inside one 15-minute block: Photoshop 6 min, reddit 8 min -> the block counts as reddit (unproductive)
+    base = time.mktime(time.strptime("2031-06-02 10:00", "%Y-%m-%d %H:%M")) - time.timezone  # 10:00 UTC
+    c.post("/api/ingest", headers=K, json={"user": "slotty", "device": "d", "events": [
+        {"ts": base, "dur": 360, "app": "Photoshop.exe", "title": "p.psd"},
+        {"ts": base + 360, "dur": 480, "app": "chrome", "title": "m", "url": "https://www.reddit.com/x"}]})
+    q = {"user": "slotty", "start": "2031-06-02", "end": "2031-06-02", "tz": 0}
+    exact = c.get("/api/employee", headers=A, params=q).json()
+    assert exact["slot"] == 0 and exact["seconds"]["productive"] == 360 and exact["seconds"]["unproductive"] == 480
+    macro = c.get("/api/employee", headers=A, params={**q, "slot": 15}).json()
+    assert macro["slot"] == 15 and macro["seconds"]["unproductive"] == 840 and macro["seconds"]["productive"] == 0
+    assert macro["apps"][0]["name"] == "chrome"
+    assert c.get("/api/employee", headers=A, params={**q, "slot": 3}).status_code == 400
+    # the saved setting is the default for every report, and ?slot= still overrides it
+    assert c.put("/api/settings", headers=A, json={"report_interval": 15}).json()["report_interval"] == 15
+    assert c.get("/api/employee", headers=A, params=q).json()["seconds"]["unproductive"] == 840
+    assert c.get("/api/employee", headers=A, params={**q, "slot": 0}).json()["seconds"]["productive"] == 360
+    ov = c.get("/api/overview", headers=A, params={"start": "2031-06-02", "end": "2031-06-02", "tz": 0}).json()
+    assert ov["slot"] == 15
+    tl = c.get("/api/timeline", headers=A, params={"user": "slotty", "day": "2031-06-02", "tz": 0}).json()
+    assert len(tl) == 1 and tl[0]["slot"] is True and tl[0]["domain"] == "reddit.com" and tl[0]["dur"] == 840
+    assert tl[0]["breakdown"][0] == {"name": "reddit.com", "seconds": 480}
+    rows = c.get("/api/slots", headers=A, params={"user": "slotty", "start": "2031-06-02", "end": "2031-06-02", "tz": 0}).json()
+    assert rows["slot"] == 15 and len(rows["rows"]) == 1 and rows["rows"][0]["label"] == "unproductive"
+    assert c.get("/api/slots", headers=A, params={"user": "slotty", "start": "2031-01-01", "end": "2031-03-01"}).status_code == 400
+    c.put("/api/settings", headers=A, json={"report_interval": 0})

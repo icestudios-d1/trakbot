@@ -10,13 +10,13 @@
 <script src="/static/app.js"></script>
 <script>
 const {$,fmt,esc}=TB;let data=[],seq=0,sort='a';
-const rb=TB.rangeBar($('#range'),{defDays:7,onChange:load});
+const rb=TB.rangeBar($('#range'),{defDays:7,slot:true,onChange:load});
 async function load(r){
   const me=++seq;TB.error();
   try{
     const [users,o]=await Promise.all([TB.users(),TB.api('/api/overview?'+TB.qs({start:r.start,end:r.end,tz:TB.tz}))]);
     if(me!==seq)return;
-    $('#sub').textContent=TB.rangeLabel(r.start,r.end);
+    $('#sub').textContent=TB.rangeLabel(r.start,r.end)+TB.slotNote(o.slot);
     data=users.map(u=>{const m=o.by_user[u.user]||{};const a=(m.productive||0)+(m.unproductive||0)+(m.neutral||0);
       return {u:u.user,name:TB.dn(u.user),devices:u.devices,last:u.last_seen,a,idle:m.idle||0,p:a?100*m.productive/a:null,top:m.top_app}});
     render();

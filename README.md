@@ -74,6 +74,18 @@ same as how Chrome or any managed EDR patches itself — but every step is writt
 endpoint, so the rollout is fully auditable even though it isn't interruptive. A checksum mismatch aborts
 the update rather than applying anything.
 
+### Reporting interval ("Group by")
+
+The agent always samples every few seconds; **Group by** only changes how that data is *reported*. Pick **1, 5, 10,
+15 or 30 minutes** (or **Exact**, the default) in the bar at the top of Overview, Employees, an employee's report and
+the Day viewer. Time is cut into blocks aligned to the local clock (:00/:15/:30/:45 for 15 minutes) and each block is
+credited to the app or site used **most** within it; a block that is mostly idle shows as idle. It is one server-side
+setting, so every page and every admin sees the same granularity, and it applies everywhere: timeline, activity log,
+productivity %, top apps, per-day totals and exports. An employee's report has a **Time slots** table and a **Download
+slot report (CSV)** with one row per block (app, category, productivity, share of the block, what else ran in it).
+Totals of tracked time are preserved; what changes is attribution (a 15-minute block that was 8 min Photoshop and 7 min
+YouTube counts fully as Photoshop). API: `GET/PUT /api/settings` (`report_interval`), or `?slot=N` on a single request.
+
 ### Updating the server
 
 ```bash

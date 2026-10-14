@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from .classify import LABELS, classify, matching_rule
 from .db import DB
 from .default_rules import STUDIO_RULES
-from .reports import aggregate, previous_span, span
+from .reports import SLOT_CHOICES, aggregate, previous_span, slotize, span
 from .objstore import ObjectStoreError, S3Store
 
 ADMIN_TOKEN = os.environ.get("CYRIL_ADMIN_TOKEN", "")
@@ -203,17 +203,34 @@ def summary(user: str | None = None, day: str | None = None, days: int = Query(1
     }
 
 
-@app.get("/api/timeline", dependencies=[Depends(admin)])
-def timeline(user: str, day: str | None = None, tz: int | None = Query(None, ge=-840, le=840)):
-    start, end, _ = _span_or_400(day, day, tz)
-    rules = db.rules()
+def _rows(events: list[dict], rules: list[dict]) -> list[dict]:
     out = []
-    for e in _events(user, start, end):
+    for e in events:
         cat, lab = classify(e, rules)
-        out.append({"ts": e["ts"], "dur": e["dur"], "app": e["app"], "title": e["title"], "url": e["url"],
-                    "domain": e["domain"], "idle": bool(e["idle"]),
-                    "category": cat, "label": lab})
+        row = {"ts": e["ts"], "dur": e["dur"], "app": e["app"], "title": e["title"], "url": e["url"],
+               "domain": e["domain"], "idle": bool(e["idle"]), "category": cat, "label": lab}
+        if e.get("slot"):
+            row.update(slot=True, share=e["share"], breakdown=e["breakdown"])
+        out.append(row)
     return out
+
+
+@app.get("/api/timeline", dependencies=[Depends(admin)])
+def timeline(user: str, day: str | None = None, tz: int | None = Query(None, ge=-840, le=840), slot: int | None = None):
+    """One person's day. With a reporting interval set, each block shows the app used most in that block."""
+    start, end, _ = _span_or_400(day, day, tz)
+    return _rows(slotize(_events(user, start, end), _slot(slot), tz), db.rules())
+
+
+@app.get("/api/slots", dependencies=[Depends(admin)])
+def slot_report(user: str, start: str | None = None, end: str | None = None,
+                tz: int | None = Query(None, ge=-840, le=840), slot: int | None = None):
+    """The time-slot report for a date range: one row per block (or per raw event when the interval is Exact)."""
+    s, e, days = _span_or_400(start, end, tz)
+    if len(days) > 31:
+        raise HTTPException(400, "the time-slot report covers at most 31 days")
+    slot = _slot(slot)
+    return {"slot": slot, "rows": _rows(slotize(_events(user, s, e), slot, tz), db.rules())}
 
 
 @app.get("/api/me", dependencies=[Depends(admin)])
@@ -228,41 +245,82 @@ def _span_or_400(start, end, tz):
         raise HTTPException(400, str(e))
 
 
+def _slot_setting() -> int:
+    with db.conn() as c:
+        row = c.execute("SELECT value FROM settings WHERE key='report_interval'").fetchone()
+    try:
+        v = int(row["value"]) if row else 0
+    except ValueError:
+        v = 0
+    return v if v in SLOT_CHOICES else 0
+
+
+def _slot(param: int | None) -> int:
+    """Reporting granularity in minutes: an explicit ?slot= wins, else the saved setting (0 = exact)."""
+    if param is None:
+        return _slot_setting()
+    if param not in SLOT_CHOICES:
+        raise HTTPException(400, f"slot must be one of {list(SLOT_CHOICES)}")
+    return param
+
+
+class SettingsIn(BaseModel):
+    report_interval: int
+
+
+@app.get("/api/settings", dependencies=[Depends(admin)])
+def get_settings():
+    return {"report_interval": _slot_setting(), "report_interval_choices": list(SLOT_CHOICES)}
+
+
+@app.put("/api/settings", dependencies=[Depends(admin)])
+def put_settings(s: SettingsIn):
+    if s.report_interval not in SLOT_CHOICES:
+        raise HTTPException(400, f"report_interval must be one of {list(SLOT_CHOICES)}")
+    with db.conn() as c:
+        c.execute("INSERT INTO settings(key,value) VALUES('report_interval',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                  (str(s.report_interval),))
+    return get_settings()
+
+
 def _delta(cur: dict, prev: dict):
     return {"productivity_pct": prev["productivity_pct"], "active_seconds": prev["active_seconds"]}
 
 
 @app.get("/api/overview", dependencies=[Depends(admin)])
-def overview(start: str | None = None, end: str | None = None, tz: int | None = Query(None, ge=-840, le=840)):
+def overview(start: str | None = None, end: str | None = None, tz: int | None = Query(None, ge=-840, le=840),
+             slot: int | None = None):
     """Team-wide dashboard numbers for an inclusive local-date range, plus the previous equal-length range."""
     s, e, days = _span_or_400(start, end, tz)
+    slot = _slot(slot)
     rules = db.rules()
-    cur = aggregate(_events(None, s, e), rules, tz, days, s)
+    cur = aggregate(slotize(_events(None, s, e), slot, tz), rules, tz, days, s)
     ps, pe = previous_span(days)
     ps_ts, pe_ts, pdays = span(ps, pe, tz)
-    prev = aggregate(_events(None, ps_ts, pe_ts), rules, tz, pdays, ps_ts)
+    prev = aggregate(slotize(_events(None, ps_ts, pe_ts), slot, tz), rules, tz, pdays, ps_ts)
     with db.conn() as c:
         alerts = c.execute("SELECT COUNT(*) n, SUM(acked=0) open FROM alerts WHERE ts>=? AND ts<?", (s, e)).fetchone()
-    return {**cur, "start": s, "end": e, "days": days, "previous": _delta(cur, prev),
+    return {**cur, "start": s, "end": e, "days": days, "previous": _delta(cur, prev), "slot": slot,
             "alerts": {"total": alerts["n"], "open": alerts["open"] or 0}}
 
 
 @app.get("/api/employee", dependencies=[Depends(admin)])
 def employee(user: str, start: str | None = None, end: str | None = None,
-             tz: int | None = Query(None, ge=-840, le=840)):
+             tz: int | None = Query(None, ge=-840, le=840), slot: int | None = None):
     """Everything for one person over a date range (the per-employee report page)."""
     s, e, days = _span_or_400(start, end, tz)
+    slot = _slot(slot)
     rules = db.rules()
-    events = _events(user, s, e)
+    events = slotize(_events(user, s, e), slot, tz)
     cur = aggregate(events, rules, tz, days, s, top_n=15)
     ps, pe = previous_span(days)
     ps_ts, pe_ts, pdays = span(ps, pe, tz)
-    prev = aggregate(_events(user, ps_ts, pe_ts), rules, tz, pdays, ps_ts)
+    prev = aggregate(slotize(_events(user, ps_ts, pe_ts), slot, tz), rules, tz, pdays, ps_ts)
     with db.conn() as c:
         devices = [r[0] for r in c.execute("SELECT DISTINCT device FROM events WHERE user=? AND ts>=? AND ts<?", (user, s, e))]
         shots = c.execute("SELECT COUNT(*) FROM screenshots WHERE user=? AND ts>=? AND ts<?", (user, s, e)).fetchone()[0]
     worked = [d for d in cur["daily"] if d["first"] is not None]
-    return {**cur, "user": user, "start": s, "end": e, "days": days, "previous": _delta(cur, prev),
+    return {**cur, "user": user, "start": s, "end": e, "days": days, "previous": _delta(cur, prev), "slot": slot,
             "devices": devices, "screenshots": shots, "days_active": len(worked),
             "avg_active_per_day": round(cur["active_seconds"] / len(worked)) if worked else 0}
 

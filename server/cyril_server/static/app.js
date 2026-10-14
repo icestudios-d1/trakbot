@@ -93,8 +93,28 @@
     _users = null; await TB.users(); return true;
   };
 
+  // "Group by": the reporting interval. One server-side setting shared by every page and admin; each block of
+  // time is reported as the app used most in it. 0 = exact.
+  TB.SLOTS = [[0, 'Exact'], [1, '1 min'], [5, '5 min'], [10, '10 min'], [15, '15 min'], [30, '30 min']];
+  TB.slotNote = (n) => (n ? ` · grouped in ${n}-minute blocks (each block shows the app used most in it)` : '');
+  TB.slotSelect = async (parent, onChange) => {
+    const cur = (await TB.api('/api/settings')).report_interval;
+    const l = document.createElement('label');
+    l.className = 'mut'; l.title = 'Group activity into blocks of this length. Each block is reported as the app or site used most within it.';
+    l.innerHTML = `Group by <select aria-label="Reporting interval">${TB.SLOTS.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select>`;
+    const sel = l.querySelector('select');
+    sel.value = String(cur);
+    sel.onchange = async () => {
+      sel.disabled = true;
+      try { await TB.api('/api/settings', { method: 'PUT', body: JSON.stringify({ report_interval: +sel.value }) }); onChange(+sel.value); }
+      catch (e) { TB.error(e); } finally { sel.disabled = false; }
+    };
+    parent.append(l);
+    return cur;
+  };
+
   // Presets + start/end date inputs (+ optional employee picker). State lives in the URL so views are shareable.
-  TB.rangeBar = (el, { user = false, userAll = 'All employees', defDays = 7, onChange }) => {
+  TB.rangeBar = (el, { user = false, userAll = 'All employees', defDays = 7, slot = false, onChange }) => {
     const p = TB.params();
     const today = new Date();
     const back = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return TB.ymd(d); };
@@ -114,15 +134,19 @@
     el.querySelectorAll('.chip').forEach((b) => (b.onclick = () => { [st.start, st.end] = PRE[+b.dataset.i][1](); fire(); }));
     $('#rbS', el).onchange = (e) => { if (e.target.value) { st.start = e.target.value; fire(); } };
     $('#rbE', el).onchange = (e) => { if (e.target.value) { st.end = e.target.value; fire(); } };
-    if (user) {
-      TB.users().then((u) => {
-        const s = $('#rbUser', el);
-        s.innerHTML = (userAll === null ? '' : `<option value="">${userAll}</option>`) + u.map((x) => `<option value="${TB.esc(x.user)}">${TB.esc(TB.dn(x.user))}</option>`).join('');
-        if (userAll === null && !st.user && u.length) st.user = u[0].user;
-        s.value = st.user; s.onchange = () => { st.user = s.value; fire(); };
-        fire();
-      }).catch(TB.error);
-    } else fire();
+    const start = () => {
+      if (user) {
+        TB.users().then((u) => {
+          const s = $('#rbUser', el);
+          s.innerHTML = (userAll === null ? '' : `<option value="">${userAll}</option>`) + u.map((x) => `<option value="${TB.esc(x.user)}">${TB.esc(TB.dn(x.user))}</option>`).join('');
+          if (userAll === null && !st.user && u.length) st.user = u[0].user;
+          s.value = st.user; s.onchange = () => { st.user = s.value; fire(); };
+          fire();
+        }).catch(TB.error);
+      } else fire();
+    };
+    // the interval picker is part of the bar; the first load waits for the saved setting so numbers match it
+    if (slot) TB.slotSelect(el, () => fire()).then(start).catch((e) => { TB.error(e); start(); }); else start();
     return { get: () => ({ ...st }), set: (o) => { Object.assign(st, o); fire(); } };
   };
   TB.rangeLabel = (s, e) => (s === e ? new Date(s + 'T00:00').toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })

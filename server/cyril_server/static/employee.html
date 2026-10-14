@@ -26,13 +26,14 @@
   <div class="card"><h2>Flagged activity</h2><div id="alerts"></div></div>
 </div>
 <div class="card" style="margin-bottom:16px"><h2>Day by day</h2><div class="sub">Click a day to open it in the day viewer</div><div class="scroll"><table id="days"></table></div></div>
+<div class="card" style="margin-bottom:16px"><div class="pagehead" style="margin-bottom:6px"><div><h2 id="slotTitle">Time slots</h2><div class="sub" id="slotSub" style="margin:0"></div></div><button id="slotCsv" class="noprint">Download slot report (CSV)</button></div><div class="scroll"><table id="slots"></table></div></div>
 <div class="card"><h2>Screenshots</h2><div id="shots"></div></div>
 </div>
 </main>
 <script src="/static/app.js"></script>
 <script>
-const {$,fmt,esc}=TB;let seq=0,cur=null;
-const rb=TB.rangeBar($('#range'),{user:true,userAll:null,defDays:14,onChange:load});
+const {$,fmt,esc}=TB;let seq=0,cur=null,slotRows=[],slotMin=0;
+const rb=TB.rangeBar($('#range'),{user:true,userAll:null,defDays:14,slot:true,onChange:load});
 async function load(r){
   if(!r.user)return;
   const me=++seq;TB.error();$('#name').textContent=r.user;
@@ -44,7 +45,7 @@ async function load(r){
     $('#name').innerHTML=TB.who(r.user);
     $('#dayLink').href='/day?'+TB.qs({user:r.user,day:r.end});
     const n=o.days.length,s=o.seconds;
-    $('#sub').textContent=TB.rangeLabel(r.start,r.end)+(o.devices.length?` · ${o.devices.length} device${o.devices.length>1?'s':''}`:'')+` · active on ${o.days_active} of ${n} day${n>1?'s':''}`;
+    $('#sub').textContent=TB.rangeLabel(r.start,r.end)+TB.slotNote(o.slot)+(o.devices.length?` · ${o.devices.length} device${o.devices.length>1?'s':''}`:'')+` · active on ${o.days_active} of ${n} day${n>1?'s':''}`;
     const cshare=o.active_seconds?Math.round(100*o.creative_seconds/o.active_seconds):0;
     $('#kpis').innerHTML=
       TB.kpi('Productivity',TB.pct(o.productivity_pct),TB.delta(o.productivity_pct,o.previous.productivity_pct,'pp'))+
@@ -70,9 +71,30 @@ async function load(r){
     $('#days').querySelectorAll('tr.link').forEach(tr=>tr.onclick=()=>location.href='/day?'+TB.qs({user:r.user,day:tr.dataset.d}));
     const inR=al.filter(a=>a.ts>=o.start&&a.ts<o.end);
     $('#alerts').innerHTML=inR.length?`<table><tbody>`+inR.map(a=>`<tr><td class="nowrap mut sm">${TB.when(a.ts)}</td><td><span class="tag alert">${esc(a.category)}</span></td><td>${esc(a.url||a.app)}<div class="mut sm">${esc(a.title)}</div></td></tr>`).join('')+'</tbody></table>':'<div class="empty">No flagged activity in this range.</div>';
+    try {
+      const sr = await TB.api('/api/slots?'+TB.qs({user:r.user,start:r.start,end:r.end,tz:TB.tz}));
+      if(me!==seq)return;
+      slotRows=sr.rows;renderSlots(sr.slot);
+    } catch(x) { slotRows=[];$('#slots').innerHTML='';$('#slotSub').textContent=x.message; }
     $('#shots').innerHTML=o.screenshots?`<p><b>${o.screenshots}</b> screenshot${o.screenshots>1?'s':''} captured in this range.</p><a href="/screenshots?${TB.qs({user:r.user,start:r.start,end:r.end})}">Review or delete screenshots →</a>`:'<div class="empty">No screenshots in this range.</div>';
   }catch(e){if(me===seq)TB.error(e)}
 }
+const hm=ts=>new Date(ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+const dayOf=ts=>new Date(ts*1000).toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'});
+const what=x=>x.idle?'Idle / away':(x.domain||x.app||'unknown');
+function renderSlots(n){
+  slotMin=n;
+  $('#slotTitle').textContent=n?`Time slots (${n}-minute blocks)`:'Activity log (exact)';
+  $('#slotSub').textContent=n?'Each block is reported as the app or site used most in it.':'Every recorded stretch of activity. Choose "Group by" above for a block view.';
+  const MAX=400,rows=slotRows.slice(0,MAX);
+  $('#slots').innerHTML=slotRows.length?`<thead><tr><th>Day</th><th>Time</th><th>App / site</th><th>Category</th><th>Productivity</th>${n?'<th class="right">Share</th><th>Also in this block</th>':'<th>Window</th>'}</tr></thead><tbody>`+rows.map(x=>`<tr><td class="nowrap">${dayOf(x.ts)}</td><td class="nowrap">${hm(x.ts)}${n?' – '+hm(x.ts+n*60):''}</td><td><b>${esc(what(x))}</b></td><td>${x.idle?'':esc(x.category)}</td><td>${x.idle?'<span class="mut">idle</span>':`<span class="tag ${x.label}">${x.label}</span>`}</td>${n?`<td class="right num">${Math.round(100*x.share)}%</td><td class="mut sm">${x.breakdown.slice(1).map(b=>esc(b.name)+' '+fmt(b.seconds)).join(' · ')}</td>`:`<td class="mut sm" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.title)}</td>`}</tr>`).join('')+'</tbody>':'<tbody><tr><td class="empty">No activity in this range.</td></tr></tbody>';
+  if(slotRows.length>MAX)$('#slotSub').textContent+=` Showing the first ${MAX} of ${slotRows.length}; the CSV has all of them.`;
+}
+$('#slotCsv').onclick=()=>{
+  if(!cur)return;const r=rb.get();
+  TB.csv(`cyril-${cur.user}-slots-${slotMin?slotMin+'min-':''}${r.start}_to_${r.end}.csv`,[['Date','Start','End','App / site','Category','Productivity','Share of block %','Also in block'],
+    ...slotRows.map(x=>[new Date(x.ts*1000).toLocaleDateString('en-CA'),hm(x.ts),hm(x.ts+(slotMin?slotMin*60:x.dur)),what(x),x.idle?'':x.category,x.idle?'idle':x.label,x.share!=null?Math.round(100*x.share):'',(x.breakdown||[]).slice(1).map(b=>b.name+' '+Math.round(b.seconds/60)+'m').join('; ')])]);
+};
 $('#print').onclick=()=>print();
 $('#rename').onclick=async()=>{const u=rb.get().user;try{if(await TB.rename(u)){$('#name').innerHTML=TB.who(u);document.querySelectorAll('#rbUser option').forEach(o=>{if(o.value===u)o.textContent=TB.dn(u)})}}catch(e){TB.error(e)}};
 $('#csv').onclick=()=>{

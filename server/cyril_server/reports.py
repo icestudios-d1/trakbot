@@ -1,4 +1,5 @@
 """Report maths for the dashboard: date spans and aggregation."""
+import math
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -126,3 +127,64 @@ def aggregate(events: list[dict], rules: list[dict], tz: int | None, days: list[
             "top_app": max(m["apps"], key=m["apps"].get) if m["apps"] else None,
             "last_seen": m["last"]} for u, m in per_user.items()},
     }
+
+
+# ---------------------------------------------------------------- reporting granularity
+SLOT_CHOICES = (0, 1, 5, 10, 15, 30)  # minutes; 0 = exact (no grouping)
+
+
+def _utc_offset(ts: float, zi) -> float:
+    if zi is not None:
+        return datetime.fromtimestamp(ts, zi).utcoffset().total_seconds()
+    return datetime.fromtimestamp(ts).astimezone().utcoffset().total_seconds()
+
+
+def slotize(events: list[dict], slot_min: int, tz: int | None) -> list[dict]:
+    """Macro view: cut each person's time into `slot_min`-minute blocks aligned to their *local* clock
+    (so 15-minute blocks start at :00/:15/:30/:45 even in a +5:30 timezone) and report one event per block:
+    the app/site used most in it. A block is "idle" if idle time is at least as long as all activity.
+    The block is credited with all the time tracked inside it, so totals are preserved; events that
+    straddle a boundary are split proportionally. slot_min == 0 returns the events untouched."""
+    if not slot_min:
+        return events
+    size = slot_min * 60
+    zi = tzinfo_for(tz)
+    buckets: dict = {}
+    for e in events:
+        start, end = e["ts"], e["ts"] + e["dur"]
+        if e["dur"] <= 0:
+            continue
+        off = _utc_offset(start, zi)
+        while start < end - 1e-9:
+            idx = math.floor((start + off) / size)
+            seg = min(end, (idx + 1) * size - off) - start
+            b = buckets.setdefault((e["user"], idx, off), {"start": idx * size - off, "idle": 0.0, "total": 0.0,
+                                                          "device": e.get("device", ""), "names": {}})
+            b["total"] += seg
+            if e["idle"]:
+                b["idle"] += seg
+            else:
+                n = b["names"].setdefault(e["domain"] or e["app"] or "unknown",
+                                          {"seconds": 0.0, "rep": e, "rep_sec": 0.0, "titles": defaultdict(float)})
+                n["seconds"] += seg
+                n["titles"][e["title"] or ""] += seg
+                if seg > n["rep_sec"]:
+                    n["rep"], n["rep_sec"] = e, seg
+            start += seg
+    out = []
+    for (user, _idx, _off), b in buckets.items():
+        active = sum(n["seconds"] for n in b["names"].values())
+        parts = sorted([(k, v["seconds"]) for k, v in b["names"].items()] + ([("Idle", b["idle"])] if b["idle"] else []),
+                       key=lambda kv: -kv[1])
+        if not b["names"] or b["idle"] >= active:
+            ev = {"id": 0, "user": user, "device": b["device"], "ts": b["start"], "dur": b["total"], "app": "",
+                  "title": "", "url": "", "domain": "", "idle": 1}
+            share = b["idle"] / b["total"]
+        else:
+            name, n = max(b["names"].items(), key=lambda kv: kv[1]["seconds"])
+            ev = {**n["rep"], "ts": b["start"], "dur": b["total"], "idle": 0,
+                  "title": max(n["titles"], key=n["titles"].get)}
+            share = n["seconds"] / b["total"]
+        ev.update(slot=True, share=round(share, 3), breakdown=[{"name": k, "seconds": round(v)} for k, v in parts[:4]])
+        out.append(ev)
+    return sorted(out, key=lambda e: e["ts"])

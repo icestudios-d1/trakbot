@@ -7,7 +7,7 @@
  <select id="u" aria-label="Employee"></select>
  <button id="prev" aria-label="Previous day">◀</button><input type="date" id="d" aria-label="Day"><button id="next" aria-label="Next day">▶</button>
  <button class="chip" id="today">Today</button><span class="sep"></span>
- <span class="mut">Colour by</span><button class="chip on" data-c="app">Application</button><button class="chip" data-c="label">Productivity</button>
+ <span id="slotHere"></span><span class="mut">Colour by</span><button class="chip on" data-c="app">Application</button><button class="chip" data-c="label">Productivity</button>
 </div>
 <div id="err" class="callout" style="display:none"></div>
 <div class="kpis" id="kpis"></div>
@@ -42,10 +42,13 @@ const shift=n=>{const d=new Date($('#d').value+'T00:00');d.setDate(d.getDate()+n
 $('#prev').onclick=()=>shift(-1);$('#next').onclick=()=>shift(1);
 $('#today').onclick=()=>{$('#d').value=TB.ymd(new Date());load()};
 $('#d').onchange=()=>load();$('#u').onchange=()=>load();
+let slotMin=0;
+const slotReady=TB.slotSelect($('#slotHere'),n=>{slotMin=n;load()}).then(n=>{slotMin=n;}).catch(TB.error);
 document.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>{colorBy=b.dataset.c;document.querySelectorAll('[data-c]').forEach(x=>x.classList.toggle('on',x===b));setup();timeline();});
 $('#short').onchange=log;
 
 async function load(first){
+  await slotReady;
   const user=$('#u').value,day=$('#d').value,me=++seq;if(!user||!day)return;
   TB.error();TB.setParams({user,day,t:first?p0.t:''});
   const d0=new Date(day+'T00:00'),d1=new Date(d0);d1.setDate(d1.getDate()+1);
@@ -54,7 +57,7 @@ async function load(first){
       TB.api('/api/screenshots?'+TB.qs({user,start:d0/1000,end:d1/1000,limit:2000}))]);
     if(me!==seq)return;
     events=ev;shots=sh;sel=-1;
-    $('#sub').textContent=TB.rangeLabel(day,day)+' · '+TB.dn(user);
+    $('#sub').textContent=TB.rangeLabel(day,day)+' · '+TB.dn(user)+TB.slotNote(ev.some(e=>e.slot)?ev.find(e=>e.slot)&&slotMin:0);
     const act=ev.filter(e=>!e.idle),active=act.reduce((a,e)=>a+e.dur,0),prod=act.filter(e=>e.label==='productive').reduce((a,e)=>a+e.dur,0);
     $('#kpis').innerHTML=TB.kpi('Active time',fmt(active),'<span class="dl mut">non-idle, in front</span>')+
       TB.kpi('Productivity',TB.pct(active?100*prod/active:null),`<span class="dl mut">${fmt(prod)} productive</span>`)+
@@ -97,7 +100,7 @@ function timeline(){
     const step=Math.ceil((t1-t0)/3600/12);let g='';
     for(let t=t0,i=0;t<=t1;t+=3600,i++){const x=X(t);g+=`<g class="grid"><line x1="${x}" x2="${x}" y1="0" y2="${H+M+6}"/></g>`+(i%step===0?`<text x="${x}" y="${H+M+22}" text-anchor="middle">${new Date(t*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}</text>`:'')}
     events.forEach(e=>{const x=X(e.ts),w=Math.max(1.5,e.dur/(t1-t0)*pw);
-      const tip=`<b>${esc(nameOf(e))}</b>${e.title&&!e.idle?'<br>'+esc(e.title.slice(0,90)):''}<br>${TB.clock(e.ts)} · ${fmt(e.dur)}${e.idle?'':'<br>'+esc(e.category)+' · '+e.label}`;
+      const tip=`<b>${esc(nameOf(e))}</b>${e.title&&!e.idle?'<br>'+esc(e.title.slice(0,90)):''}<br>${TB.clock(e.ts)} · ${fmt(e.dur)}${e.idle?'':'<br>'+esc(e.category)+' · '+e.label}${e.slot?`<br>${Math.round(100*e.share)}% of this block`+e.breakdown.slice(1).map(b=>`<br>+ ${esc(b.name)} ${fmt(b.seconds)}`).join(''):''}`;
       g+=`<rect x="${x}" y="0" width="${w}" height="${H}" fill="${colorOf(e)}" stroke="var(--card)" stroke-width=".6" data-ts="${e.ts+e.dur/2}" data-tip="${esc(tip)}"/>`});
     shots.forEach((s,i)=>{const x=X(s.ts),on=i===sel;
       g+=`<rect x="${x-1.5}" y="${H+3}" width="3" height="${on?M+2:M-4}" rx="1.5" fill="${on?'var(--accent)':'var(--mut)'}" opacity="${on?1:.55}"/>`+
@@ -114,7 +117,7 @@ $('#tl').addEventListener('click',e=>{
 
 function log(){
   const all=$('#short').checked,rows=events.filter(e=>all||e.dur>=60);
-  $('#log').innerHTML=`<thead><tr><th>Time</th><th class="right">For</th><th>What</th><th></th></tr></thead><tbody>`+(rows.map(e=>`<tr data-ts="${e.ts+e.dur/2}" data-s="${e.ts}"><td class="nowrap">${TB.clock(e.ts)}</td><td class="right num">${fmt(e.dur)}</td><td style="max-width:260px"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span class="dot" style="background:${colorOf?colorOf(e):'var(--c-n)'}"></span><b>${esc(nameOf(e))}</b></div>${e.title&&!e.idle?`<div class="mut sm" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.title)}</div>`:''}</td><td>${e.idle?'':`<span class="tag ${e.label}">${e.label}</span>`}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">Nothing to show.</td></tr>')+'</tbody>';
+  $('#log').innerHTML=`<thead><tr><th>Time</th><th class="right">For</th><th>What</th><th></th></tr></thead><tbody>`+(rows.map(e=>`<tr data-ts="${e.ts+e.dur/2}" data-s="${e.ts}"><td class="nowrap">${TB.clock(e.ts)}</td><td class="right num">${fmt(e.dur)}</td><td style="max-width:260px"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span class="dot" style="background:${colorOf?colorOf(e):'var(--c-n)'}"></span><b>${esc(nameOf(e))}</b></div>${e.slot?`<div class="mut sm" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${Math.round(100*e.share)}% of block${e.breakdown.length>1?' · also '+e.breakdown.slice(1).map(b=>esc(b.name)+' '+fmt(b.seconds)).join(', '):''}</div>`:e.title&&!e.idle?`<div class="mut sm" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.title)}</div>`:''}</td><td>${e.idle?'':`<span class="tag ${e.label}">${e.label}</span>`}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">Nothing to show.</td></tr>')+'</tbody>';
   $('#log').querySelectorAll('tr[data-ts]').forEach(tr=>tr.onclick=()=>{if(shots.length)select(nearest(+tr.dataset.ts))});
   mark();
 }
