@@ -1,4 +1,4 @@
-"""Report maths for the dashboard: date spans, aggregation, active-vs-background audio."""
+"""Report maths for the dashboard: date spans and aggregation."""
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -125,66 +125,4 @@ def aggregate(events: list[dict], rules: list[dict], tz: int | None, days: list[
             **{k: round(m["seconds"].get(k, 0)) for k in ALL_LABELS},
             "top_app": max(m["apps"], key=m["apps"].get) if m["apps"] else None,
             "last_seen": m["last"]} for u, m in per_user.items()},
-    }
-
-
-def split_bg(e: dict) -> list[str]:
-    return [b for b in (e.get("bg") or "").split(",") if b]
-
-
-def overlap(events: list[dict], rules: list[dict], top_n: int = 15):
-    """Active (foreground, user present) vs passive (audio playing from a site that isn't in the foreground).
-
-    Active time is keyed by site when there is a URL, else by app. Passive time only exists for events
-    the agent captured with the v0.2 browser extension (which reports which tabs are audible).
-    """
-    active, passive = defaultdict(float), defaultdict(float)
-    during = defaultdict(lambda: defaultdict(float))
-    meta, per_user = {}, defaultdict(lambda: {"active": 0.0, "passive": 0.0, "src": defaultdict(float)})
-    has_bg = False
-    bg_any = while_working = while_idle = 0.0
-    for e in events:
-        dur, dom = e["dur"], e["domain"] or ""
-        bg = split_bg(e)
-        if bg:
-            has_bg = True
-        if not e["idle"]:
-            key = dom or e["app"] or "unknown"
-            active[key] += dur
-            meta.setdefault(key, classify(e, rules))
-            per_user[e["user"]]["active"] += dur
-        else:
-            key = ""
-        other = [b for b in bg if b != dom or e["idle"]]
-        if other:
-            bg_any += dur
-            if e["idle"]:
-                while_idle += dur
-            else:
-                while_working += dur
-            per_user[e["user"]]["passive"] += dur
-        for b in other:
-            passive[b] += dur
-            per_user[e["user"]]["src"][b] += dur
-            if not e["idle"]:
-                during[b][key] += dur
-            if b not in meta:
-                meta[b] = classify({"app": "", "title": "", "domain": b, "idle": False}, rules)
-    names = sorted(set(active) | set(passive), key=lambda n: -(active.get(n, 0) + passive.get(n, 0)))[:top_n]
-    sources = [{
-        "name": n, "category": meta[n][0], "label": meta[n][1],
-        "active": round(active.get(n, 0)), "passive": round(passive.get(n, 0)),
-        "during": _top(during[n], 5) if n in during else [],
-    } for n in names]
-    return {
-        "has_background_data": has_bg,
-        "active_seconds": round(sum(active.values())),
-        "passive_seconds": round(sum(passive.values())),
-        "background_playing_seconds": round(bg_any),
-        "while_working_seconds": round(while_working),
-        "while_idle_seconds": round(while_idle),
-        "sources": sources,
-        "by_user": [{"user": u, "active": round(v["active"]), "passive": round(v["passive"]),
-                     "top_passive": max(v["src"], key=v["src"].get) if v["src"] else None}
-                    for u, v in sorted(per_user.items())],
     }

@@ -22,15 +22,14 @@ class Aggregator:
     gap: float = 30.0
     events: list = field(default_factory=list)
 
-    def add(self, now: float, interval: float, app: str, title: str, url: str, idle: bool, bg: tuple = ()):
-        bg = tuple(sorted(bg))
-        key = (app, title, url, idle, bg)
+    def add(self, now: float, interval: float, app: str, title: str, url: str, idle: bool):
+        key = (app, title, url, idle)
         last = self.events[-1] if self.events else None
         if last and last["_k"] == key and now - (last["ts"] + last["dur"]) <= self.gap:
             last["dur"] = now + interval - last["ts"]
         else:
             self.events.append({"_k": key, "ts": now, "dur": interval, "app": app,
-                                "title": title, "url": url, "idle": idle, "bg": list(bg)})
+                                "title": title, "url": url, "idle": idle})
 
     def drain(self, keep_open: bool = True) -> list:
         """Return completed events; keep the newest open for further merging."""
@@ -43,13 +42,6 @@ def browser_url(app: str, ext_report: dict | None, now: float, max_age: float = 
     if ext_report and any(b in app.lower() for b in BROWSERS) and now - ext_report["at"] <= max_age:
         return ext_report["url"]
     return ""
-
-
-def background_audio(ext_report: dict | None, now: float, max_age: float = 20.0) -> tuple:
-    """Sites playing audio in the browser right now (may or may not be in the foreground)."""
-    if ext_report and now - ext_report["at"] <= max_age:
-        return tuple(ext_report.get("audible", ()))
-    return ()
 
 
 class Spool:

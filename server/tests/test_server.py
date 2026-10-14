@@ -148,7 +148,7 @@ def _day():
 def test_pages_and_me():
     assert c.get("/api/me").status_code == 401
     assert c.get("/api/me", headers=A).json() == {"ok": True}
-    for path in ("/", "/login", "/employees", "/employee", "/overlap", "/alerts", "/screenshots", "/rules"):
+    for path in ("/", "/login", "/employees", "/employee", "/day", "/alerts", "/screenshots", "/rules"):
         r = c.get(path)
         assert r.status_code == 200 and "text/html" in r.headers["content-type"], path
     assert c.get("/static/app.js").status_code == 200
@@ -175,33 +175,38 @@ def test_rule_edit_and_seed():
     c.delete(f"/api/rules/{rid}", headers=A)
 
 
-def test_overview_employee_and_background_overlap():
+def test_overview_and_employee_reports():
     now = time.time()
-    # dana designs in Photoshop for 30m with YouTube music playing in the background, then watches YouTube for 10m
     ev = [
-        {"ts": now - 4000, "dur": 1800, "app": "Photoshop.exe", "title": "poster.psd", "bg": ["youtube.com"]},
-        {"ts": now - 2200, "dur": 600, "app": "chrome", "title": "mix", "url": "https://www.youtube.com/watch", "bg": ["youtube.com"]},
-        {"ts": now - 1600, "dur": 300, "idle": True, "bg": ["youtube.com"]},
+        {"ts": now - 4000, "dur": 1800, "app": "Photoshop.exe", "title": "poster.psd"},
+        {"ts": now - 2200, "dur": 600, "app": "chrome", "title": "mix", "url": "https://www.youtube.com/watch"},
+        {"ts": now - 1600, "dur": 300, "idle": True},
     ]
     assert c.post("/api/ingest", headers=K, json={"user": "dana", "device": "d1", "events": ev}).json()["stored"] == 3
     q = {"start": _day(), "end": _day(), "tz": 0}
-    o = c.get("/api/overlap", headers=A, params={"user": "dana", **q}).json()
-    assert o["has_background_data"]
-    yt = [x for x in o["sources"] if x["name"] == "youtube.com"][0]
-    # foreground YouTube (600s) is active; it's only passive while something else is in front / user idle
-    assert yt["active"] == 600 and yt["passive"] == 1800 + 300
-    assert yt["during"][0] == {"name": "Photoshop.exe", "seconds": 1800}
-    assert o["while_working_seconds"] == 1800 and o["while_idle_seconds"] == 300
-    ps = [x for x in o["sources"] if x["name"] == "Photoshop.exe"][0]
-    assert ps["active"] == 1800 and ps["passive"] == 0
     e = c.get("/api/employee", headers=A, params={"user": "dana", **q}).json()
     assert e["seconds"]["productive"] == 1800 and e["creative_seconds"] == 1800
     assert e["creative_apps"][0]["name"] == "Photoshop.exe"
     assert len(e["daily"]) == 1 and len(e["hourly"]) == 24 and len(e["heatmap"]) == 7
-    assert e["overlap"]["passive_seconds"] == 2100
     ov = c.get("/api/overview", headers=A, params=q).json()
-    assert ov["creative_seconds"] >= 1800 and "dana" in ov["by_user"]
-    assert ov["background"]["has_background_data"] and "previous" in ov
+    assert ov["creative_seconds"] >= 1800 and "dana" in ov["by_user"] and "previous" in ov
+    tl = c.get("/api/timeline", headers=A, params={"user": "dana", "day": _day(), "tz": 0}).json()
+    assert [t["app"] for t in tl][:2] == ["Photoshop.exe", "chrome"] and tl[2]["idle"] and tl[0]["label"] == "productive"
+
+
+def test_rename_user():
+    c.post("/api/ingest", headers=K, json={"user": "pc-front-desk", "device": "d", "events": [{"ts": time.time(), "dur": 30, "app": "code"}]})
+    row = lambda: [u for u in c.get("/api/users", headers=A).json() if u["user"] == "pc-front-desk"][0]
+    assert row()["name"] is None
+    assert c.post("/api/users/rename", json={"user": "pc-front-desk", "name": "Ana"}).status_code == 401
+    r = c.post("/api/users/rename", headers=A, json={"user": "pc-front-desk", "name": "  Ana   Lopez "})
+    assert r.json() == {"user": "pc-front-desk", "name": "Ana Lopez"} and row()["name"] == "Ana Lopez"
+    # data stays keyed on the login, so history is untouched and renaming again just replaces the tag
+    assert c.get("/api/employee", headers=A, params={"user": "pc-front-desk", "start": _day(), "end": _day()}).json()["seconds"]["productive"] == 30
+    c.post("/api/users/rename", headers=A, json={"user": "pc-front-desk", "name": "Ben"})
+    assert row()["name"] == "Ben"
+    c.post("/api/users/rename", headers=A, json={"user": "pc-front-desk", "name": "  "})
+    assert row()["name"] is None
 
 
 def test_range_validation_and_timezone():

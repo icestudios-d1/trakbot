@@ -55,7 +55,7 @@
   TB.setParams = (o) => { const p = new URLSearchParams(location.search); for (const [k, v] of Object.entries(o)) v ? p.set(k, v) : p.delete(k); history.replaceState(null, '', location.pathname + (p.toString() ? '?' + p : '')); };
 
   /* ---------- nav ---------- */
-  const NAV = [['/', 'Overview'], ['/employees', 'Employees'], ['/overlap', 'Active vs background'], ['/alerts', 'Alerts'], ['/screenshots', 'Screenshots'], ['/rules', 'Productivity rules']];
+  const NAV = [['/', 'Overview'], ['/employees', 'Employees'], ['/day', 'Day viewer'], ['/alerts', 'Alerts'], ['/screenshots', 'Screenshots'], ['/rules', 'Productivity rules']];
   if (!isLogin) {
     const here = location.pathname === '/employee' ? '/employees' : location.pathname;
     const top = document.createElement('header');
@@ -76,8 +76,21 @@
   }
 
   /* ---------- users + range bar ---------- */
-  let _users;
-  TB.users = async () => (_users ||= await TB.api('/api/users'));
+  // Display names: an admin can tag a device login with the real person's name; ids stay the login everywhere in the API.
+  let _users; const _names = {};
+  TB.users = async () => {
+    if (!_users) { _users = await TB.api('/api/users'); _users.forEach((u) => { _names[u.user] = u.name || ''; }); }
+    return _users;
+  };
+  TB.dn = (u) => _names[u] || u;                                   // name to show
+  TB.who = (u) => { const n = _names[u]; return n ? `${TB.esc(n)} <span class="mut sm">(${TB.esc(u)})</span>` : TB.esc(u); };
+  TB.rename = async (user) => {
+    const cur = _names[user] || '';
+    const v = prompt(`Who is using the "${user}" login?\nThis name is shown instead of the login everywhere. Leave empty to clear it.`, cur);
+    if (v === null) return false;
+    await TB.api('/api/users/rename', { method: 'POST', body: JSON.stringify({ user, name: v }) });
+    _users = null; await TB.users(); return true;
+  };
 
   // Presets + start/end date inputs (+ optional employee picker). State lives in the URL so views are shareable.
   TB.rangeBar = (el, { user = false, userAll = 'All employees', defDays = 7, onChange }) => {
@@ -103,7 +116,7 @@
     if (user) {
       TB.users().then((u) => {
         const s = $('#rbUser', el);
-        s.innerHTML = (userAll === null ? '' : `<option value="">${userAll}</option>`) + u.map((x) => `<option value="${TB.esc(x.user)}">${TB.esc(x.user)}</option>`).join('');
+        s.innerHTML = (userAll === null ? '' : `<option value="">${userAll}</option>`) + u.map((x) => `<option value="${TB.esc(x.user)}">${TB.esc(TB.dn(x.user))}</option>`).join('');
         if (userAll === null && !st.user && u.length) st.user = u[0].user;
         s.value = st.user; s.onchange = () => { st.user = s.value; fire(); };
         fire();

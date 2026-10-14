@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Day viewer · Cyril</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main>
+<div class="pagehead"><div><h1>Day viewer</h1><p id="sub">One person, one day: what was on screen, hour by hour.</p></div></div>
+<div class="daybar">
+ <select id="u" aria-label="Employee"></select>
+ <button id="prev" aria-label="Previous day">◀</button><input type="date" id="d" aria-label="Day"><button id="next" aria-label="Next day">▶</button>
+ <button class="chip" id="today">Today</button><span class="sep"></span>
+ <span class="mut">Colour by</span><button class="chip on" data-c="app">Application</button><button class="chip" data-c="label">Productivity</button>
+</div>
+<div id="err" class="callout" style="display:none"></div>
+<div class="kpis" id="kpis"></div>
+<div class="card" style="margin-bottom:16px"><h2>Timeline</h2><div class="sub">Click a block or a screenshot tick (below the bar) to jump to that moment. Use ← → to step through screenshots.</div>
+ <div class="chart" id="tl"></div><div class="legend" id="tlLegend"></div></div>
+<div class="grid g-main">
+ <div class="card"><h2>Screenshot</h2>
+  <div class="preview" id="big"><span>Select a screenshot</span></div>
+  <div class="pmeta"><div id="pinfo" style="min-width:0"></div><div class="formrow noprint"><button id="sp" aria-label="Previous screenshot">◀ Prev</button><span class="mut num" id="pcount"></span><button id="sn" aria-label="Next screenshot">Next ▶</button></div></div></div>
+ <div class="card"><div class="pagehead" style="margin-bottom:6px"><div><h2>Activity log</h2><div class="mut sm">Click a row to jump to the nearest screenshot</div></div>
+  <label class="mut sm" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="short" style="min-height:0"> include &lt;1 min</label></div>
+  <div class="log scroll"><table id="log"></table></div></div>
+</div>
+<div class="card"><h2>All screenshots this day</h2><div class="film" id="film"></div></div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+const {$,fmt,esc}=TB;
+let events=[],shots=[],sel=-1,colorBy='app',keyOf,colorOf,t0=0,t1=0,seq=0;
+const urls={};
+const nameOf=e=>e.idle?'Idle / away':(e.domain||e.app||'unknown');
+const p0=TB.params();
+$('#d').value=p0.day||TB.ymd(new Date());
+$('#d').max=TB.ymd(new Date());
+TB.users().then(u=>{
+  $('#u').innerHTML=u.map(x=>`<option value="${esc(x.user)}">${esc(TB.dn(x.user))}</option>`).join('');
+  if(p0.user&&u.some(x=>x.user===p0.user))$('#u').value=p0.user;
+  if(!u.length)TB.empty($('#tl'),'No employees have reported yet.');else load(true);
+}).catch(TB.error);
+
+const shift=n=>{const d=new Date($('#d').value+'T00:00');d.setDate(d.getDate()+n);const v=TB.ymd(d);if(v>$('#d').max)return;$('#d').value=v;load()};
+$('#prev').onclick=()=>shift(-1);$('#next').onclick=()=>shift(1);
+$('#today').onclick=()=>{$('#d').value=TB.ymd(new Date());load()};
+$('#d').onchange=()=>load();$('#u').onchange=()=>load();
+document.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>{colorBy=b.dataset.c;document.querySelectorAll('[data-c]').forEach(x=>x.classList.toggle('on',x===b));setup();timeline();});
+$('#short').onchange=log;
+
+async function load(first){
+  const user=$('#u').value,day=$('#d').value,me=++seq;if(!user||!day)return;
+  TB.error();TB.setParams({user,day,t:first?p0.t:''});
+  const d0=new Date(day+'T00:00'),d1=new Date(d0);d1.setDate(d1.getDate()+1);
+  try{
+    const [ev,sh]=await Promise.all([TB.api('/api/timeline?'+TB.qs({user,day,tz:TB.tz})),
+      TB.api('/api/screenshots?'+TB.qs({user,start:d0/1000,end:d1/1000,limit:2000}))]);
+    if(me!==seq)return;
+    events=ev;shots=sh;sel=-1;
+    $('#sub').textContent=TB.rangeLabel(day,day)+' · '+TB.dn(user);
+    const act=ev.filter(e=>!e.idle),active=act.reduce((a,e)=>a+e.dur,0),prod=act.filter(e=>e.label==='productive').reduce((a,e)=>a+e.dur,0);
+    $('#kpis').innerHTML=TB.kpi('Active time',fmt(active),'<span class="dl mut">non-idle, in front</span>')+
+      TB.kpi('Productivity',TB.pct(active?100*prod/active:null),`<span class="dl mut">${fmt(prod)} productive</span>`)+
+      TB.kpi('First – last activity',act.length?`<span style="font-size:20px">${TB.clock(Math.min(...act.map(e=>e.ts)))} – ${TB.clock(Math.max(...act.map(e=>e.ts+e.dur)))}</span>`:'–','<span class="dl mut">span of the working day</span>')+
+      TB.kpi('Screenshots',shots.length,`<span class="dl mut">${shots.length?'captured this day':'none captured'}</span>`);
+    setup();timeline();log();film();
+    const t=first&&+p0.t;
+    if(shots.length)select(t?nearest(t):0,{scroll:false});else select(-1);
+  }catch(e){if(me===seq)TB.error(e)}
+}
+
+// colour assignment: top 8 apps/sites get fixed series colours, the rest are grey
+function setup(){
+  const tot={};events.forEach(e=>{if(!e.idle){const k=nameOf(e);tot[k]=(tot[k]||0)+e.dur}});
+  const rank=Object.keys(tot).sort((a,b)=>tot[b]-tot[a]);
+  if(colorBy==='app'){
+    colorOf=e=>e.idle?'var(--c-i)':(rank.indexOf(nameOf(e))<8?TB.SERIES[rank.indexOf(nameOf(e))]:'var(--c-n)');
+    const ent=rank.slice(0,8).map((k,i)=>[k,TB.SERIES[i],tot[k]]);
+    const other=rank.slice(8).reduce((a,k)=>a+tot[k],0);
+    if(other)ent.push(['Other','var(--c-n)',other]);
+    ent.push(['Idle','var(--c-i)',events.filter(e=>e.idle).reduce((a,e)=>a+e.dur,0)]);
+    $('#tlLegend').innerHTML=ent.map(([k,c,v])=>`<span><span class="dot" style="background:${c}"></span>${esc(k)} <span class="num" style="margin-left:4px">${fmt(v)}</span></span>`).join('');
+  }else{
+    colorOf=e=>TB.labelColor(e.label);
+    $('#tlLegend').innerHTML=TB.LABELS.map(([k,t,c])=>`<span><span class="dot" style="background:${c}"></span>${t} <span class="num" style="margin-left:4px">${fmt(events.filter(e=>e.label===k).reduce((a,e)=>a+e.dur,0))}</span></span>`).join('');
+  }
+}
+
+function nearest(ts){let b=0,bd=1e18;shots.forEach((s,i)=>{const d=Math.abs(s.ts-ts);if(d<bd){bd=d;b=i}});return b}
+function eventAt(ts){return events.find(e=>e.ts<=ts&&ts<e.ts+e.dur)||events.filter(e=>e.ts<=ts).pop()}
+
+function timeline(){
+  const el=$('#tl');
+  if(!events.length){TB.empty(el,'No activity recorded for this person on this day.');return}
+  t0=Math.floor(Math.min(...events.map(e=>e.ts),...shots.map(s=>s.ts))/3600)*3600;
+  t1=Math.max(t0+3600,Math.ceil(Math.max(...events.map(e=>e.ts+e.dur),...shots.map(s=>s.ts))/3600)*3600);
+  const H=44,M=16,L=4;
+  const draw=()=>{
+    const W=Math.max(320,el.clientWidth||700),pw=W-L-6,X=t=>L+(t-t0)/(t1-t0)*pw;
+    const step=Math.ceil((t1-t0)/3600/12);let g='';
+    for(let t=t0,i=0;t<=t1;t+=3600,i++){const x=X(t);g+=`<g class="grid"><line x1="${x}" x2="${x}" y1="0" y2="${H+M+6}"/></g>`+(i%step===0?`<text x="${x}" y="${H+M+22}" text-anchor="middle">${new Date(t*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}</text>`:'')}
+    events.forEach(e=>{const x=X(e.ts),w=Math.max(1.5,e.dur/(t1-t0)*pw);
+      const tip=`<b>${esc(nameOf(e))}</b>${e.title&&!e.idle?'<br>'+esc(e.title.slice(0,90)):''}<br>${TB.clock(e.ts)} · ${fmt(e.dur)}${e.idle?'':'<br>'+esc(e.category)+' · '+e.label}`;
+      g+=`<rect x="${x}" y="0" width="${w}" height="${H}" fill="${colorOf(e)}" stroke="var(--card)" stroke-width=".6" data-ts="${e.ts+e.dur/2}" data-tip="${esc(tip)}"/>`});
+    shots.forEach((s,i)=>{const x=X(s.ts),on=i===sel;
+      g+=`<rect x="${x-1.5}" y="${H+3}" width="3" height="${on?M+2:M-4}" rx="1.5" fill="${on?'var(--accent)':'var(--mut)'}" opacity="${on?1:.55}"/>`+
+         `<rect x="${x-5}" y="${H+1}" width="10" height="${M+4}" fill="transparent" data-i="${i}" data-tip="${esc(`<b>${TB.clock(s.ts)}</b><br>${esc(s.app)}`)}"/>`});
+    if(sel>=0){const x=X(shots[sel].ts);g+=`<line x1="${x}" x2="${x}" y1="-2" y2="${H}" stroke="var(--fg)" stroke-width="1.5" stroke-dasharray="3 2" pointer-events="none"/>`}
+    el.innerHTML=`<svg viewBox="0 0 ${W} ${H+M+28}" height="${H+M+28}">${g}</svg>`};
+  draw();el._redraw=draw;
+  if(!el._ro){let w=el.clientWidth;el._ro=new ResizeObserver(()=>{if(el.clientWidth!==w){w=el.clientWidth;el._redraw&&el._redraw()}});el._ro.observe(el)}
+}
+$('#tl').addEventListener('click',e=>{
+  const m=e.target.closest('[data-i]');if(m)return select(+m.dataset.i);
+  const s=e.target.closest('[data-ts]');if(s&&shots.length)select(nearest(+s.dataset.ts));
+});
+
+function log(){
+  const all=$('#short').checked,rows=events.filter(e=>all||e.dur>=60);
+  $('#log').innerHTML=`<thead><tr><th>Time</th><th class="right">For</th><th>What</th><th></th></tr></thead><tbody>`+(rows.map(e=>`<tr data-ts="${e.ts+e.dur/2}" data-s="${e.ts}"><td class="nowrap">${TB.clock(e.ts)}</td><td class="right num">${fmt(e.dur)}</td><td style="max-width:260px"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span class="dot" style="background:${colorOf?colorOf(e):'var(--c-n)'}"></span><b>${esc(nameOf(e))}</b></div>${e.title&&!e.idle?`<div class="mut sm" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.title)}</div>`:''}</td><td>${e.idle?'':`<span class="tag ${e.label}">${e.label}</span>`}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">Nothing to show.</td></tr>')+'</tbody>';
+  $('#log').querySelectorAll('tr[data-ts]').forEach(tr=>tr.onclick=()=>{if(shots.length)select(nearest(+tr.dataset.ts))});
+  mark();
+}
+function mark(){
+  const cur=sel>=0?eventAt(shots[sel].ts):null;
+  $('#log').querySelectorAll('tr[data-s]').forEach(tr=>tr.classList.toggle('cur',!!cur&&+tr.dataset.s===cur.ts));
+}
+
+let io;
+function film(){
+  const f=$('#film');
+  if(!shots.length){f.innerHTML='<span class="mut">No screenshots were captured on this day.</span>';return}
+  f.innerHTML=shots.map((s,i)=>`<button data-i="${i}" title="${esc(s.title||s.app)}"><img alt=""><span>${TB.clock(s.ts)} · ${esc(s.app)}</span></button>`).join('');
+  f.onclick=e=>{const b=e.target.closest('button[data-i]');if(b)select(+b.dataset.i)};
+  io&&io.disconnect();
+  io=new IntersectionObserver(es=>es.forEach(en=>{if(en.isIntersecting){io.unobserve(en.target);img(shots[+en.target.parentElement.dataset.i]).then(u=>{en.target.src=u}).catch(()=>{})}}),{root:f,rootMargin:'400px'});
+  f.querySelectorAll('img').forEach(i=>io.observe(i));
+}
+function img(s){return urls[s.id]?Promise.resolve(urls[s.id]):TB.blobUrl(`/api/screenshots/${s.id}/image`).then(u=>(urls[s.id]=u))}
+
+async function select(i,{scroll=true}={}){
+  sel=i;timeline();mark();
+  const big=$('#big');
+  document.querySelectorAll('#film button').forEach(b=>b.classList.toggle('sel',+b.dataset.i===i));
+  if(i<0){big.innerHTML=`<span>${shots.length?'Select a screenshot':'No screenshots captured on this day'}</span>`;$('#pinfo').innerHTML='';$('#pcount').textContent='';$('#sp').disabled=$('#sn').disabled=true;return}
+  const s=shots[i],e=eventAt(s.ts);
+  $('#pcount').textContent=`${i+1} / ${shots.length}`;$('#sp').disabled=i===0;$('#sn').disabled=i===shots.length-1;
+  $('#pinfo').innerHTML=`<b>${new Date(s.ts*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit',second:'2-digit'})}</b> · ${esc(s.app||'')}${e&&!e.idle?` <span class="tag ${e.label}">${e.label}</span> <span class="mut sm">${esc(e.category)}</span>`:''}<div class="mut sm" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.title||'')}</div>`;
+  const b=document.querySelector(`#film button[data-i="${i}"]`);
+  if(b&&scroll){const f=$('#film');f.scrollTo({left:b.offsetLeft-f.clientWidth/2+b.clientWidth/2})}
+  big.innerHTML='<span>Loading…</span>';
+  try{
+    const u=await img(s);if(sel!==i)return;
+    big.innerHTML=`<img alt="Screenshot at ${TB.clock(s.ts)}">`;const im=big.firstChild;im.src=u;im.onclick=()=>window.open(u);
+    if(shots[i+1])img(shots[i+1]).catch(()=>{});
+  }catch(x){if(sel===i)big.innerHTML='<span>Image unavailable</span>'}
+}
+$('#sp').onclick=()=>sel>0&&select(sel-1);$('#sn').onclick=()=>sel<shots.length-1&&select(sel+1);
+document.addEventListener('keydown',e=>{if(/INPUT|SELECT|TEXTAREA/.test(e.target.tagName))return;if(e.key==='ArrowLeft'&&sel>0)select(sel-1);if(e.key==='ArrowRight'&&sel<shots.length-1)select(sel+1)});
+</script></body></html>

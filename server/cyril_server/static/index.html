@@ -6,7 +6,6 @@
 <div id="range"></div>
 <div id="err" class="callout" style="display:none"></div>
 <div class="kpis" id="kpis"></div>
-<div id="bgnote"></div>
 <div class="grid g-main">
   <div class="card"><h2>Daily activity</h2><div class="sub">Tracked time per day, split by how it was classified</div><div class="chart" id="daily"></div>
     <div class="legend" id="dailyLegend"></div></div>
@@ -34,7 +33,7 @@ const rb=TB.rangeBar($('#range'),{defDays:7,onChange:load});
 async function load(r){
   const me=++seq;TB.error();
   try{
-    const o=await TB.api('/api/overview?'+TB.qs({start:r.start,end:r.end,tz:TB.tz}));
+    const [o]=await Promise.all([TB.api('/api/overview?'+TB.qs({start:r.start,end:r.end,tz:TB.tz})),TB.users()]);
     if(me!==seq)return;
     const n=o.days.length,single=n===1;
     $('#sub').textContent=TB.rangeLabel(r.start,r.end);
@@ -46,8 +45,6 @@ async function load(r){
       TB.kpi('In creative tools',fmt(o.creative_seconds),`<span class="dl mut">${cshare}% of active time</span>`)+
       TB.kpi('Employees tracked',users,`<span class="dl mut">${users?fmt(o.active_seconds/users/(n)):'–'} active / person / day</span>`)+
       TB.kpi('Flagged alerts',`<a href="/alerts" style="color:inherit">${o.alerts.total}</a>`,`<span class="dl ${o.alerts.open?'down':'flat'}">${o.alerts.open} unacknowledged</span>`);
-    const b=o.background;
-    $('#bgnote').innerHTML=b.has_background_data&&b.passive_seconds?`<div class="callout info"><b>${fmt(b.passive_seconds)}</b> of background audio (e.g. YouTube music) played while people worked in other apps. It is <b>not</b> counted as app usage here. <a href="/overlap?${TB.qs({start:r.start,end:r.end})}">See active vs background →</a></div>`:'';
     // daily stacked
     const keys=TB.LABELS.map(([k,,c])=>[k,c,k[0].toUpperCase()+k.slice(1)]);
     const every=Math.ceil(n/12);
@@ -64,7 +61,7 @@ async function load(r){
     TB.hbars($('#sites'),o.sites,{sub:TB.labelLegend});
     TB.hbars($('#cats'),o.categories.filter(c=>c.name!=='Idle'),{color:()=>'var(--accent)'});
     const rows=Object.entries(o.by_user).map(([u,m])=>({u,a:m.productive+m.unproductive+m.neutral,m})).sort((x,y)=>y.a-x.a);
-    $('#team').innerHTML=rows.length?`<thead><tr><th>Employee</th><th class="right">Active</th><th style="width:30%">Productivity</th><th>Top app</th><th>Last seen</th></tr></thead><tbody>`+rows.map(({u,a,m})=>`<tr class="link" data-u="${esc(u)}"><td><a href="/employee?${TB.qs({user:u,start:r.start,end:r.end})}">${esc(u)}</a></td><td class="right num">${fmt(a)}</td><td><div class="stackbar" data-tip="${esc(`${TB.pct(a?100*m.productive/a:null)} productive`)}">${['productive','neutral','unproductive'].map(k=>`<i style="width:${a?100*m[k]/a:0}%;background:${TB.labelColor(k)}"></i>`).join('')}</div><span class="sm mut">${TB.pct(a?100*m.productive/a:null)}</span></td><td>${esc(m.top_app||'–')}</td><td class="mut nowrap">${TB.when(m.last_seen)}</td></tr>`).join('')+'</tbody>':'<tbody><tr><td class="empty">No employees reported activity in this range.</td></tr></tbody>';
+    $('#team').innerHTML=rows.length?`<thead><tr><th>Employee</th><th class="right">Active</th><th style="width:30%">Productivity</th><th>Top app</th><th>Last seen</th></tr></thead><tbody>`+rows.map(({u,a,m})=>`<tr class="link" data-u="${esc(u)}"><td><a href="/employee?${TB.qs({user:u,start:r.start,end:r.end})}">${esc(TB.dn(u))}</a></td><td class="right num">${fmt(a)}</td><td><div class="stackbar" data-tip="${esc(`${TB.pct(a?100*m.productive/a:null)} productive`)}">${['productive','neutral','unproductive'].map(k=>`<i style="width:${a?100*m[k]/a:0}%;background:${TB.labelColor(k)}"></i>`).join('')}</div><span class="sm mut">${TB.pct(a?100*m.productive/a:null)}</span></td><td>${esc(m.top_app||'–')}</td><td class="mut nowrap">${TB.when(m.last_seen)}</td></tr>`).join('')+'</tbody>':'<tbody><tr><td class="empty">No employees reported activity in this range.</td></tr></tbody>';
     $('#team').querySelectorAll('tr.link').forEach(tr=>tr.onclick=e=>{if(e.target.tagName!=='A')location.href=tr.querySelector('a').href});
     TB.heatmap($('#heat'),o.heatmap);
   }catch(e){if(me===seq)TB.error(e)}

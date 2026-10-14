@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from .classify import LABELS, classify, matching_rule
 from .db import DB
 from .default_rules import STUDIO_RULES
-from .reports import aggregate, overlap, previous_span, span
+from .reports import aggregate, previous_span, span
 from .objstore import ObjectStoreError, S3Store
 
 ADMIN_TOKEN = os.environ.get("CYRIL_ADMIN_TOKEN", "")
@@ -74,7 +74,6 @@ class Event(BaseModel):
     title: str = ""
     url: str = ""
     idle: bool = False
-    bg: list[str] = Field(default_factory=list, max_length=8)  # sites playing audio in the background
 
 
 class IngestBatch(BaseModel):
@@ -99,9 +98,8 @@ def ingest(b: IngestBatch):
         for e in b.events:
             dom = domain_of(e.url)
             c.execute(
-                "INSERT INTO events(user,device,ts,dur,app,title,url,domain,idle,bg) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (b.user, b.device, e.ts, e.dur, e.app, e.title, e.url, dom, int(e.idle),
-                 ",".join(sorted({h.strip().lower().removeprefix("www.")[:253] for h in e.bg if h.strip() and "," not in h}))))
+                "INSERT INTO events(user,device,ts,dur,app,title,url,domain,idle) VALUES(?,?,?,?,?,?,?,?,?)",
+                (b.user, b.device, e.ts, e.dur, e.app, e.title, e.url, dom, int(e.idle)))
             r = matching_rule({"app": e.app, "title": e.title, "domain": dom, "idle": e.idle}, rules)
             if r and r["alert"]:
                 c.execute(
@@ -134,9 +132,30 @@ def _top(d: dict, n=10):
 
 @app.get("/api/users", dependencies=[Depends(admin)])
 def users():
+    """Accounts that have reported, with the display name an admin gave them (`name`, None if not renamed)."""
     with db.conn() as c:
-        rows = c.execute("SELECT user, MAX(ts+dur) last_seen, COUNT(DISTINCT device) devices FROM events GROUP BY user ORDER BY user").fetchall()
+        rows = c.execute(
+            "SELECT e.user, n.name, MAX(e.ts+e.dur) last_seen, COUNT(DISTINCT e.device) devices FROM events e "
+            "LEFT JOIN user_names n ON n.user=e.user GROUP BY e.user ORDER BY COALESCE(n.name, e.user) COLLATE NOCASE").fetchall()
     return [dict(r) for r in rows]
+
+
+class RenameIn(BaseModel):
+    user: str = Field(min_length=1, max_length=128)
+    name: str = Field(max_length=100)
+
+
+@app.post("/api/users/rename", dependencies=[Depends(admin)])
+def rename_user(r: RenameIn):
+    """Tag a device login with the real person using it. An empty name clears the tag."""
+    name = " ".join(r.name.split())
+    with db.conn() as c:
+        if name:
+            c.execute("INSERT INTO user_names(user,name) VALUES(?,?) ON CONFLICT(user) DO UPDATE SET name=excluded.name",
+                      (r.user, name))
+        else:
+            c.execute("DELETE FROM user_names WHERE user=?", (r.user,))
+    return {"user": r.user, "name": name or None}
 
 
 @app.get("/api/summary", dependencies=[Depends(admin)])
@@ -177,7 +196,7 @@ def timeline(user: str, day: str | None = None, tz: int | None = Query(None, ge=
     for e in _events(user, start, end):
         cat, lab = classify(e, rules)
         out.append({"ts": e["ts"], "dur": e["dur"], "app": e["app"], "title": e["title"], "url": e["url"],
-                    "domain": e["domain"], "idle": bool(e["idle"]), "bg": [b for b in e["bg"].split(",") if b],
+                    "domain": e["domain"], "idle": bool(e["idle"]),
                     "category": cat, "label": lab})
     return out
 
@@ -209,10 +228,8 @@ def overview(start: str | None = None, end: str | None = None, tz: int | None = 
     prev = aggregate(_events(None, ps_ts, pe_ts), rules, tz, pdays, ps_ts)
     with db.conn() as c:
         alerts = c.execute("SELECT COUNT(*) n, SUM(acked=0) open FROM alerts WHERE ts>=? AND ts<?", (s, e)).fetchone()
-    ov = overlap(_events(None, s, e), rules, 5)
     return {**cur, "start": s, "end": e, "days": days, "previous": _delta(cur, prev),
-            "alerts": {"total": alerts["n"], "open": alerts["open"] or 0},
-            "background": {k: ov[k] for k in ("has_background_data", "passive_seconds", "while_working_seconds")}}
+            "alerts": {"total": alerts["n"], "open": alerts["open"] or 0}}
 
 
 @app.get("/api/employee", dependencies=[Depends(admin)])
@@ -232,15 +249,7 @@ def employee(user: str, start: str | None = None, end: str | None = None,
     worked = [d for d in cur["daily"] if d["first"] is not None]
     return {**cur, "user": user, "start": s, "end": e, "days": days, "previous": _delta(cur, prev),
             "devices": devices, "screenshots": shots, "days_active": len(worked),
-            "avg_active_per_day": round(cur["active_seconds"] / len(worked)) if worked else 0,
-            "overlap": overlap(events, rules, 10)}
-
-
-@app.get("/api/overlap", dependencies=[Depends(admin)])
-def overlap_report(user: str | None = None, start: str | None = None, end: str | None = None,
-                   tz: int | None = Query(None, ge=-840, le=840)):
-    s, e, _ = _span_or_400(start, end, tz)
-    return overlap(_events(user, s, e), db.rules(), 20)
+            "avg_active_per_day": round(cur["active_seconds"] / len(worked)) if worked else 0}
 
 
 # ----------------------------------------------------------------- rules
@@ -512,7 +521,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 # Pages are static HTML; each one checks the admin token client-side and bounces to /login. All data
 # comes from the token-protected /api/* endpoints, so serving the shells unauthenticated leaks nothing.
 PAGES = {"/": "index.html", "/login": "login.html", "/employees": "employees.html", "/employee": "employee.html",
-         "/overlap": "overlap.html", "/alerts": "alerts.html", "/screenshots": "screenshots.html",
+         "/day": "day.html", "/alerts": "alerts.html", "/screenshots": "screenshots.html",
          "/rules": "rules.html"}
 
 

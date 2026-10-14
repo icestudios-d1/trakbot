@@ -15,7 +15,8 @@ charts. No keystroke logging.
 | Idle/active time | ✅ idle detection (`--idle-after`) |
 | Productivity %, top apps/sites, categories, hourly activity, trend chart | ✅ multi-page dashboard: Overview, Employees, Alerts, Screenshots, Rules |
 | Per-employee drill-down / timeline | ✅ Employee page: pick start/end dates, trends, day-by-day table, CSV + print/PDF |
-| Active vs passive usage (e.g. YouTube music behind Photoshop) | ✅ "Active vs background" page; needs browser extension v0.2+ (audible tabs) |
+| Day-by-day review | ✅ Day viewer: timeline of the day with clickable screenshots, activity log, filmstrip |
+| Who is behind each login | ✅ Rename any employee login to the real person (shown everywhere; data stays keyed on the login) |
 | Design-studio productivity rules | ✅ Photoshop/Illustrator/InDesign/After Effects/Figma/Blender… preset, uncategorised-app finder, rule tester |
 | Alerts for risky activity | ✅ rules with `alert` flag (piracy, gambling, private browsing pre-seeded) |
 | Screenshots | ✅ one per app every 3 min once it's held the foreground 60s+ (`--screenshot-every`); gallery with range-select + delete |
@@ -156,15 +157,11 @@ right order of operations.
 
 ### Dashboard pages
 
-`/login` (admin token) · `/` Overview · `/employees` · `/employee?user=…` (date-range report) ·
-`/overlap` (active vs background audio) · `/alerts` · `/screenshots` · `/rules`.
+`/login` (admin token) · `/` Overview · `/employees` (rename logins) · `/employee?user=…` (date-range report) ·
+`/day` (day viewer) · `/alerts` · `/screenshots` · `/rules`.
 
-**Active vs background:** the agent normally only sees the foreground window, so music left playing in a
-background tab would be invisible (or, in tools that credit the browser, look like heavy YouTube use).
-The v0.2 browser extension reports which tabs are playing sound; the agent attaches those sites to each
-event. *Active* = in front and not idle; *passive* = audible but not in front (or user idle). Productivity %
-uses active time only. Reload the extension and update the agent to start capturing it; older history has no
-background data. Desktop players (Spotify app) are only seen while in front.
+**Foreground only:** time is credited to the window in focus, so music or video left running in a background tab
+while someone works in Photoshop counts as Photoshop, not as the player.
 
 **Existing installs:** the studio rule preset is added with **Rules → Add missing studio rules** (never edits
 or removes your rules). Existing `youtube.com` rules stay as they are; edit them there if you want YouTube neutral.

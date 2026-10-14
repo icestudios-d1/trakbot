@@ -18,7 +18,7 @@ const local=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${
 const parse=(v,endOfDay)=>!v?null:p.exact?new Date(v+'Z'):new Date(v+(v.length===10?(endOfDay?'T23:59':'T00:00'):''));
 const now=new Date();
 $('#from').value=local(parse(p.start,false)||new Date(now-864e5));$('#to').value=local(parse(p.end,true)||new Date(+now+6e4));
-TB.users().then(u=>{$('#u').innerHTML+=u.map(x=>`<option>${esc(x.user)}</option>`).join('');if(p.user){$('#u').value=p.user;load()}}).catch(TB.error);
+TB.users().then(u=>{$('#u').innerHTML+=u.map(x=>`<option value="${esc(x.user)}">${esc(TB.dn(x.user))}</option>`).join('');if(p.user){$('#u').value=p.user;load()}}).catch(TB.error);
 async function load(){
   TB.error();if(!$('#u').value){$('#shots').innerHTML='<span class="mut">Pick an employee first.</span>';return}
   try{

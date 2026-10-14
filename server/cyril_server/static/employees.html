@@ -18,17 +18,18 @@ async function load(r){
     if(me!==seq)return;
     $('#sub').textContent=TB.rangeLabel(r.start,r.end);
     data=users.map(u=>{const m=o.by_user[u.user]||{};const a=(m.productive||0)+(m.unproductive||0)+(m.neutral||0);
-      return {u:u.user,devices:u.devices,last:u.last_seen,a,idle:m.idle||0,p:a?100*m.productive/a:null,top:m.top_app}});
+      return {u:u.user,name:TB.dn(u.user),devices:u.devices,last:u.last_seen,a,idle:m.idle||0,p:a?100*m.productive/a:null,top:m.top_app}});
     render();
   }catch(e){if(me===seq)TB.error(e)}
 }
 function render(){
   const q=$('#q').value.toLowerCase(),r=rb.get();
-  const rows=data.filter(d=>d.u.toLowerCase().includes(q)).sort((x,y)=>sort==='n'?x.u.localeCompare(y.u):sort==='p'?(y.p??-1)-(x.p??-1):y.a-x.a);
+  const rows=data.filter(d=>(d.name+' '+d.u).toLowerCase().includes(q)).sort((x,y)=>sort==='n'?x.name.localeCompare(y.name):sort==='p'?(y.p??-1)-(x.p??-1):y.a-x.a);
   const th=(k,t,c='')=>`<th class="${c}"><a href="#" data-s="${k}" style="color:inherit">${t}${sort===k?' ↓':''}</a></th>`;
-  $('#t').innerHTML=`<thead><tr>${th('n','Employee')}${th('a','Active time','right')}${th('p','Productivity')}<th>Top app</th><th>Devices</th><th>Last seen</th></tr></thead><tbody>`+
-   (rows.map(d=>`<tr class="link"><td><a href="/employee?${TB.qs({user:d.u,start:r.start,end:r.end})}"><b>${esc(d.u)}</b></a></td><td class="right num">${d.a?fmt(d.a):'<span class="mut">–</span>'}</td><td style="min-width:150px">${d.p==null?'<span class="mut">no activity</span>':`<div class="stackbar"><i style="width:${d.p}%;background:var(--c-p)"></i></div><span class="sm mut">${TB.pct(d.p)}</span>`}</td><td>${esc(d.top||'–')}</td><td class="num">${d.devices}</td><td class="mut nowrap">${TB.when(d.last)}</td></tr>`).join('')||'<tr><td colspan="6" class="empty">No employees found.</td></tr>')+'</tbody>';
+  $('#t').innerHTML=`<thead><tr>${th('n','Employee')}${th('a','Active time','right')}${th('p','Productivity')}<th>Top app</th><th>Devices</th><th>Last seen</th><th></th></tr></thead><tbody>`+
+   (rows.map(d=>`<tr class="link"><td><a href="/employee?${TB.qs({user:d.u,start:r.start,end:r.end})}"><b>${esc(d.name)}</b></a>${d.name!==d.u?` <span class="mut sm">${esc(d.u)}</span>`:''}</td><td class="right num">${d.a?fmt(d.a):'<span class="mut">–</span>'}</td><td style="min-width:150px">${d.p==null?'<span class="mut">no activity</span>':`<div class="stackbar"><i style="width:${d.p}%;background:var(--c-p)"></i></div><span class="sm mut">${TB.pct(d.p)}</span>`}</td><td>${esc(d.top||'–')}</td><td class="num">${d.devices}</td><td class="mut nowrap">${TB.when(d.last)}</td><td class="right"><button class="chip" data-rn="${esc(d.u)}" title="Set who uses this login">Rename</button></td></tr>`).join('')||'<tr><td colspan="7" class="empty">No employees found.</td></tr>')+'</tbody>';
   $('#t').querySelectorAll('[data-s]').forEach(a=>a.onclick=e=>{e.preventDefault();sort=a.dataset.s;render()});
+  $('#t').querySelectorAll('[data-rn]').forEach(b=>b.onclick=async e=>{e.stopPropagation();try{if(await TB.rename(b.dataset.rn)){data=data.map(d=>({...d,name:TB.dn(d.u)}));render()}}catch(x){TB.error(x)}});
   $('#t').querySelectorAll('tr.link').forEach(tr=>tr.onclick=e=>{if(e.target.tagName!=='A')location.href=tr.querySelector('a').href});
 }
 $('#q').oninput=render;

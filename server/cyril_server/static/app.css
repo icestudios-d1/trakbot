@@ -113,3 +113,19 @@ td input,td select{width:100%;min-height:30px;padding:3px 6px}
 
 @media(max-width:700px){main{padding:14px}.top{padding:0 12px}.hb{grid-template-columns:1fr auto}.hb .tr{grid-column:1/-1;order:3}}
 @media print{.top,.bar-controls,.noprint,button{display:none!important}body{background:#fff}.card{break-inside:avoid;box-shadow:none}}
+
+/* day viewer */
+.daybar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+.daybar .sep{flex:1}
+.preview{position:relative;background:var(--hover);border-radius:10px;aspect-ratio:16/10;display:grid;place-items:center;overflow:hidden;color:var(--mut)}
+.preview img{width:100%;height:100%;object-fit:contain;display:block;cursor:zoom-in}
+.pmeta{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-top:10px}
+.film{display:flex;gap:8px;overflow-x:auto;padding:4px 2px 8px;position:relative;scroll-behavior:smooth}
+.film button{flex:none;width:150px;padding:0;border:2px solid transparent;border-radius:8px;background:none;text-align:left;min-height:0}
+.film button img{width:100%;aspect-ratio:16/10;object-fit:cover;border-radius:6px;display:block;background:var(--hover)}
+.film button span{display:block;font-size:11px;color:var(--mut);padding:2px 2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.film button.sel{border-color:var(--accent)}
+.log{max-height:440px;overflow:auto}
+.log tr.cur td{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.log tr{cursor:pointer}
+#tl svg [data-ts],#tl svg [data-i]{cursor:pointer}
