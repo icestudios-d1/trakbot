@@ -79,7 +79,7 @@ if ($upToDate) {
     try { Invoke-WebRequest -UseBasicParsing -Uri "$ServerUrl/dist/cyril.exe" -OutFile $tmp -TimeoutSec 300 }
     catch {
         Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-        Fail "Could not download $ServerUrl/dist/cyril.exe ($($_.Exception.Message)). The agent build has not been published to the server yet - run windows\build.ps1 on a build machine and copy its output into the server's dist folder."
+        Fail "Could not download $ServerUrl/dist/cyril.exe ($($_.Exception.Message)). The agent build has not been published to the server yet - run windows\build.ps1 in the repo on the server machine (it writes into server\dist, which the server serves; if you built elsewhere, copy the files there)."
     }
     if ($expectedHash) {
         $actual = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
