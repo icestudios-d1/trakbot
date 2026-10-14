@@ -44,7 +44,6 @@ services:
     volumes:
       - cyril_screenshots:/data
       - ./seaweedfs/entrypoint.sh:/entrypoint.sh:ro
-      - ./seaweedfs/s3config.json.template:/etc/seaweedfs/s3config.json.template:ro
     # No ports published to the host: only the `server` service talks to it,
     # over the compose-internal network. Screenshots are never reachable
     # directly, only through the server's admin-authenticated proxy
