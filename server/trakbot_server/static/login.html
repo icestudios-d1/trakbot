@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in · TrakBot</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><div class="login"><form class="card" id="f" autocomplete="off">
+<div class="brand" style="margin:0"><i></i>TrakBot</div>
+<h1>Sign in</h1><p>Paste the admin token set in <code>TRAKBOT_ADMIN_TOKEN</code> on the server.</p>
+<label class="sm mut" for="t">Admin token</label>
+<input id="t" type="password" required autofocus placeholder="Admin token" autocomplete="current-password">
+<label class="sm mut" style="display:flex;gap:8px;align-items:center;margin-bottom:14px"><input id="r" type="checkbox" style="min-height:0"> Keep me signed in on this device</label>
+<div class="err" id="err" role="alert"></div>
+<button class="primary" id="go">Sign in</button>
+</form></div>
+<script src="/static/app.js"></script>
+<script>
+const $=TB.$;
+// If a saved token is still valid, skip straight in.
+if(TB.token())TB.api('/api/me').then(()=>go()).catch(()=>{});
+function go(){const n=new URLSearchParams(location.search).get('next');location.replace(n&&/^\/(?!\/)/.test(n)?n:'/')}
+$('#f').onsubmit=async e=>{
+  e.preventDefault();$('#err').textContent='';$('#go').disabled=true;
+  const t=$('#t').value.trim();
+  try{
+    const r=await fetch('/api/me',{headers:{Authorization:'Bearer '+t}});
+    if(r.status===401)throw new Error('That token is not valid.');
+    if(!r.ok)throw new Error('Server error ('+r.status+').');
+    TB.setToken(t,$('#r').checked);go();
+  }catch(x){$('#err').textContent=x.message}
+  $('#go').disabled=false;
+};
+</script></body></html>

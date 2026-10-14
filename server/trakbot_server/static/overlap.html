@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Active vs background · TrakBot</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main>
+<div class="pagehead"><div><h1>Active vs background usage</h1><p id="sub">Separates what people are <b>using</b> from what is just <b>playing behind their work</b>.</p></div></div>
+<div id="range"></div>
+<div id="err" class="callout" style="display:none"></div>
+<div id="nodata"></div>
+<div class="kpis" id="kpis"></div>
+<div class="grid g-main">
+  <div class="card"><h2>Active vs passive time by app / site</h2>
+    <div class="sub"><span class="dot" style="background:var(--c-a)"></span>Active: in the foreground while the person is present &nbsp; <span class="dot" style="background:var(--c-b)"></span>Passive: playing audio behind another app, or after they stepped away</div>
+    <div id="src"></div></div>
+  <div class="card"><h2>How to read this</h2>
+    <p class="sm">Normal activity tracking credits the whole session to whichever window is in front. A tab left open for music then looks like heavy YouTube use. TrakBot separates the two:</p>
+    <p class="sm"><b>Active</b> time is only when the app or site is in front of someone who is not idle. <b>Passive</b> time is when a site is playing audio while something else is in front (Photoshop, Illustrator…) or the person is away.</p>
+    <p class="sm">Productivity percentages elsewhere in TrakBot use <b>active time only</b>, so background music never counts against anyone.</p>
+    <p class="sm mut">Detected from audible browser tabs via the TrakBot browser extension (v0.2+). Desktop music apps like Spotify are visible only while in front.</p></div>
+</div>
+<div class="card" style="margin-bottom:16px"><h2>Who plays what in the background</h2><div class="sub">Per employee in this range</div><div class="scroll"><table id="users"></table></div></div>
+<div class="card"><div class="pagehead" style="margin-bottom:8px"><div><h2>Day timeline</h2><div class="sub" style="margin:0">Foreground app (top lane) with background audio (bottom lane). Pick an employee above.</div></div>
+<label class="mut">Day <input type="date" id="tld"></label></div>
+<div class="chart" id="tl"></div><div class="legend" id="tlLegend"></div></div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+const {$,fmt,esc}=TB;let seq=0,tseq=0;
+const rb=TB.rangeBar($('#range'),{user:true,defDays:7,onChange:load});
+async function load(r){
+  const me=++seq;TB.error();
+  try{
+    const o=await TB.api('/api/overlap?'+TB.qs({user:r.user,start:r.start,end:r.end,tz:TB.tz}));
+    if(me!==seq)return;
+    $('#nodata').innerHTML=o.has_background_data?'':`<div class="callout"><b>No background-audio data in this range yet.</b> Background detection needs the updated agent plus the TrakBot browser extension <b>v0.2</b> (it reports which tabs are playing sound). Earlier history only knows the foreground app, so everything below will show as active.</div>`;
+    const pctOf=(a,b)=>b?Math.round(100*a/b)+'%':'–';
+    $('#kpis').innerHTML=
+      TB.kpi('Active time',fmt(o.active_seconds),'<span class="dl mut">in front, person present</span>')+
+      TB.kpi('Background audio',fmt(o.background_playing_seconds),'<span class="dl mut">sound playing from a non-front site</span>')+
+      TB.kpi('Played while working',fmt(o.while_working_seconds),`<span class="dl mut">${pctOf(o.while_working_seconds,o.active_seconds)} of active time</span>`)+
+      TB.kpi('Left playing while away',fmt(o.while_idle_seconds),'<span class="dl mut">person idle, audio still on</span>');
+    const rows=o.sources;const mx=Math.max(1,...rows.map(x=>x.active+x.passive));
+    $('#src').innerHTML=rows.length?rows.map(x=>{const t=x.active+x.passive;
+      const tip=`<b>${x.name}</b><br>Active: ${fmt(x.active)}<br>Passive: ${fmt(x.passive)}${x.during.length?'<br>Played behind: '+x.during.map(d=>`${d.name} (${fmt(d.seconds)})`).join(', '):''}`;
+      return `<div class="hb" style="grid-template-columns:minmax(90px,1fr) 2.2fr auto" data-tip="${esc(tip)}"><span class="nm" title="${esc(x.category)}">${esc(x.name)}</span><span class="tr" style="height:12px"><i style="width:${100*x.active/mx}%;background:var(--c-a);border-radius:0"></i><i style="width:${100*x.passive/mx}%;background:var(--c-b);border-radius:0"></i></span><span class="num mut right sm nowrap">${fmt(x.active)} ${x.passive?`<span style="color:var(--c-b)">+ ${fmt(x.passive)}</span>`:''}</span></div>`}).join(''):'<div class="empty">No activity in this range.</div>';
+    $('#users').innerHTML=`<thead><tr><th>Employee</th><th class="right">Active</th><th class="right">Background audio</th><th>Mostly plays</th></tr></thead><tbody>`+(o.by_user.map(u=>`<tr><td><a href="/employee?${TB.qs({user:u.user,start:r.start,end:r.end})}">${esc(u.user)}</a></td><td class="right num">${fmt(u.active)}</td><td class="right num">${u.passive?fmt(u.passive):'–'}</td><td>${esc(u.top_passive||'–')}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">No data</td></tr>')+'</tbody>';
+    const d=$('#tld');if(!d.value||d.value<r.start||d.value>r.end)d.value=r.end;
+    timeline();
+  }catch(e){if(me===seq)TB.error(e)}
+}
+async function timeline(){
+  const r=rb.get(),day=$('#tld').value,me=++tseq;
+  if(!r.user){TB.empty($('#tl'),'Pick an employee in the bar above to see their day.');$('#tlLegend').innerHTML='';return}
+  try{
+    const ev=await TB.api('/api/timeline?'+TB.qs({user:r.user,day,tz:TB.tz}));
+    if(me!==tseq)return;
+    if(!ev.length){TB.empty($('#tl'),'No activity recorded on this day.');$('#tlLegend').innerHTML='';return}
+    const t0=Math.floor(Math.min(...ev.map(e=>e.ts))/3600)*3600,t1=Math.max(t0+3600,Math.ceil(Math.max(...ev.map(e=>e.ts+e.dur))/3600)*3600);
+    const doms=[];ev.forEach(e=>e.bg.forEach(b=>{if(!doms.includes(b))doms.push(b)}));
+    const BG=['var(--s2)','var(--s7)','var(--s4)','var(--s5)','var(--s3)','var(--s6)','var(--s8)'];  // never blue: blue means "active" on this page
+    const col=d=>{const i=doms.indexOf(d);return i<BG.length?BG[i]:'var(--c-n)'};
+    const H=30,G=14,L=70;
+    const draw=()=>{const el=$('#tl'),W=Math.max(320,el.clientWidth||700),pw=W-L,X=t=>L+(t-t0)/(t1-t0)*pw;
+      let g='';const hrs=(t1-t0)/3600,step=Math.ceil(hrs/12);
+      for(let t=t0,i=0;t<=t1;t+=3600,i++){const x=X(t);g+=`<g class="grid"><line x1="${x}" x2="${x}" y1="0" y2="${2*H+G}"/></g>`+(i%step===0?`<text x="${x}" y="${2*H+G+16}" text-anchor="middle">${new Date(t*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</text>`:'')}
+      g+=`<text x="0" y="${H/2+4}">Foreground</text><text x="0" y="${H+G+H/2+4}">Background</text>`;
+      ev.forEach(e=>{const x=X(e.ts),w=Math.max(1.5,e.dur/(t1-t0)*pw);
+        const name=e.idle?'Idle / away':(e.domain||e.app||'unknown');
+        const tip=`<b>${esc(name)}</b>${e.title&&!e.idle?'<br>'+esc(e.title.slice(0,80)):''}<br>${TB.clock(e.ts)} · ${fmt(e.dur)}${e.idle?'':'<br>'+esc(e.category)+' · '+e.label}${e.bg.length?'<br>♪ '+e.bg.map(esc).join(', '):''}`;
+        g+=`<rect x="${x}" y="0" width="${w}" height="${H}" fill="${TB.labelColor(e.label)}" stroke="var(--card)" stroke-width=".5" data-tip="${esc(tip)}"/>`;
+        if(e.bg.length)g+=`<rect x="${x}" y="${H+G}" width="${w}" height="${H}" fill="${col(e.bg[0])}" stroke="var(--card)" stroke-width=".5" data-tip="${esc(tip)}"/>`;});
+      el.innerHTML=`<svg viewBox="0 0 ${W} ${2*H+G+22}" height="${2*H+G+22}">${g}</svg>`};
+    draw();
+    $('#tl')._redraw=draw;if(!$('#tl')._ro){$('#tl')._ro=new ResizeObserver(()=>$('#tl')._redraw&&$('#tl')._redraw());$('#tl')._ro.observe($('#tl'))}
+    $('#tlLegend').innerHTML=TB.LABELS.map(([,t,c])=>`<span><span class="dot" style="background:${c}"></span>${t}</span>`).join('')+
+      (doms.length?doms.slice(0,8).map(d=>`<span>♪ <span class="dot" style="background:${col(d)};margin-left:4px"></span>${esc(d)}</span>`).join(''):'<span>No background audio recorded this day</span>');
+  }catch(e){TB.error(e)}
+}
+$('#tld').onchange=timeline;
+</script></body></html>

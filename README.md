@@ -13,8 +13,10 @@ charts. No keystroke logging.
 | App & website usage tracking | ✅ agent (Windows/macOS/Linux) + browser extension for URLs |
 | Productivity labels (productive/unproductive/undefined) | ✅ rule engine (app / domain / title), re-labels history on edit |
 | Idle/active time | ✅ idle detection (`--idle-after`) |
-| Productivity %, top apps/sites, categories, hourly activity, trend chart | ✅ dashboard + `/api/summary`, `/api/trend` |
-| Per-employee drill-down / timeline | ✅ `/api/timeline` |
+| Productivity %, top apps/sites, categories, hourly activity, trend chart | ✅ multi-page dashboard: Overview, Employees, Alerts, Screenshots, Rules |
+| Per-employee drill-down / timeline | ✅ Employee page: pick start/end dates, trends, day-by-day table, CSV + print/PDF |
+| Active vs passive usage (e.g. YouTube music behind Photoshop) | ✅ "Active vs background" page; needs browser extension v0.2+ (audible tabs) |
+| Design-studio productivity rules | ✅ Photoshop/Illustrator/InDesign/After Effects/Figma/Blender… preset, uncategorised-app finder, rule tester |
 | Alerts for risky activity | ✅ rules with `alert` flag (piracy, gambling, private browsing pre-seeded) |
 | Screenshots | ✅ one per app per minute once it's held the foreground 60s+; gallery with range-select + delete |
 | Windows rollout | ✅ one PowerShell command, no Python/git/npm needed on the target machine |
@@ -28,7 +30,7 @@ charts. No keystroke logging.
 pip install -r server/requirements.txt
 export TRAKBOT_ADMIN_TOKEN=<long-random>  TRAKBOT_AGENT_KEY=<long-random>
 cd server && uvicorn trakbot_server.app:app --host 0.0.0.0 --port 8000   # put behind HTTPS (nginx/caddy)
-# open http://host:8000 and paste the admin token
+# open http://host:8000 -> sign-in page, paste the admin token
 
 # agent, run directly (on each device; Linux also needs `xprop` and `xprintidle`)
 cd agent && pip install -r requirements.txt
@@ -109,3 +111,19 @@ the data (the admin token gates all of it), and sometimes works-council consent.
 company-owned devices, tell employees what is collected, and have counsel review the policy — you noted
 legal has already cleared this and is updating the agreement to name TrakBot specifically, which is the
 right order of operations.
+
+
+### Dashboard pages
+
+`/login` (admin token) · `/` Overview · `/employees` · `/employee?user=…` (date-range report) ·
+`/overlap` (active vs background audio) · `/alerts` · `/screenshots` · `/rules`.
+
+**Active vs background:** the agent normally only sees the foreground window, so music left playing in a
+background tab would be invisible (or, in tools that credit the browser, look like heavy YouTube use).
+The v0.2 browser extension reports which tabs are playing sound; the agent attaches those sites to each
+event. *Active* = in front and not idle; *passive* = audible but not in front (or user idle). Productivity %
+uses active time only. Reload the extension and update the agent to start capturing it; older history has no
+background data. Desktop players (Spotify app) are only seen while in front.
+
+**Existing installs:** the studio rule preset is added with **Rules → Add missing studio rules** (never edits
+or removes your rules). Existing `youtube.com` rules stay as they are; edit them there if you want YouTube neutral.

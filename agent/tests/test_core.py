@@ -38,3 +38,16 @@ def test_spool(tmp_path):
     assert s.read(2) == [{"a": 1}, {"a": 2}]
     s.drop(2)
     assert s.read() == [{"a": 3}]
+
+
+def test_background_audio_splits_events_and_expires():
+    from trakbot_agent.core import background_audio
+    a = Aggregator()
+    a.add(0, 5, "photoshop", "x", "", False, ("youtube.com",))
+    a.add(5, 5, "photoshop", "x", "", False, ("youtube.com",))
+    a.add(10, 5, "photoshop", "x", "", False, ())
+    out = a.drain(keep_open=False)
+    assert [(e["dur"], e["bg"]) for e in out] == [(10, ["youtube.com"]), (5, [])]
+    r = {"at": 100, "audible": ["youtube.com"]}
+    assert background_audio(r, 110) == ("youtube.com",)
+    assert background_audio(r, 200) == ()

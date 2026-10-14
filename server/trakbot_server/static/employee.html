@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Employee report · TrakBot</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main>
+<div class="pagehead"><div><h1 id="name">Employee</h1><p id="sub"></p></div>
+<div class="noprint formrow"><button id="csv">Download CSV</button><button id="print">Print / save PDF</button></div></div>
+<div id="range"></div>
+<div id="err" class="callout" style="display:none"></div>
+<div id="body">
+<div class="kpis" id="kpis"></div>
+<div class="grid g-main">
+  <div class="card"><h2>Daily activity</h2><div class="sub">Tracked time per day, by classification</div><div class="chart" id="daily"></div><div class="legend" id="lg"></div></div>
+  <div class="card"><h2>Time mix</h2><div class="sub">Share of tracked time</div><div id="mix"></div></div>
+</div>
+<div class="grid g2">
+  <div class="card"><h2>Productivity trend</h2><div class="sub">Productive share of active time, per day</div><div class="chart" id="pctline"></div></div>
+  <div class="card"><h2>Typical day</h2><div class="sub" id="hourSub">Average tracked time per hour (your local time)</div><div class="chart" id="hours"></div><div class="legend" id="lg2"></div></div>
+</div>
+<div class="grid g3">
+  <div class="card"><h2>Creative tools</h2><div class="sub">Hands-on design / motion / 3D / video time</div><div id="creative"></div></div>
+  <div class="card"><h2>Applications</h2><div id="apps"></div></div>
+  <div class="card"><h2>Websites</h2><div id="sites"></div></div>
+</div>
+<div class="grid g2">
+  <div class="card"><h2>Categories</h2><div id="cats"></div></div>
+  <div class="card"><h2>Active vs background</h2><div class="sub">What played behind their work (e.g. YouTube music)</div><div id="bg"></div></div>
+</div>
+<div class="card" style="margin-bottom:16px"><h2>Day by day</h2><div class="sub">Click a day to see that day's timeline</div><div class="scroll"><table id="days"></table></div></div>
+<div class="grid g2">
+  <div class="card"><h2>Flagged activity</h2><div id="alerts"></div></div>
+  <div class="card"><h2>Screenshots</h2><div id="shots"></div></div>
+</div>
+</div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+const {$,fmt,esc}=TB;let seq=0,cur=null;
+const rb=TB.rangeBar($('#range'),{user:true,userAll:null,defDays:14,onChange:load});
+async function load(r){
+  if(!r.user)return;
+  const me=++seq;TB.error();$('#name').textContent=r.user;
+  try{
+    const [o,al]=await Promise.all([
+      TB.api('/api/employee?'+TB.qs({user:r.user,start:r.start,end:r.end,tz:TB.tz})),
+      TB.api('/api/alerts?'+TB.qs({user:r.user,limit:50}))]);
+    if(me!==seq)return;cur=o;
+    const n=o.days.length,s=o.seconds;
+    $('#sub').textContent=TB.rangeLabel(r.start,r.end)+(o.devices.length?` · ${o.devices.length} device${o.devices.length>1?'s':''}`:'')+` · active on ${o.days_active} of ${n} day${n>1?'s':''}`;
+    const cshare=o.active_seconds?Math.round(100*o.creative_seconds/o.active_seconds):0;
+    $('#kpis').innerHTML=
+      TB.kpi('Productivity',TB.pct(o.productivity_pct),TB.delta(o.productivity_pct,o.previous.productivity_pct,'pp'))+
+      TB.kpi('Active time',fmt(o.active_seconds),TB.delta(o.active_seconds,o.previous.active_seconds))+
+      TB.kpi('Avg active / working day',fmt(o.avg_active_per_day),`<span class="dl mut">${o.days_active} working day${o.days_active===1?'':'s'}</span>`)+
+      TB.kpi('In creative tools',fmt(o.creative_seconds),`<span class="dl mut">${cshare}% of active time</span>`)+
+      TB.kpi('Background audio',o.overlap.has_background_data?fmt(o.overlap.passive_seconds):'–',`<span class="dl mut">${o.overlap.has_background_data?'played behind other work':'not captured yet'}</span>`);
+    const keys=TB.LABELS.map(([k,,c])=>[k,c,k[0].toUpperCase()+k.slice(1)]);
+    const every=Math.ceil(n/12);
+    TB.stacked($('#daily'),o.daily.map(d=>({label:n<=10?new Date(d.day+'T00:00').toLocaleDateString([],{weekday:'short',day:'numeric'}):d.day.slice(5),title:new Date(d.day+'T00:00').toLocaleDateString([],{weekday:'long',month:'short',day:'numeric'}),vals:d})),keys,{every,height:240});
+    $('#lg').innerHTML=$('#lg2').innerHTML=TB.LABELS.map(([,t,c])=>`<span><span class="dot" style="background:${c}"></span>${t}</span>`).join('');
+    TB.donut($('#mix'),TB.LABELS.map(([k,t,c])=>({name:t,v:s[k],color:c})),TB.pct(o.productivity_pct),'productive');
+    TB.line($('#pctline'),o.daily.map(d=>({label:d.day.slice(5),title:d.day,v:d.pct})),{every,height:220});
+    const days=Math.max(1,o.days_active);
+    TB.stacked($('#hours'),o.hourly.map((h,i)=>({label:String(i),title:`${String(i).padStart(2,'0')}:00`,vals:Object.fromEntries(Object.entries(h).map(([k,v])=>[k,v/days]))})),keys,{every:3,height:220});
+    $('#hourSub').textContent=(n===1?'Tracked time per hour':'Average tracked time per hour on days worked')+' (your local time)';
+    TB.hbars($('#creative'),o.creative_apps,{color:()=>'var(--accent)'});
+    TB.hbars($('#apps'),o.apps,{sub:TB.labelLegend});
+    TB.hbars($('#sites'),o.sites,{sub:TB.labelLegend});
+    TB.hbars($('#cats'),o.categories.filter(c=>c.name!=='Idle'),{color:()=>'var(--accent)'});
+    const ov=o.overlap;
+    $('#bg').innerHTML=!ov.has_background_data?'<div class="empty">No background-audio data for this period.<br><span class="sm">Needs the v0.2 browser extension + updated agent.</span></div>':
+      ov.sources.filter(x=>x.passive).slice(0,5).map(x=>`<div class="hb" style="grid-template-columns:1fr 2fr auto"><span class="nm">${esc(x.name)}</span><span class="tr" style="gap:0"><i style="width:${100*x.active/(x.active+x.passive)}%;background:var(--c-a);border-radius:0"></i><i style="width:${100*x.passive/(x.active+x.passive)}%;background:var(--c-b);border-radius:0"></i></span><span class="mut num right sm nowrap">${fmt(x.active)} / ${fmt(x.passive)}</span></div>`).join('')+
+      `<div class="legend"><span><span class="dot" style="background:var(--c-a)"></span>active (in front)</span><span><span class="dot" style="background:var(--c-b)"></span>passive (background)</span></div><p class="sm"><a href="/overlap?${TB.qs({user:r.user,start:r.start,end:r.end})}">Full breakdown and timeline →</a></p>`;
+    const rows=o.daily.slice().reverse();
+    $('#days').innerHTML=`<thead><tr><th>Day</th><th>First activity</th><th>Last activity</th><th class="right">Active</th><th class="right">Productive</th><th class="right">Unproductive</th><th class="right">Idle</th><th class="right">Productivity</th></tr></thead><tbody>`+
+      rows.map(d=>`<tr class="link" data-d="${d.day}"><td class="nowrap">${new Date(d.day+'T00:00').toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})}</td><td>${TB.clock(d.first)}</td><td>${TB.clock(d.last)}</td><td class="right num">${fmt(d.productive+d.unproductive+d.neutral)}</td><td class="right num">${fmt(d.productive)}</td><td class="right num">${fmt(d.unproductive)}</td><td class="right num">${fmt(d.idle)}</td><td class="right num">${TB.pct(d.pct)}</td></tr>`).join('')+'</tbody>';
+    $('#days').querySelectorAll('tr.link').forEach(tr=>tr.onclick=()=>location.href='/overlap?'+TB.qs({user:r.user,start:tr.dataset.d,end:tr.dataset.d}));
+    const inR=al.filter(a=>a.ts>=o.start&&a.ts<o.end);
+    $('#alerts').innerHTML=inR.length?`<table><tbody>`+inR.map(a=>`<tr><td class="nowrap mut sm">${TB.when(a.ts)}</td><td><span class="tag alert">${esc(a.category)}</span></td><td>${esc(a.url||a.app)}<div class="mut sm">${esc(a.title)}</div></td></tr>`).join('')+'</tbody></table>':'<div class="empty">No flagged activity in this range.</div>';
+    $('#shots').innerHTML=o.screenshots?`<p><b>${o.screenshots}</b> screenshot${o.screenshots>1?'s':''} captured in this range.</p><a href="/screenshots?${TB.qs({user:r.user,start:r.start,end:r.end})}">Review screenshots →</a>`:'<div class="empty">No screenshots in this range.</div>';
+  }catch(e){if(me===seq)TB.error(e)}
+}
+$('#print').onclick=()=>print();
+$('#csv').onclick=()=>{
+  if(!cur)return;const r=rb.get();
+  TB.csv(`trakbot-${cur.user}-${r.start}_to_${r.end}.csv`,[['Day','First activity','Last activity','Active (min)','Productive (min)','Unproductive (min)','Neutral (min)','Idle (min)','Productivity %'],
+    ...cur.daily.map(d=>[d.day,d.first?new Date(d.first*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'',d.last?new Date(d.last*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'',Math.round((d.productive+d.unproductive+d.neutral)/60),Math.round(d.productive/60),Math.round(d.unproductive/60),Math.round(d.neutral/60),Math.round(d.idle/60),d.pct??''])]);
+};
+</script></body></html>

@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field
 
 from .classify import LABELS, classify, matching_rule
 from .db import DB
+from .default_rules import STUDIO_RULES
+from .reports import aggregate, overlap, previous_span, span
 
 ADMIN_TOKEN = os.environ.get("TRAKBOT_ADMIN_TOKEN", "")
 AGENT_KEY = os.environ.get("TRAKBOT_AGENT_KEY", "")
@@ -55,6 +57,7 @@ class Event(BaseModel):
     title: str = ""
     url: str = ""
     idle: bool = False
+    bg: list[str] = Field(default_factory=list, max_length=8)  # sites playing audio in the background
 
 
 class IngestBatch(BaseModel):
@@ -79,8 +82,9 @@ def ingest(b: IngestBatch):
         for e in b.events:
             dom = domain_of(e.url)
             c.execute(
-                "INSERT INTO events(user,device,ts,dur,app,title,url,domain,idle) VALUES(?,?,?,?,?,?,?,?,?)",
-                (b.user, b.device, e.ts, e.dur, e.app, e.title, e.url, dom, int(e.idle)))
+                "INSERT INTO events(user,device,ts,dur,app,title,url,domain,idle,bg) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (b.user, b.device, e.ts, e.dur, e.app, e.title, e.url, dom, int(e.idle),
+                 ",".join(sorted({h.strip().lower().removeprefix("www.")[:253] for h in e.bg if h.strip() and "," not in h}))))
             r = matching_rule({"app": e.app, "title": e.title, "domain": dom, "idle": e.idle}, rules)
             if r and r["alert"]:
                 c.execute(
@@ -149,15 +153,77 @@ def summary(user: str | None = None, day: str | None = None, days: int = Query(1
 
 
 @app.get("/api/timeline", dependencies=[Depends(admin)])
-def timeline(user: str, day: str | None = None):
-    start, end = _range(day, 1)
+def timeline(user: str, day: str | None = None, tz: int | None = Query(None, ge=-840, le=840)):
+    start, end, _ = _span_or_400(day, day, tz)
     rules = db.rules()
     out = []
     for e in _events(user, start, end):
         cat, lab = classify(e, rules)
-        out.append({"ts": e["ts"], "dur": e["dur"], "app": e["app"], "title": e["title"],
-                    "url": e["url"], "category": cat, "label": lab})
+        out.append({"ts": e["ts"], "dur": e["dur"], "app": e["app"], "title": e["title"], "url": e["url"],
+                    "domain": e["domain"], "idle": bool(e["idle"]), "bg": [b for b in e["bg"].split(",") if b],
+                    "category": cat, "label": lab})
     return out
+
+
+@app.get("/api/me", dependencies=[Depends(admin)])
+def me():
+    return {"ok": True}
+
+
+def _span_or_400(start, end, tz):
+    try:
+        return span(start, end, tz)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+def _delta(cur: dict, prev: dict):
+    return {"productivity_pct": prev["productivity_pct"], "active_seconds": prev["active_seconds"]}
+
+
+@app.get("/api/overview", dependencies=[Depends(admin)])
+def overview(start: str | None = None, end: str | None = None, tz: int | None = Query(None, ge=-840, le=840)):
+    """Team-wide dashboard numbers for an inclusive local-date range, plus the previous equal-length range."""
+    s, e, days = _span_or_400(start, end, tz)
+    rules = db.rules()
+    cur = aggregate(_events(None, s, e), rules, tz, days, s)
+    ps, pe = previous_span(days)
+    ps_ts, pe_ts, pdays = span(ps, pe, tz)
+    prev = aggregate(_events(None, ps_ts, pe_ts), rules, tz, pdays, ps_ts)
+    with db.conn() as c:
+        alerts = c.execute("SELECT COUNT(*) n, SUM(acked=0) open FROM alerts WHERE ts>=? AND ts<?", (s, e)).fetchone()
+    ov = overlap(_events(None, s, e), rules, 5)
+    return {**cur, "start": s, "end": e, "days": days, "previous": _delta(cur, prev),
+            "alerts": {"total": alerts["n"], "open": alerts["open"] or 0},
+            "background": {k: ov[k] for k in ("has_background_data", "passive_seconds", "while_working_seconds")}}
+
+
+@app.get("/api/employee", dependencies=[Depends(admin)])
+def employee(user: str, start: str | None = None, end: str | None = None,
+             tz: int | None = Query(None, ge=-840, le=840)):
+    """Everything for one person over a date range (the per-employee report page)."""
+    s, e, days = _span_or_400(start, end, tz)
+    rules = db.rules()
+    events = _events(user, s, e)
+    cur = aggregate(events, rules, tz, days, s, top_n=15)
+    ps, pe = previous_span(days)
+    ps_ts, pe_ts, pdays = span(ps, pe, tz)
+    prev = aggregate(_events(user, ps_ts, pe_ts), rules, tz, pdays, ps_ts)
+    with db.conn() as c:
+        devices = [r[0] for r in c.execute("SELECT DISTINCT device FROM events WHERE user=? AND ts>=? AND ts<?", (user, s, e))]
+        shots = c.execute("SELECT COUNT(*) FROM screenshots WHERE user=? AND ts>=? AND ts<?", (user, s, e)).fetchone()[0]
+    worked = [d for d in cur["daily"] if d["first"] is not None]
+    return {**cur, "user": user, "start": s, "end": e, "days": days, "previous": _delta(cur, prev),
+            "devices": devices, "screenshots": shots, "days_active": len(worked),
+            "avg_active_per_day": round(cur["active_seconds"] / len(worked)) if worked else 0,
+            "overlap": overlap(events, rules, 10)}
+
+
+@app.get("/api/overlap", dependencies=[Depends(admin)])
+def overlap_report(user: str | None = None, start: str | None = None, end: str | None = None,
+                   tz: int | None = Query(None, ge=-840, le=840)):
+    s, e, _ = _span_or_400(start, end, tz)
+    return overlap(_events(user, s, e), db.rules(), 20)
 
 
 # ----------------------------------------------------------------- rules
@@ -183,6 +249,58 @@ def add_rule(r: RuleIn):
         return {"id": cur.lastrowid}
 
 
+@app.put("/api/rules/{rid}", dependencies=[Depends(admin)])
+def edit_rule(rid: int, r: RuleIn):
+    with db.conn() as c:
+        cur = c.execute("UPDATE rules SET kind=?,pattern=?,category=?,label=?,alert=?,priority=? WHERE id=?",
+                        (r.kind, r.pattern, r.category, r.label, int(r.alert), r.priority, rid))
+    if not cur.rowcount:
+        raise HTTPException(404)
+    return {"ok": True}
+
+
+class RuleTest(BaseModel):
+    app: str = ""
+    domain: str = ""
+    title: str = ""
+
+
+@app.post("/api/rules/test", dependencies=[Depends(admin)])
+def test_rule(t: RuleTest):
+    """Which rule would classify this app / site / title?"""
+    r = matching_rule({"app": t.app, "domain": domain_of(t.domain) or t.domain, "title": t.title}, db.rules())
+    return {"rule": r}
+
+
+@app.post("/api/rules/seed-studio", dependencies=[Depends(admin)])
+def seed_studio_rules():
+    """Add the design-studio starter rules that aren't already present (never overwrites existing rules)."""
+    with db.conn() as c:
+        have = {(r["kind"], r["pattern"].lower()) for r in c.execute("SELECT kind, pattern FROM rules")}
+        new = [r for r in STUDIO_RULES if (r[0], r[1].lower()) not in have]
+        # Studio rules go ahead of the generic ones that overlap (e.g. a media/youtube rule) via higher priority.
+        c.executemany("INSERT INTO rules(kind,pattern,category,label,alert,priority) VALUES(?,?,?,?,?,10)", new)
+    return {"added": len(new)}
+
+
+@app.get("/api/uncategorized", dependencies=[Depends(admin)])
+def uncategorized(days: int = Query(30, ge=1, le=92), limit: int = Query(30, le=200)):
+    """Most-used apps and sites no rule matches yet: the quickest way to grow the rule set."""
+    start, end, _ = span(None, None, None)
+    start -= (days - 1) * 86400
+    rules = db.rules()
+    apps, sites = defaultdict(float), defaultdict(float)
+    for e in _events(None, start, end):
+        if e["idle"]:
+            continue
+        if matching_rule({**e, "domain": e["domain"]}, rules) is None:
+            if e["domain"]:
+                sites[e["domain"]] += e["dur"]
+            elif e["app"]:
+                apps[e["app"]] += e["dur"]
+    return {"apps": _top(apps, limit), "sites": _top(sites, limit)}
+
+
 @app.delete("/api/rules/{rid}", dependencies=[Depends(admin)])
 def del_rule(rid: int):
     with db.conn() as c:
@@ -192,10 +310,23 @@ def del_rule(rid: int):
 
 # ---------------------------------------------------------------- alerts
 @app.get("/api/alerts", dependencies=[Depends(admin)])
-def list_alerts(unacked: bool = False, limit: int = Query(200, le=1000)):
-    q = "SELECT * FROM alerts" + (" WHERE acked=0" if unacked else "") + " ORDER BY ts DESC LIMIT ?"
+def list_alerts(unacked: bool = False, user: str | None = None, start: float | None = None,
+                end: float | None = None, limit: int = Query(200, le=1000)):
+    where, args = [], []
+    if unacked:
+        where.append("acked=0")
+    if user:
+        where.append("user=?")
+        args.append(user)
+    if start is not None:
+        where.append("ts>=?")
+        args.append(start)
+    if end is not None:
+        where.append("ts<?")
+        args.append(end)
+    q = "SELECT * FROM alerts" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY ts DESC LIMIT ?"
     with db.conn() as c:
-        return [dict(r) for r in c.execute(q, (limit,))]
+        return [dict(r) for r in c.execute(q, (*args, limit))]
 
 
 @app.post("/api/alerts/{aid}/ack", dependencies=[Depends(admin)])
@@ -311,6 +442,20 @@ def health():
     return {"ok": True, "time": time.time()}
 
 
-@app.get("/")
-def index():
-    return FileResponse(STATIC / "index.html")
+app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+
+# Pages are static HTML; each one checks the admin token client-side and bounces to /login. All data
+# comes from the token-protected /api/* endpoints, so serving the shells unauthenticated leaks nothing.
+PAGES = {"/": "index.html", "/login": "login.html", "/employees": "employees.html", "/employee": "employee.html",
+         "/overlap": "overlap.html", "/alerts": "alerts.html", "/screenshots": "screenshots.html",
+         "/rules": "rules.html"}
+
+
+def _page(name: str):
+    def handler():
+        return FileResponse(STATIC / name, headers={"Cache-Control": "no-cache"})
+    return handler
+
+
+for _path, _file in PAGES.items():
+    app.get(_path, include_in_schema=False)(_page(_file))

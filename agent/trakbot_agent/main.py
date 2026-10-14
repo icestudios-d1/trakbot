@@ -13,7 +13,7 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from .core import Aggregator, Spool, browser_url, is_private
+from .core import Aggregator, Spool, background_audio, browser_url, is_private
 from .platform.active_window import get_active_window, idle_seconds
 from .shots import ScreenshotThrottle, capture_jpeg_b64
 
@@ -55,7 +55,9 @@ class ExtHandler(BaseHTTPRequestHandler):
         global ext_report
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)))[:8192])
-            ext_report = {"url": str(body["url"])[:2048], "title": str(body.get("title", ""))[:512], "at": time.time()}
+            audible = [str(h)[:253] for h in (body.get("audible") or [])[:8]]
+            ext_report = {"url": str(body["url"])[:2048], "title": str(body.get("title", ""))[:512],
+                          "audible": audible, "at": time.time()}
             self.send_response(204)
         except Exception:
             self.send_response(400)
@@ -147,7 +149,9 @@ def main():
             # (that's the browser's own privacy boundary) -- don't store the title/URL.
             title, url = "(private/incognito browsing)", ""
 
-        agg.add(now, a.interval, "" if idle else w["app"], "" if idle else title, "" if idle else url, idle)
+        bg_audio = background_audio(ext_report, now)  # recorded even while idle (music left playing)
+        agg.add(now, a.interval, "" if idle else w["app"], "" if idle else title, "" if idle else url, idle,
+                bg_audio)
 
         if not a.no_screenshots and shot_throttle.tick(now, w["app"], idle):
             threading.Thread(target=send_screenshot, args=(server, key, user, device, now, w["app"], title), daemon=True).start()

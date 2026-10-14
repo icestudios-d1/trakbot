@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Alerts · TrakBot</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main>
+<div class="pagehead"><div><h1>Flagged activity</h1><p>Activity matching a rule marked <i>alert</i> (piracy, gambling, private browsing…). Manage these on the <a href="/rules">rules page</a>.</p></div></div>
+<div class="bar-controls"><select id="u" aria-label="Employee"><option value="">All employees</option></select>
+<button class="chip on" data-f="open">Unacknowledged</button><button class="chip" data-f="all">All</button>
+<button id="ackAll">Acknowledge all shown</button></div>
+<div id="err" class="callout" style="display:none"></div>
+<div class="card"><div class="scroll"><table id="t"></table></div></div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+const {$,esc}=TB;let filter='open',rows=[];
+const p=TB.params();
+TB.users().then(u=>{$('#u').innerHTML+=u.map(x=>`<option>${esc(x.user)}</option>`).join('');$('#u').value=p.user||'';load()}).catch(TB.error);
+async function load(){
+  TB.error();TB.setParams({user:$('#u').value});
+  try{rows=await TB.api('/api/alerts?'+TB.qs({user:$('#u').value,unacked:filter==='open'?'true':'',limit:500}));render()}catch(e){TB.error(e)}
+}
+function render(){
+  $('#ackAll').disabled=!rows.some(a=>!a.acked);
+  $('#t').innerHTML=`<thead><tr><th>When</th><th>Employee</th><th>Category</th><th>Activity</th><th></th></tr></thead><tbody>`+(rows.map(a=>`<tr><td class="nowrap">${TB.when(a.ts)}</td><td><a href="/employee?user=${encodeURIComponent(a.user)}">${esc(a.user)}</a></td><td><span class="tag alert">${esc(a.category)}</span></td><td>${esc(a.url||a.app)}<div class="mut sm">${esc(a.title)}</div></td><td class="nowrap"><a href="/screenshots?${TB.qs({user:a.user,start:new Date((a.ts-300)*1000).toISOString().slice(0,16),end:new Date((a.ts+300)*1000).toISOString().slice(0,16),exact:1})}" title="Screenshots within 5 minutes">📷</a> ${a.acked?'<span class="mut sm">acknowledged</span>':`<button data-a="${a.id}">Acknowledge</button>`}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">Nothing flagged 🎉</td></tr>')+'</tbody>';
+  $('#t').querySelectorAll('[data-a]').forEach(b=>b.onclick=async()=>{b.disabled=true;await TB.api(`/api/alerts/${b.dataset.a}/ack`,{method:'POST'});load()});
+}
+$('#u').onchange=load;
+document.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>{filter=b.dataset.f;document.querySelectorAll('[data-f]').forEach(x=>x.classList.toggle('on',x===b));load()});
+$('#ackAll').onclick=async()=>{const open=rows.filter(a=>!a.acked);if(!confirm(`Acknowledge ${open.length} alert(s)?`))return;await Promise.all(open.map(a=>TB.api(`/api/alerts/${a.id}/ack`,{method:'POST'})));load()};
+</script></body></html>

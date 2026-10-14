@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "TrakBot Browser Helper",
-  "version": "0.1.0",
-  "description": "Reports the active tab URL to the local TrakBot agent.",
+  "version": "0.2.0",
+  "description": "Reports the active tab URL and which sites are playing audio to the local TrakBot agent.",
   "permissions": ["tabs", "alarms"],
   "host_permissions": ["http://127.0.0.1:7077/*"],
   "background": { "service_worker": "background.js" }

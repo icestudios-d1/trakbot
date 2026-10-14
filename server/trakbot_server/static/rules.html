@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Productivity rules · TrakBot</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main>
+<div class="pagehead"><div><h1>Productivity rules</h1><p>Decide which apps and sites count as productive, neutral or unproductive. Changes re-label <b>all history</b> straight away. First matching rule wins (higher priority first).</p></div></div>
+<div id="err" class="callout" style="display:none"></div>
+<div class="grid g-main">
+ <div class="card"><h2>Needs a label</h2><div class="sub">Most-used apps and sites from the last 30 days that no rule matches yet. One click to classify.</div><div id="unc"></div></div>
+ <div>
+  <div class="card" style="margin-bottom:16px"><h2>Design-studio preset</h2><p class="sm mut" style="margin-top:0">Photoshop, Illustrator, InDesign, After Effects, Premiere, Figma, Blender, Cinema 4D, Lightroom and more count as <b>productive</b>. Behance, Dribbble and Pinterest are <b>neutral</b> inspiration; Spotify and YouTube are <b>neutral</b>. Only adds rules you don't already have; nothing is changed or removed.</p><button id="seed">Add missing studio rules</button> <span id="seedMsg" class="sm mut"></span></div>
+  <div class="card"><h2>Test a rule</h2><div class="sub">See how an app, site or window title would be classified</div>
+   <div class="formrow"><input id="tApp" placeholder="App e.g. Photoshop.exe" style="flex:1;min-width:140px"><input id="tDom" placeholder="Site e.g. figma.com" style="flex:1;min-width:140px"><button id="tGo">Test</button></div><div id="tOut" class="sm" style="margin-top:8px"></div></div>
+ </div>
+</div>
+<div class="card" style="margin-bottom:16px"><h2>Add a rule</h2>
+ <form id="add" class="formrow"><select name="kind" aria-label="Type"><option value="app">App name</option><option value="domain">Website</option><option value="title">Window title (regex)</option></select>
+ <input name="pattern" placeholder="Pattern e.g. *photoshop*  or  behance.net" required style="flex:2;min-width:200px"><input name="category" list="cats" placeholder="Category e.g. Design - Photoshop" required style="flex:1;min-width:160px"><datalist id="cats"></datalist>
+ <select name="label" aria-label="Label"><option value="productive">Productive</option><option value="neutral">Neutral</option><option value="unproductive">Unproductive</option></select>
+ <label class="sm mut" style="display:flex;gap:4px;align-items:center"><input type="checkbox" name="alert" style="min-height:0"> alert</label><button class="primary">Add rule</button></form>
+ <p class="sm mut" style="margin-bottom:0">Apps: <code>*</code> wildcards, case-insensitive, matched against the process name (<code>*illustrator*</code> covers Illustrator.exe and "Adobe Illustrator 2025"). Websites match the domain and its subdomains. New rules get priority 100 so they beat the defaults.</p></div>
+<div class="card"><div class="pagehead" style="margin-bottom:8px"><h2 id="rcount">All rules</h2>
+ <div class="formrow"><input id="rq" type="search" placeholder="Search rules" aria-label="Search rules"><button class="chip on" data-l="">All</button><button class="chip" data-l="productive">Productive</button><button class="chip" data-l="neutral">Neutral</button><button class="chip" data-l="unproductive">Unproductive</button><button class="chip" data-l="alert">Alerts</button></div></div>
+ <div class="scroll"><table id="rules"></table></div></div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+const {$,esc,fmt}=TB;let rules=[],lab='',editing=null;
+async function load(){
+  TB.error();
+  try{rules=await TB.api('/api/rules');render();unc()}catch(e){TB.error(e)}
+}
+function render(){
+  $('#cats').innerHTML=[...new Set(rules.map(r=>r.category))].sort().map(c=>`<option value="${esc(c)}">`).join('');
+  const q=$('#rq').value.toLowerCase();
+  const rows=rules.filter(r=>(!lab||(lab==='alert'?r.alert:r.label===lab))&&(!q||(r.pattern+' '+r.category).toLowerCase().includes(q)))
+    .sort((a,b)=>a.category.localeCompare(b.category)||a.pattern.localeCompare(b.pattern));
+  $('#rcount').textContent=`${rows.length} rule${rows.length===1?'':'s'}`;
+  const opt=(v,list)=>list.map(([x,t])=>`<option value="${x}" ${x===v?'selected':''}>${t}</option>`).join('');
+  $('#rules').innerHTML='<thead><tr><th>Category</th><th>Type</th><th>Pattern</th><th>Label</th><th>Alert</th><th>Priority</th><th></th></tr></thead><tbody>'+(rows.map(r=>r.id===editing?
+   `<tr data-id="${r.id}"><td><input name="category" value="${esc(r.category)}" list="cats"></td><td><select name="kind">${opt(r.kind,[['app','app'],['domain','site'],['title','title']])}</select></td><td><input name="pattern" value="${esc(r.pattern)}"></td><td><select name="label">${opt(r.label,[['productive','productive'],['neutral','neutral'],['unproductive','unproductive']])}</select></td><td><input type="checkbox" name="alert" ${r.alert?'checked':''} style="min-height:0"></td><td><input name="priority" type="number" value="${r.priority}" style="width:70px"></td><td class="nowrap"><button class="primary" data-save>Save</button> <button data-cancel>Cancel</button></td></tr>`:
+   `<tr><td>${esc(r.category)}</td><td class="mut">${r.kind==='domain'?'site':r.kind}</td><td><code>${esc(r.pattern)}</code></td><td><span class="tag ${r.label}">${r.label}</span></td><td>${r.alert?'<span class="tag alert">alert</span>':''}</td><td class="mut num">${r.priority}</td><td class="nowrap"><button data-edit="${r.id}">Edit</button> <button class="danger" data-del="${r.id}" aria-label="Delete">×</button></td></tr>`).join('')||'<tr><td colspan="7" class="empty">No rules match.</td></tr>')+'</tbody>';
+  const T=$('#rules');
+  T.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>{editing=+b.dataset.edit;render()});
+  T.querySelectorAll('[data-cancel]').forEach(b=>b.onclick=()=>{editing=null;render()});
+  T.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{const r=rules.find(x=>x.id===+b.dataset.del);if(!confirm(`Delete rule "${r.pattern}"? History using it will be re-labelled.`))return;await TB.api('/api/rules/'+r.id,{method:'DELETE'});load()});
+  T.querySelectorAll('[data-save]').forEach(b=>b.onclick=async()=>{
+    const tr=b.closest('tr'),g=n=>tr.querySelector(`[name=${n}]`);
+    try{await TB.api('/api/rules/'+tr.dataset.id,{method:'PUT',body:JSON.stringify({kind:g('kind').value,pattern:g('pattern').value,category:g('category').value,label:g('label').value,alert:g('alert').checked,priority:+g('priority').value||0})});editing=null;load()}catch(e){TB.error(e)}});
+}
+async function unc(){
+  try{
+    const u=await TB.api('/api/uncategorized?days=30&limit=15');
+    const items=[...u.sites.map(x=>({...x,kind:'domain'})),...u.apps.map(x=>({...x,kind:'app'}))].sort((a,b)=>b.seconds-a.seconds).slice(0,20);
+    $('#unc').innerHTML=items.length?items.map((x,i)=>`<div class="hb" style="grid-template-columns:minmax(120px,1.4fr) auto 2.2fr" data-i="${i}"><span class="nm"><span class="dot" style="background:var(--c-n)"></span>${esc(x.name)}<span class="mut sm" style="margin-left:6px">${x.kind==='domain'?'site':'app'} · ${fmt(x.seconds)}</span></span><span></span><span class="formrow" style="flex-wrap:nowrap"><input placeholder="Category" list="cats" style="min-width:0;flex:1;min-height:30px;padding:2px 6px"><button class="chip" data-l="productive">Productive</button><button class="chip" data-l="neutral">Neutral</button><button class="chip" data-l="unproductive">Unprod.</button></span></div>`).join(''):'<div class="empty">Everything that has been used is already classified.</div>';
+    $('#unc').querySelectorAll('.hb').forEach(row=>{const x=items[+row.dataset.i];row.querySelectorAll('button').forEach(b=>b.onclick=async()=>{
+      const cat=row.querySelector('input').value.trim()||(b.dataset.l==='productive'?'Work':b.dataset.l==='neutral'?'Other':'Distraction');
+      await TB.api('/api/rules',{method:'POST',body:JSON.stringify({kind:x.kind,pattern:x.kind==='app'?x.name.toLowerCase():x.name,category:cat,label:b.dataset.l,alert:false,priority:100})});load()})});
+  }catch(e){TB.error(e)}
+}
+$('#add').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);
+  try{await TB.api('/api/rules',{method:'POST',body:JSON.stringify({kind:f.get('kind'),pattern:f.get('pattern').trim(),category:f.get('category').trim(),label:f.get('label'),alert:!!f.get('alert'),priority:100})});e.target.reset();load()}catch(x){TB.error(x)}};
+$('#seed').onclick=async()=>{const r=await TB.api('/api/rules/seed-studio',{method:'POST'}).catch(TB.error);if(r){$('#seedMsg').textContent=r.added?`Added ${r.added} rules.`:'Already up to date.';load()}};
+$('#tGo').onclick=async()=>{
+  const r=await TB.api('/api/rules/test',{method:'POST',body:JSON.stringify({app:$('#tApp').value,domain:$('#tDom').value})}).catch(TB.error);
+  if(r)$('#tOut').innerHTML=r.rule?`Matches <code>${esc(r.rule.pattern)}</code> → <b>${esc(r.rule.category)}</b> <span class="tag ${r.rule.label}">${r.rule.label}</span>${r.rule.alert?' <span class="tag alert">alert</span>':''}`:'No rule matches: it would be <b>Uncategorized / neutral</b>.';
+};
+$('#rq').oninput=render;
+document.querySelectorAll('[data-l]').forEach(b=>{if(b.closest('.formrow')&&b.classList.contains('chip')&&b.closest('.card')===$('#rules').closest('.card'))b.onclick=()=>{lab=b.dataset.l;b.parentElement.querySelectorAll('.chip').forEach(x=>x.classList.toggle('on',x===b));render()}});
+load();
+</script></body></html>

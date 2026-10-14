@@ -9,7 +9,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY, user TEXT NOT NULL, device TEXT NOT NULL,
   ts REAL NOT NULL, dur REAL NOT NULL, app TEXT, title TEXT, url TEXT,
-  domain TEXT, idle INTEGER NOT NULL DEFAULT 0);
+  domain TEXT, idle INTEGER NOT NULL DEFAULT 0, bg TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS ev_user_ts ON events(user, ts);
 CREATE TABLE IF NOT EXISTS rules(
   id INTEGER PRIMARY KEY, kind TEXT NOT NULL, pattern TEXT NOT NULL,
@@ -35,6 +35,9 @@ class DB:
             os.makedirs(d, exist_ok=True)
         with self.conn() as c:
             c.executescript(SCHEMA)
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(events)")}
+            if "bg" not in cols:  # background-audio sites (comma separated), added after first release
+                c.execute("ALTER TABLE events ADD COLUMN bg TEXT NOT NULL DEFAULT ''")
             if c.execute("SELECT COUNT(*) FROM rules").fetchone()[0] == 0:
                 c.executemany(
                     "INSERT INTO rules(kind,pattern,category,label,alert) VALUES(?,?,?,?,?)",

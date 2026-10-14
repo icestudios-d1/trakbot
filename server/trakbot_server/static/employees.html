@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Employees · TrakBot</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main>
+<div class="pagehead"><div><h1>Employees</h1><p id="sub">Everyone who has reported activity</p></div><input id="q" type="search" placeholder="Search employees" aria-label="Search employees"></div>
+<div id="range"></div>
+<div id="err" class="callout" style="display:none"></div>
+<div class="card"><div class="scroll"><table id="t"></table></div></div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+const {$,fmt,esc}=TB;let data=[],seq=0,sort='a';
+const rb=TB.rangeBar($('#range'),{defDays:7,onChange:load});
+async function load(r){
+  const me=++seq;TB.error();
+  try{
+    const [users,o]=await Promise.all([TB.users(),TB.api('/api/overview?'+TB.qs({start:r.start,end:r.end,tz:TB.tz}))]);
+    if(me!==seq)return;
+    $('#sub').textContent=TB.rangeLabel(r.start,r.end);
+    data=users.map(u=>{const m=o.by_user[u.user]||{};const a=(m.productive||0)+(m.unproductive||0)+(m.neutral||0);
+      return {u:u.user,devices:u.devices,last:u.last_seen,a,idle:m.idle||0,p:a?100*m.productive/a:null,top:m.top_app}});
+    render();
+  }catch(e){if(me===seq)TB.error(e)}
+}
+function render(){
+  const q=$('#q').value.toLowerCase(),r=rb.get();
+  const rows=data.filter(d=>d.u.toLowerCase().includes(q)).sort((x,y)=>sort==='n'?x.u.localeCompare(y.u):sort==='p'?(y.p??-1)-(x.p??-1):y.a-x.a);
+  const th=(k,t,c='')=>`<th class="${c}"><a href="#" data-s="${k}" style="color:inherit">${t}${sort===k?' ↓':''}</a></th>`;
+  $('#t').innerHTML=`<thead><tr>${th('n','Employee')}${th('a','Active time','right')}${th('p','Productivity')}<th>Top app</th><th>Devices</th><th>Last seen</th></tr></thead><tbody>`+
+   (rows.map(d=>`<tr class="link"><td><a href="/employee?${TB.qs({user:d.u,start:r.start,end:r.end})}"><b>${esc(d.u)}</b></a></td><td class="right num">${d.a?fmt(d.a):'<span class="mut">–</span>'}</td><td style="min-width:150px">${d.p==null?'<span class="mut">no activity</span>':`<div class="stackbar"><i style="width:${d.p}%;background:var(--c-p)"></i></div><span class="sm mut">${TB.pct(d.p)}</span>`}</td><td>${esc(d.top||'–')}</td><td class="num">${d.devices}</td><td class="mut nowrap">${TB.when(d.last)}</td></tr>`).join('')||'<tr><td colspan="6" class="empty">No employees found.</td></tr>')+'</tbody>';
+  $('#t').querySelectorAll('[data-s]').forEach(a=>a.onclick=e=>{e.preventDefault();sort=a.dataset.s;render()});
+  $('#t').querySelectorAll('tr.link').forEach(tr=>tr.onclick=e=>{if(e.target.tagName!=='A')location.href=tr.querySelector('a').href});
+}
+$('#q').oninput=render;
+</script></body></html>

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Screenshots · TrakBot</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main>
+<div class="pagehead"><div><h1>Screenshots</h1><p>Captured once an app has held the foreground for a minute. Review, then delete what you don't need.</p></div></div>
+<div class="bar-controls"><select id="u" aria-label="Employee"><option value="">Pick an employee…</option></select>
+<label>From <input id="from" type="datetime-local"></label><label>To <input id="to" type="datetime-local"></label>
+<button class="primary" id="load">Load</button><button id="all">Select all</button><button class="danger" id="del">Delete selected</button><span id="count" class="mut"></span></div>
+<div id="err" class="callout" style="display:none"></div>
+<div class="shots" id="shots"><span class="mut">Pick an employee and a range, then Load.</span></div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+const {$,esc}=TB;
+const p=TB.params(),pad=n=>String(n).padStart(2,'0');
+const local=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+// Links from other pages pass either a date (start/end=YYYY-MM-DD) or exact UTC instants (exact=1).
+const parse=(v,endOfDay)=>!v?null:p.exact?new Date(v+'Z'):new Date(v+(v.length===10?(endOfDay?'T23:59':'T00:00'):''));
+const now=new Date();
+$('#from').value=local(parse(p.start,false)||new Date(now-864e5));$('#to').value=local(parse(p.end,true)||new Date(+now+6e4));
+TB.users().then(u=>{$('#u').innerHTML+=u.map(x=>`<option>${esc(x.user)}</option>`).join('');if(p.user){$('#u').value=p.user;load()}}).catch(TB.error);
+async function load(){
+  TB.error();if(!$('#u').value){$('#shots').innerHTML='<span class="mut">Pick an employee first.</span>';return}
+  try{
+    const rows=await TB.api('/api/screenshots?'+TB.qs({user:$('#u').value,start:new Date($('#from').value)/1000,end:new Date($('#to').value)/1000}));
+    $('#count').textContent=rows.length+' screenshot(s)';
+    $('#shots').innerHTML=rows.map(r=>`<div class="shot" data-id="${r.id}"><label><input type="checkbox" class="pick" aria-label="Select"><img alt="Screenshot of ${esc(r.app)}"></label><div class="meta">${TB.when(r.ts)} · ${esc(r.app)}<br>${esc((r.title||'').slice(0,60))}</div></div>`).join('')||'<span class="mut">No screenshots in this range.</span>';
+    for(const d of $('#shots').querySelectorAll('.shot')){TB.blobUrl(`/api/screenshots/${d.dataset.id}/image`).then(u=>{const i=d.querySelector('img');i.src=u;i.style.cursor='zoom-in';i.onclick=e=>{e.preventDefault();window.open(u)}}).catch(()=>{})}
+  }catch(e){TB.error(e)}
+}
+$('#load').onclick=load;
+$('#all').onclick=()=>document.querySelectorAll('.pick').forEach(c=>c.checked=true);
+$('#del').onclick=async()=>{
+  const ids=[...document.querySelectorAll('.shot')].filter(d=>d.querySelector('.pick').checked).map(d=>+d.dataset.id);
+  if(!ids.length||!confirm(`Permanently delete ${ids.length} screenshot(s)? This cannot be undone.`))return;
+  await TB.api('/api/screenshots/delete',{method:'POST',body:JSON.stringify({ids})});load();
+};
+</script></body></html>

@@ -1,123 +1,72 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TrakBot</title>
-<style>
-:root{--bg:#f6f7f9;--fg:#1c2330;--card:#fff;--mut:#667085;--bd:#e4e7ec;--p:#2e9e6b;--u:#d9534f;--n:#98a2b3;--i:#d0d5dd}
-@media(prefers-color-scheme:dark){:root{--bg:#10141b;--fg:#e6e9ef;--card:#181e28;--mut:#98a2b3;--bd:#2a3342;--i:#3a4456}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif}
-header{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--bd);background:var(--card)}
-h1{font-size:18px;margin:0 12px 0 0}select,input,button{font:inherit;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--card);color:var(--fg)}
-button{cursor:pointer}main{padding:16px;display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
-.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px}.card h2{font-size:13px;margin:0 0 10px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
-.big{font-size:32px;font-weight:600}.row{display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid var(--bd)}
-.bar{height:10px;border-radius:5px;background:var(--bd);overflow:hidden;display:flex}.bar i{display:block;height:100%}
-.p{background:var(--p)}.u{background:var(--u)}.n{background:var(--n)}.idle{background:var(--i)}
-.hours{display:flex;align-items:flex-end;gap:2px;height:80px}.hours div{flex:1;display:flex;flex-direction:column-reverse;min-height:1px}
-table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:4px 6px;border-bottom:1px solid var(--bd);font-size:13px}
-.wide{grid-column:1/-1}.mut{color:var(--mut)}.tag{padding:1px 6px;border-radius:8px;font-size:12px;color:#fff}
-#trend{width:100%;height:160px}
-.shots{display:flex;flex-wrap:wrap;gap:8px}
-.shot{width:140px}.shot img{width:100%;border-radius:6px;border:1px solid var(--bd);display:block;background:var(--bd)}
-.shot .meta{font-size:11px;color:var(--mut);display:flex;gap:4px;align-items:center;margin-top:2px}
-@media(max-width:600px){main{padding:12px}}
-</style></head><body>
-<header><h1>TrakBot</h1>
-<input id="tok" type="password" placeholder="Admin token" size="14">
-<select id="user"><option value="">All employees</option></select>
-<input id="day" type="date"><select id="days"><option value="1">Day</option><option value="7">7 days</option><option value="30">30 days</option></select>
-<button id="go">Load</button><span id="err" class="mut"></span></header>
-<main>
-<div class="card"><h2>Productivity</h2><div class="big" id="pct">–</div><div class="bar" id="mix" style="margin:10px 0"></div><div id="mixlegend" class="mut"></div></div>
-<div class="card"><h2>Activity by hour</h2><div class="hours" id="hours"></div></div>
-<div class="card"><h2>Top applications</h2><div id="apps"></div></div>
-<div class="card"><h2>Top websites</h2><div id="sites"></div></div>
-<div class="card"><h2>Categories</h2><div id="cats"></div></div>
-<div class="card"><h2>Employees</h2><div id="byuser"></div></div>
-<div class="card wide"><h2>Productivity trend</h2><canvas id="trend"></canvas></div>
-<div class="card wide"><h2>Flagged activity (alerts)</h2><table id="alerts"></table></div>
-<div class="card wide"><h2>Screenshots</h2>
-<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
-<label class="mut">From <input id="shotFrom" type="datetime-local"></label>
-<label class="mut">To <input id="shotTo" type="datetime-local"></label>
-<button id="shotLoad">Load</button>
-<button id="shotAll">Select all</button>
-<button id="shotDelete">Delete selected</button>
-<span id="shotCount" class="mut"></span>
+<title>Overview · TrakBot</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main>
+<div class="pagehead"><div><h1>Overview</h1><p id="sub">Team activity at a glance</p></div></div>
+<div id="range"></div>
+<div id="err" class="callout" style="display:none"></div>
+<div class="kpis" id="kpis"></div>
+<div id="bgnote"></div>
+<div class="grid g-main">
+  <div class="card"><h2>Daily activity</h2><div class="sub">Tracked time per day, split by how it was classified</div><div class="chart" id="daily"></div>
+    <div class="legend" id="dailyLegend"></div></div>
+  <div class="card"><h2>Where the time went</h2><div class="sub">Share of all tracked time</div><div id="mix"></div></div>
 </div>
-<div class="shots" id="shots"><span class="mut">Pick an employee above and a range, then Load.</span></div></div>
-<div class="card wide"><h2>Productivity rules</h2><form id="ruleform" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
-<select name="kind"><option>domain</option><option>app</option><option>title</option></select>
-<input name="pattern" placeholder="pattern e.g. youtube.com" required><input name="category" placeholder="Category" required>
-<select name="label"><option>productive</option><option>unproductive</option><option>neutral</option></select>
-<label><input type="checkbox" name="alert"> alert</label><button>Add rule</button></form><table id="rules"></table></div>
+<div class="grid g2">
+  <div class="card"><h2>Activity by hour</h2><div class="sub" id="hourSub">Average tracked time per hour of the day (your local time)</div><div class="chart" id="hours"></div><div class="legend" id="hoursLegend"></div></div>
+  <div class="card"><h2>Productivity trend</h2><div class="sub">Productive share of active (non-idle) time, per day</div><div class="chart" id="pctline"></div></div>
+</div>
+<div class="grid g3">
+  <div class="card"><h2>Creative tools</h2><div class="sub">Time in Photoshop, Illustrator, Figma, 3D, video and other design apps</div><div id="creative"></div></div>
+  <div class="card"><h2>Top applications</h2><div class="sub">Bar colour = productivity label</div><div id="apps"></div></div>
+  <div class="card"><h2>Top websites</h2><div class="sub">Bar colour = productivity label</div><div id="sites"></div></div>
+</div>
+<div class="grid g-main">
+  <div class="card"><h2>Team</h2><div class="sub">Click an employee for their full report</div><div class="scroll"><table id="team"></table></div></div>
+  <div class="card"><h2>Categories</h2><div class="sub">Active time by category</div><div id="cats"></div></div>
+</div>
+<div class="card"><h2>When the studio is busiest</h2><div class="sub">Active time by weekday and hour</div><div id="heat"></div></div>
 </main>
+<script src="/static/app.js"></script>
 <script>
-const $=id=>document.getElementById(id);
-const fmt=s=>{s=Math.round(s||0);const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h?`${h}h ${m}m`:`${m}m`};
-const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let tok=sessionStorage.getItem('tok')||'';$('tok').value=tok;$('day').value=new Date().toLocaleDateString('en-CA');
-async function api(p,o={}){const r=await fetch(p,{...o,headers:{Authorization:'Bearer '+tok,'Content-Type':'application/json'}});if(!r.ok)throw new Error(r.status===401?'Bad admin token':r.statusText);return r.json()}
-async function apiBlobUrl(p){const r=await fetch(p,{headers:{Authorization:'Bearer '+tok}});if(!r.ok)throw new Error(r.statusText);return URL.createObjectURL(await r.blob())}
-function drawTrend(rows){
- const cv=$('trend'),ctx=cv.getContext('2d');const dpr=window.devicePixelRatio||1;
- const w=cv.clientWidth||600,h=160;cv.width=w*dpr;cv.height=h*dpr;ctx.scale(dpr,dpr);ctx.clearRect(0,0,w,h);
- if(!rows.length)return;
- const colors={productive:'#2e9e6b',unproductive:'#d9534f',neutral:'#98a2b3',idle:'#555'};
- const bw=w/rows.length,mx=Math.max(1,...rows.map(r=>r.productive+r.unproductive+r.neutral+r.idle));
- rows.forEach((r,i)=>{let y=h-4;const x=i*bw+2;
-  for(const k of ['productive','unproductive','neutral','idle']){const bh=(r[k]/mx)*(h-20);ctx.fillStyle=colors[k];ctx.fillRect(x,y-bh,bw-4,bh);y-=bh}});
- ctx.fillStyle='var(--mut)';ctx.font='10px system-ui';ctx.fillStyle=getComputedStyle(document.body).color;
- rows.forEach((r,i)=>{if(i%Math.ceil(rows.length/8||1)===0)ctx.fillText(r.day.slice(5),i*bw,h-0)});
+const {$,fmt,esc}=TB;let seq=0;
+const rb=TB.rangeBar($('#range'),{defDays:7,onChange:load});
+async function load(r){
+  const me=++seq;TB.error();
+  try{
+    const o=await TB.api('/api/overview?'+TB.qs({start:r.start,end:r.end,tz:TB.tz}));
+    if(me!==seq)return;
+    const n=o.days.length,single=n===1;
+    $('#sub').textContent=TB.rangeLabel(r.start,r.end);
+    const s=o.seconds,users=Object.keys(o.by_user).length,tracked=TB.sum(s);
+    const cshare=o.active_seconds?Math.round(100*o.creative_seconds/o.active_seconds):0;
+    $('#kpis').innerHTML=
+      TB.kpi('Productivity',TB.pct(o.productivity_pct),TB.delta(o.productivity_pct,o.previous.productivity_pct,'pp'))+
+      TB.kpi('Active time',fmt(o.active_seconds),TB.delta(o.active_seconds,o.previous.active_seconds))+
+      TB.kpi('In creative tools',fmt(o.creative_seconds),`<span class="dl mut">${cshare}% of active time</span>`)+
+      TB.kpi('Employees tracked',users,`<span class="dl mut">${users?fmt(o.active_seconds/users/(n)):'–'} active / person / day</span>`)+
+      TB.kpi('Flagged alerts',`<a href="/alerts" style="color:inherit">${o.alerts.total}</a>`,`<span class="dl ${o.alerts.open?'down':'flat'}">${o.alerts.open} unacknowledged</span>`);
+    const b=o.background;
+    $('#bgnote').innerHTML=b.has_background_data&&b.passive_seconds?`<div class="callout info"><b>${fmt(b.passive_seconds)}</b> of background audio (e.g. YouTube music) played while people worked in other apps. It is <b>not</b> counted as app usage here. <a href="/overlap?${TB.qs({start:r.start,end:r.end})}">See active vs background →</a></div>`:'';
+    // daily stacked
+    const keys=TB.LABELS.map(([k,,c])=>[k,c,k[0].toUpperCase()+k.slice(1)]);
+    const every=Math.ceil(n/12);
+    TB.stacked($('#daily'),o.daily.map(d=>({label:n<=10?new Date(d.day+'T00:00').toLocaleDateString([],{weekday:'short',day:'numeric'}):d.day.slice(5),title:new Date(d.day+'T00:00').toLocaleDateString([],{weekday:'long',month:'short',day:'numeric'}),vals:d})),keys,{every,height:240});
+    $('#dailyLegend').innerHTML=TB.LABELS.map(([,t,c])=>`<span><span class="dot" style="background:${c}"></span>${t}</span>`).join('');
+    TB.donut($('#mix'),TB.LABELS.map(([k,t,c])=>({name:t,v:s[k],color:c})),TB.pct(o.productivity_pct),'productive');
+    // hours: average per day
+    $('#hourSub').textContent=(single?'Tracked time in each hour of the day':'Average tracked time per hour of the day')+' (your local time)';
+    TB.stacked($('#hours'),o.hourly.map((h,i)=>({label:String(i),title:`${String(i).padStart(2,'0')}:00 – ${String(i).padStart(2,'0')}:59`,vals:Object.fromEntries(Object.entries(h).map(([k,v])=>[k,v/n]))})),keys,{every:3,height:220});
+    $('#hoursLegend').innerHTML=$('#dailyLegend').innerHTML;
+    TB.line($('#pctline'),o.daily.map(d=>({label:n<=10?d.day.slice(5):d.day.slice(5),title:d.day,v:d.pct})),{every,height:220});
+    TB.hbars($('#creative'),o.creative_apps,{color:()=>'var(--accent)'});
+    TB.hbars($('#apps'),o.apps,{sub:TB.labelLegend});
+    TB.hbars($('#sites'),o.sites,{sub:TB.labelLegend});
+    TB.hbars($('#cats'),o.categories.filter(c=>c.name!=='Idle'),{color:()=>'var(--accent)'});
+    const rows=Object.entries(o.by_user).map(([u,m])=>({u,a:m.productive+m.unproductive+m.neutral,m})).sort((x,y)=>y.a-x.a);
+    $('#team').innerHTML=rows.length?`<thead><tr><th>Employee</th><th class="right">Active</th><th style="width:30%">Productivity</th><th>Top app</th><th>Last seen</th></tr></thead><tbody>`+rows.map(({u,a,m})=>`<tr class="link" data-u="${esc(u)}"><td><a href="/employee?${TB.qs({user:u,start:r.start,end:r.end})}">${esc(u)}</a></td><td class="right num">${fmt(a)}</td><td><div class="stackbar" data-tip="${esc(`${TB.pct(a?100*m.productive/a:null)} productive`)}">${['productive','neutral','unproductive'].map(k=>`<i style="width:${a?100*m[k]/a:0}%;background:${TB.labelColor(k)}"></i>`).join('')}</div><span class="sm mut">${TB.pct(a?100*m.productive/a:null)}</span></td><td>${esc(m.top_app||'–')}</td><td class="mut nowrap">${TB.when(m.last_seen)}</td></tr>`).join('')+'</tbody>':'<tbody><tr><td class="empty">No employees reported activity in this range.</td></tr></tbody>';
+    $('#team').querySelectorAll('tr.link').forEach(tr=>tr.onclick=e=>{if(e.target.tagName!=='A')location.href=tr.querySelector('a').href});
+    TB.heatmap($('#heat'),o.heatmap);
+  }catch(e){if(me===seq)TB.error(e)}
 }
-const list=(el,rows)=>$(el).innerHTML=rows.map(r=>`<div class="row"><span>${esc(r.name)}</span><span class="mut">${fmt(r.seconds)}</span></div>`).join('')||'<span class="mut">No data</span>';
-async function load(){
- tok=$('tok').value;sessionStorage.setItem('tok',tok);$('err').textContent='';
- try{
-  const u=await api('/api/users');const cur=$('user').value;
-  $('user').innerHTML='<option value="">All employees</option>'+u.map(x=>`<option ${x.user===cur?'selected':''}>${esc(x.user)}</option>`).join('');
-  const q=new URLSearchParams({day:$('day').value,days:$('days').value});if($('user').value)q.set('user',$('user').value);
-  const s=await api('/api/summary?'+q);
-  $('pct').textContent=s.productivity_pct==null?'–':s.productivity_pct+'% productive';
-  const t=s.seconds,tot=(t.productive+t.unproductive+t.neutral+t.idle)||1;
-  $('mix').innerHTML=[['p','productive'],['u','unproductive'],['n','neutral'],['idle','idle']].map(([c,k])=>`<i class="${c}" style="width:${100*t[k]/tot}%"></i>`).join('');
-  $('mixlegend').innerHTML=['productive','unproductive','neutral','idle'].map(k=>`${k}: ${fmt(t[k])}`).join(' · ');
-  const mx=Math.max(1,...s.hourly.map(h=>Object.values(h).reduce((a,b)=>a+b,0)));
-  $('hours').innerHTML=s.hourly.map((h,i)=>`<div title="${i}:00" style="height:${100*Object.values(h).reduce((a,b)=>a+b,0)/mx}%">${[['productive','p'],['unproductive','u'],['neutral','n'],['idle','idle']].map(([k,c])=>`<i class="${c}" style="flex:${h[k]||0}"></i>`).join('')}</div>`).join('');
-  list('apps',s.apps);list('sites',s.sites);list('cats',s.categories);
-  $('byuser').innerHTML=Object.entries(s.by_user).map(([n,m])=>{const a=(m.productive||0)+(m.unproductive||0)+(m.neutral||0);return `<div class="row"><span>${esc(n)}</span><span class="mut">${a?Math.round(100*(m.productive||0)/a):0}% · ${fmt(a)} active</span></div>`}).join('')||'<span class="mut">No data</span>';
-  const al=await api('/api/alerts?limit=50');
-  $('alerts').innerHTML='<tr><th>When</th><th>Employee</th><th>Category</th><th>Activity</th><th></th></tr>'+al.map(a=>`<tr><td>${new Date(a.ts*1000).toLocaleString()}</td><td>${esc(a.user)}</td><td>${esc(a.category)}</td><td>${esc(a.url||a.app)} <span class="mut">${esc(a.title)}</span></td><td>${a.acked?'':`<button onclick="ack(${a.id})">Ack</button>`}</td></tr>`).join('');
-  const r=await api('/api/rules');
-  $('rules').innerHTML='<tr><th>Type</th><th>Pattern</th><th>Category</th><th>Label</th><th>Alert</th><th></th></tr>'+r.map(x=>`<tr><td>${x.kind}</td><td>${esc(x.pattern)}</td><td>${esc(x.category)}</td><td>${x.label}</td><td>${x.alert?'yes':''}</td><td><button onclick="delr(${x.id})">×</button></td></tr>`).join('');
-  const tr=await api('/api/trend?'+new URLSearchParams({days:30,...($('user').value?{user:$('user').value}:{})}));
-  drawTrend(tr);
- }catch(e){$('err').textContent=e.message}
-}
-window.ack=async id=>{await api(`/api/alerts/${id}/ack`,{method:'POST'});load()};
-window.delr=async id=>{await api('/api/rules/'+id,{method:'DELETE'});load()};
-$('ruleform').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);
- await api('/api/rules',{method:'POST',body:JSON.stringify({kind:f.get('kind'),pattern:f.get('pattern'),category:f.get('category'),label:f.get('label'),alert:!!f.get('alert'),priority:100})});e.target.reset();load()};
-$('go').onclick=load;$('user').onchange=load;if(tok)load();
-
-// ---- screenshots ----
-async function loadShots(){
- if(!$('user').value){$('shots').innerHTML='<span class="mut">Pick an employee above first.</span>';return}
- const from=$('shotFrom').value?new Date($('shotFrom').value).getTime()/1000:Date.now()/1000-86400;
- const to=$('shotTo').value?new Date($('shotTo').value).getTime()/1000:Date.now()/1000+86400;
- const rows=await api('/api/screenshots?'+new URLSearchParams({user:$('user').value,start:from,end:to}));
- $('shotCount').textContent=rows.length+' screenshot(s)';
- $('shots').innerHTML=rows.map(r=>`<div class="shot" data-id="${r.id}">
-   <label><input type="checkbox" class="pick"> <img loading="lazy" data-src="/api/screenshots/${r.id}/image" alt=""></label>
-   <div class="meta">${new Date(r.ts*1000).toLocaleString()}<br>${esc(r.app)}</div></div>`).join('')||'<span class="mut">No screenshots in range.</span>';
- for(const img of $('shots').querySelectorAll('img[data-src]')){img.src=await apiBlobUrl(img.dataset.src).catch(()=>'')}
-}
-$('shotLoad').onclick=loadShots;
-$('shotAll').onclick=()=>$('shots').querySelectorAll('.pick').forEach(c=>c.checked=true);
-$('shotDelete').onclick=async()=>{
- const ids=[...$('shots').querySelectorAll('.shot')].filter(d=>d.querySelector('.pick').checked).map(d=>+d.dataset.id);
- if(!ids.length)return;
- if(!confirm(`Permanently delete ${ids.length} screenshot(s)? This cannot be undone.`))return;
- await api('/api/screenshots/delete',{method:'POST',body:JSON.stringify({ids})});
- loadShots();
-};
 </script></body></html>
