@@ -19,7 +19,7 @@ charts. No keystroke logging.
 | Who is behind each login | ✅ Rename any employee login to the real person (shown everywhere; data stays keyed on the login) |
 | Design-studio productivity rules | ✅ Photoshop/Illustrator/InDesign/After Effects/Figma/Blender… preset, uncategorised-app finder, rule tester |
 | Alerts for risky activity | ✅ rules with `alert` flag (piracy, gambling, private browsing pre-seeded) |
-| Screenshots | ✅ one per app every 3 min once it's held the foreground 60s+ (`--screenshot-every`); gallery with range-select + delete |
+| Screenshots | ✅ adaptive: once a minute while the app in front keeps changing, once every 3 minutes while it stays the same (both set in the dashboard); **Screenshot now** on demand; gallery with range-select + delete |
 | Windows rollout | ✅ one PowerShell command, no Python/git/npm needed on the target machine |
 | Reports | ✅ in-app only, no email reports (by request) |
 | Keystroke logging, workload/utilisation, teams/groups, SSO | ❌ not built (keylogging intentionally omitted) |
@@ -73,6 +73,30 @@ same as how Chrome or any managed EDR patches itself — but every step is writt
 (`~/.cyril-update.log` by default) and reported to `/api/agent/update-log`, visible to admins at that
 endpoint, so the rollout is fully auditable even though it isn't interruptive. A checksum mismatch aborts
 the update rather than applying anything.
+
+### Screenshots: frequency, "Screenshot now", storage
+
+- **Adaptive frequency.** One screenshot a minute while the program in front keeps changing (someone flipping between
+  Edge and Photoshop), slowing to one every 3 minutes while the same program stays in front (a long Photoshop session).
+  Nothing is captured while the user is idle. Both intervals are set on the **Screenshots** page (15 s to 5 min / 1 to
+  15 min); PCs pick the change up within about a minute, no rebuild or reinstall.
+- **Screenshot now.** On the Day viewer, an employee's report and the Employees list: asks that PC for a live screenshot
+  and shows it in seconds, so you can tell "the feature is working" from "they just switch apps faster than the
+  interval". Agents check in about every 10 seconds; if the PC is off, asleep or on an older agent you get a clear
+  "no answer" after 90 seconds. The shot is saved like any other.
+- **Storage check.** *Install agents* shows whether the server can actually save screenshots (it writes, reads back and
+  deletes a test image). If screenshots fail with a 502 the reason is shown there and on the machine's row. A common
+  cause is SeaweedFS having no room to allocate volumes; the compose entrypoint now sets an explicit volume ceiling
+  (after pulling: `docker compose up -d --force-recreate seaweedfs`).
+
+### Deleting an employee
+
+**Employees -> Delete** (or on the employee's report) permanently removes everything recorded about that login:
+activity, alerts, screenshots **including the image files in storage**, the display name, and the status of PCs nobody
+else uses. It shows the counts first and asks you to type the login. For a returned rental: run the uninstall
+one-liner on the PC, then delete the employee. If the PC is still reporting it will reappear, so the dialog warns when
+it reported in the last 10 minutes. If a screenshot file can't be removed its row is kept and you are told, so
+nothing is orphaned; run Delete again to retry.
 
 ### Names, websites and the web report
 
@@ -180,7 +204,7 @@ browser security boundary, not a Cyril limitation, and we don't try to defeat it
    and URL are not (redacted before leaving the device).
 2. **Screenshots are the real backstop.** They capture the screen itself, which private mode cannot hide,
    and fire automatically once a browser window's been open 60+ seconds.
-3. Private windows get **quicker, tighter screenshots** than normal ones (first shot after ~10 s, then every minute).
+3. Private windows get **quicker screenshots** than normal ones (first shot after ~10 s, then every minute even if the window doesn't change).
 4. Cyril does **not** disable Incognito: staff can use it (e.g. to open a site without leaving their normal session),
    it is simply monitored through 1-3. Earlier installer versions did disable it by browser policy; re-running the
    installer (or uninstalling) reverts that.

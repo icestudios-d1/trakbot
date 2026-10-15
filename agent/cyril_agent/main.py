@@ -11,7 +11,9 @@ import platform
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
+from urllib.parse import quote
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from .core import (Aggregator, Spool, browser_url, data_dir, is_chromium_browser, is_private, load_config,
@@ -22,6 +24,7 @@ from .update import VERSION, check_and_apply
 
 ext_report = None  # latest {"url","title","at"} from the browser extension
 log = logging.getLogger("cyril-agent")
+LATEST = {"app": "", "title": "", "idle": False}   # what is in front right now (for "screenshot now")
 
 # Health counters sent to the server after every flush, so the dashboard can show WHY websites or screenshots are
 # missing on a given PC without anyone reading logs on it.
@@ -93,8 +96,14 @@ def _post(server: str, path: str, key: str, payload: dict) -> bool:
         urllib.request.urlopen(req, timeout=20).read()
         return True
     except Exception as e:
-        STATUS["last_error"] = f"{path}: {e!r}"[:300]
-        log.error("POST %s failed: %r", url, e)
+        detail = ""
+        if isinstance(e, urllib.error.HTTPError):   # the server says WHY in the body ("image store error: ...")
+            try:
+                detail = " " + e.read().decode(errors="replace")[:260]
+            except Exception:
+                pass
+        STATUS["last_error"] = f"{path}: {e!r}{detail}"[:400]
+        log.error("POST %s failed: %r%s", url, e, detail)
         return False
 
 
@@ -102,17 +111,58 @@ def send_events(server: str, key: str, user: str, device: str, events: list) -> 
     return _post(server, "/api/ingest", key, {"user": user, "device": device, "events": events})
 
 
-def send_screenshot(server: str, key: str, user: str, device: str, ts: float, app: str, title: str) -> None:
+def send_screenshot(server: str, key: str, user: str, device: str, ts: float, app: str, title: str,
+                    command_id: int | None = None) -> None:
     try:
         img = capture_jpeg_b64()
     except Exception as e:
         STATUS["shots_failed"] += 1
         STATUS["last_error"] = f"screenshot capture: {e!r}"[:300]
         log.error("screenshot capture failed: %r", e)
+        if command_id is not None:
+            _post(server, "/api/agent/command-result", key,
+                  {"device": device, "id": command_id, "ok": False, "error": f"capture failed: {e!r}"[:400]})
         return
-    ok = _post(server, "/api/screenshot", key,
-               {"user": user, "device": device, "ts": ts, "app": app, "title": title, "image_b64": img})
+    payload = {"user": user, "device": device, "ts": ts, "app": app, "title": title, "image_b64": img}
+    if command_id is not None:
+        payload["command_id"] = command_id
+    ok = _post(server, "/api/screenshot", key, payload)
     STATUS["shots_ok" if ok else "shots_failed"] += 1
+
+
+def command_loop(server: str, key: str, user: str, device: str, throttle: ScreenshotThrottle, shots_enabled: bool,
+                 every: float = 10.0) -> None:
+    """Background thread: ask the server every few seconds whether there is a "screenshot now" request, and pick up
+    the screenshot intervals set in the dashboard. Runs apart from the sampling loop so a slow or unreachable server
+    can never delay activity tracking."""
+    url = server.rstrip("/") + "/api/agent/poll?device=" + quote(device, safe="")
+    last_err = None
+    while True:
+        try:
+            req = urllib.request.Request(url, headers={"X-Api-Key": key, "User-Agent": USER_AGENT})
+            data = json.loads(urllib.request.urlopen(req, timeout=15).read())
+            if last_err:
+                log.info("server poll working again")
+                last_err = None
+            cfg = data.get("config") or {}
+            if cfg.get("screenshot_every"):
+                throttle.every = float(cfg["screenshot_every"])
+            if cfg.get("screenshot_stable_every"):
+                throttle.stable_every = float(cfg["screenshot_stable_every"])
+            for cmd in data.get("commands", []):
+                if cmd.get("kind") != "screenshot":
+                    continue
+                if not shots_enabled:
+                    _post(server, "/api/agent/command-result", key,
+                          {"device": device, "id": cmd["id"], "ok": False, "error": "screenshots are disabled on this PC"})
+                    continue
+                log.info("screenshot requested from the dashboard (id %s)", cmd["id"])
+                send_screenshot(server, key, user, device, time.time(), LATEST["app"], LATEST["title"], cmd["id"])
+        except Exception as e:
+            if repr(e) != last_err:   # log a change, not every 10 seconds
+                log.warning("server poll failed: %r", e)
+                last_err = repr(e)
+        time.sleep(every)
 
 
 def read_browser_url(w: dict) -> str:
@@ -158,8 +208,8 @@ def main():
     ap.add_argument("--idle-after", type=float, default=120.0)
     ap.add_argument("--flush", type=float, default=60.0)
     ap.add_argument("--ext-port", type=int, default=7077)
-    ap.add_argument("--screenshot-after", type=float, default=60.0, help="seconds an app must hold the foreground before the first shot")
-    ap.add_argument("--screenshot-every", type=float, default=180.0, help="seconds between shots while that app stays foreground")
+    ap.add_argument("--screenshot-every", type=float, default=60.0, help="seconds between shots while the app in front keeps changing (the server can override this)")
+    ap.add_argument("--screenshot-stable-every", type=float, default=180.0, help="seconds between shots while the same app stays in front (the server can override this)")
     ap.add_argument("--no-screenshots", action="store_true")
     ap.add_argument("--spool", default=None, help="default: <data dir>/spool.jsonl")
     ap.add_argument("--log", default=None, help="default: <data dir>/agent.log")
@@ -201,7 +251,8 @@ def main():
     agg, spool, last_flush = Aggregator(), Spool(spool_path), time.time()
     no_window = 0
     sent_ok = None
-    shot_throttle = ScreenshotThrottle(a.screenshot_after, a.screenshot_every)
+    shot_throttle = ScreenshotThrottle(a.screenshot_every, a.screenshot_stable_every)
+    threading.Thread(target=command_loop, args=(server, key, user, device, shot_throttle, not a.no_screenshots), daemon=True).start()
     last_update_check = time.time()
     while True:
         now = time.time()
@@ -241,6 +292,7 @@ def main():
             # (that's the browser's own privacy boundary) -- don't store the title/URL.
             title, url = "(private/incognito browsing)", ""
 
+        LATEST.update(app=w["app"], title=title, idle=idle)
         agg.add(now, a.interval, "" if idle else w["app"], "" if idle else title, "" if idle else url, idle)
 
         if not a.no_screenshots and shot_throttle.tick(now, w["app"], idle, private):

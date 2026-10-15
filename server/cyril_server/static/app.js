@@ -93,6 +93,66 @@
     _users = null; await TB.users(); return true;
   };
 
+  // Permanently delete an employee and everything recorded about them (typed confirmation, shows the counts first).
+  TB.deleteEmployee = async (user) => {
+    const pv = await TB.api('/api/users/delete-preview?' + TB.qs({ user }));
+    const name = TB.dn(user);
+    const warn = pv.still_reporting ? `\n\nWARNING: this PC reported in the last 10 minutes. Uninstall the agent first, or ${name} will reappear as soon as it reports again.` : '';
+    const typed = prompt(`Permanently delete ${name} (login "${user}")?\n\nThis removes ${pv.events.toLocaleString()} activity records, ${pv.screenshots.toLocaleString()} screenshots and ${pv.alerts} alerts from the server. It cannot be undone.${warn}\n\nType the login to confirm:`);
+    if (typed === null) return false;
+    if (typed.trim() !== user) { alert('That did not match the login, so nothing was deleted.'); return false; }
+    const r = await TB.api('/api/users/delete', { method: 'POST', body: JSON.stringify({ user }) });
+    _users = null;
+    alert(`Deleted ${name}: ${r.deleted.events.toLocaleString()} activity records, ${r.deleted.screenshots.toLocaleString()} screenshots, ${r.deleted.alerts} alerts.` +
+      (r.failed_screenshots ? `\n\n${r.failed_screenshots} screenshot file(s) could not be removed from storage and were kept. Run Delete again to retry.` : ''));
+    return true;
+  };
+
+  // "Screenshot now": ask the employee's PC for a live capture and show it. Tells "the feature works" apart from
+  // "they just switched apps": if the PC answers you get the picture within seconds.
+  TB.screenshotNow = async (user, { onDone } = {}) => {
+    const devs = (await TB.api('/api/devices')).filter((d) => d.user === user);
+    if (!devs.length) { alert('No PC has reported for this employee yet.'); return; }
+    const now = Date.now() / 1000, live = devs.filter((d) => now - d.last_seen < 600);
+    const targets = live.length ? live : [devs[0]];
+    const ov = document.createElement('div');
+    ov.className = 'modal';
+    ov.innerHTML = `<div class="box"><div class="mtop"><b>Screenshot now · ${TB.esc(TB.dn(user))}</b><button class="x" aria-label="Close">×</button></div><div class="mbody"></div></div>`;
+    document.body.append(ov);
+    let open = true;
+    const close = () => { open = false; ov.remove(); document.removeEventListener('keydown', esc); };
+    const esc = (e) => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', esc);
+    ov.querySelector('.x').onclick = close;
+    ov.onclick = (e) => { if (e.target === ov) close(); };
+    const body = ov.querySelector('.mbody');
+    await Promise.all(targets.map(async (d) => {
+      const row = document.createElement('div');
+      row.className = 'mrow';
+      row.innerHTML = `<div class="mut sm">${TB.esc(d.device.length > 24 ? d.device.slice(0, 24) + '…' : d.device)}${live.length ? '' : ' (not seen recently; may be off)'}</div><div class="st">Asking the PC…</div><div class="img"></div>`;
+      body.append(row);
+      const st = row.querySelector('.st'), img = row.querySelector('.img');
+      try {
+        const { id } = await TB.api('/api/screenshot-now', { method: 'POST', body: JSON.stringify({ device: d.device }) });
+        for (let i = 0; open && i < 50; i++) {
+          await new Promise((r) => setTimeout(r, i ? 2000 : 1000));
+          if (!open) return;
+          const r = await TB.api('/api/screenshot-now/' + id);
+          if (r.status === 'pending') st.textContent = `Waiting for the PC to pick it up… ${Math.round(r.waited)}s (PCs check every ~10 s)`;
+          else if (r.status === 'delivered') st.textContent = 'The PC is capturing…';
+          else if (r.status === 'done') {
+            st.innerHTML = `<b style="color:var(--c-p)">✓ Captured ${new Date().toLocaleTimeString()}</b> · the PC is alive and the screenshot feature works.`;
+            const url = await TB.blobUrl(`/api/screenshots/${r.screenshot_id}/image`);
+            img.innerHTML = `<a href="${url}" target="_blank" rel="noopener"><img alt="Live screenshot" src="${url}"></a>`;
+            if (onDone) onDone(r.screenshot_id);
+            return;
+          } else if (r.status === 'failed') { st.innerHTML = `<b style="color:var(--c-u)">✕ The PC could not take it:</b> ${TB.esc(r.error || 'unknown error')}`; return; }
+          else { st.innerHTML = '<b style="color:var(--c-u)">✕ No answer in 90 seconds.</b> The PC may be off, asleep or offline, or still running an older agent that cannot take on-demand screenshots (see Agent build on Install agents).'; return; }
+        }
+      } catch (e) { st.innerHTML = `<b style="color:var(--c-u)">✕ ${TB.esc(e.message)}</b>`; }
+    }));
+  };
+
   // "Group by": the reporting interval. One server-side setting shared by every page and admin; each block of
   // time is reported as the app used most in it. 0 = exact.
   TB.SLOTS = [[0, 'Exact'], [1, '1 min'], [5, '5 min'], [10, '10 min'], [15, '15 min'], [30, '30 min']];

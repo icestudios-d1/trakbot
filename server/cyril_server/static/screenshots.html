@@ -3,6 +3,9 @@
 <title>Screenshots · Cyril</title><link rel="stylesheet" href="/static/app.css"></head>
 <body><main>
 <div class="pagehead"><div><h1>Screenshots</h1><p>Captured once an app has held the foreground for a minute. Review, then delete what you don't need.</p></div></div>
+<div class="card" style="margin-bottom:16px"><h2>How often</h2><div class="sub">Applies to every PC within about a minute, no rebuild needed. Private/incognito windows are always captured about once a minute.</div>
+<div class="formrow"><label class="mut">While the app in front keeps changing, every <select id="evSw"></select></label>
+<label class="mut">While the same app stays in front, every <select id="evSt"></select></label><button id="evSave">Save</button><span id="evMsg" class="mut sm"></span></div></div>
 <div class="bar-controls"><select id="u" aria-label="Employee"><option value="">Pick an employee…</option></select>
 <label>From <input id="from" type="datetime-local"></label><label>To <input id="to" type="datetime-local"></label>
 <button class="primary" id="load">Load</button><button id="all">Select all</button><button class="danger" id="del">Delete selected</button><span id="count" class="mut"></span></div>
@@ -28,6 +31,12 @@ async function load(){
     for(const d of $('#shots').querySelectorAll('.shot')){TB.blobUrl(`/api/screenshots/${d.dataset.id}/image`).then(u=>{const i=d.querySelector('img');i.src=u;i.style.cursor='zoom-in';i.onclick=e=>{e.preventDefault();window.open(u)}}).catch(()=>{})}
   }catch(e){TB.error(e)}
 }
+const fmtS=n=>n<60?n+' seconds':n%60?(n/60)+' minutes':(n/60)+(n===60?' minute':' minutes');
+TB.api('/api/settings').then(c=>{
+  $('#evSw').innerHTML=c.screenshot_every_choices.map(v=>`<option value="${v}">${fmtS(v)}</option>`).join('');$('#evSw').value=c.screenshot_every;
+  $('#evSt').innerHTML=c.screenshot_stable_every_choices.map(v=>`<option value="${v}">${fmtS(v)}</option>`).join('');$('#evSt').value=c.screenshot_stable_every;
+}).catch(TB.error);
+$('#evSave').onclick=async()=>{try{await TB.api('/api/settings',{method:'PUT',body:JSON.stringify({screenshot_every:+$('#evSw').value,screenshot_stable_every:+$('#evSt').value})});$('#evMsg').textContent='Saved. PCs pick it up within a minute.'}catch(e){TB.error(e)}};
 $('#load').onclick=load;
 $('#all').onclick=()=>document.querySelectorAll('.pick').forEach(c=>c.checked=true);
 $('#del').onclick=async()=>{

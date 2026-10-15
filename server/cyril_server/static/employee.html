@@ -3,7 +3,7 @@
 <title>Employee report · Cyril</title><link rel="stylesheet" href="/static/app.css"></head>
 <body><main>
 <div class="pagehead"><div><h1 id="name">Employee</h1><p id="sub"></p></div>
-<div class="noprint formrow"><button id="rename">Rename</button><a class="chip" id="webLink" href="/web" style="padding:6px 12px;border:1px solid var(--bd);border-radius:999px;color:var(--fg)">Web activity</a><a class="chip" id="dayLink" href="/day" style="padding:6px 12px;border:1px solid var(--bd);border-radius:999px;color:var(--fg)">Day viewer</a><button id="csv">Download CSV</button><button id="print">Print / save PDF</button></div></div>
+<div class="noprint formrow"><button id="shotnow">Screenshot now</button><button id="rename">Rename</button><button id="delete" class="danger">Delete</button><a class="chip" id="webLink" href="/web" style="padding:6px 12px;border:1px solid var(--bd);border-radius:999px;color:var(--fg)">Web activity</a><a class="chip" id="dayLink" href="/day" style="padding:6px 12px;border:1px solid var(--bd);border-radius:999px;color:var(--fg)">Day viewer</a><button id="csv">Download CSV</button><button id="print">Print / save PDF</button></div></div>
 <div id="range"></div>
 <div id="err" class="callout" style="display:none"></div>
 <div id="body">
@@ -96,6 +96,8 @@ $('#slotCsv').onclick=()=>{
   TB.csv(`cyril-${cur.user}-slots-${slotMin?slotMin+'min-':''}${r.start}_to_${r.end}.csv`,[['Date','Start','End','App / site','Category','Productivity','Share of block %','Also in block'],
     ...slotRows.map(x=>[new Date(x.ts*1000).toLocaleDateString('en-CA'),hm(x.ts),hm(x.ts+(slotMin?slotMin*60:x.dur)),what(x),x.idle?'':x.category,x.idle?'idle':x.label,x.share!=null?Math.round(100*x.share):'',(x.breakdown||[]).slice(1).map(b=>b.name+' '+Math.round(b.seconds/60)+'m').join('; ')])]);
 };
+$('#shotnow').onclick=()=>TB.screenshotNow(rb.get().user).catch(TB.error);
+$('#delete').onclick=async()=>{try{if(await TB.deleteEmployee(rb.get().user))location.href='/employees'}catch(e){TB.error(e)}};
 $('#print').onclick=()=>print();
 $('#rename').onclick=async()=>{const u=rb.get().user;try{if(await TB.rename(u)){$('#name').innerHTML=TB.who(u);document.querySelectorAll('#rbUser option').forEach(o=>{if(o.value===u)o.textContent=TB.dn(u)})}}catch(e){TB.error(e)}};
 $('#csv').onclick=()=>{

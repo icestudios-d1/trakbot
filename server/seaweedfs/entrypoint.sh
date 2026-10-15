@@ -32,5 +32,7 @@ cat > /etc/seaweedfs/s3config.json <<EOF
 }
 EOF
 
+# -volume.max=0 means "work it out from free disk space / volume size", which comes out as ZERO volumes (every
+# write then fails with "no free volumes") on a small disk. An explicit ceiling lets volumes grow as screenshots arrive.
 exec weed server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3config.json \
-  -ip.bind=0.0.0.0 -master.volumeSizeLimitMB=1024 -volume.max=0
+  -ip.bind=0.0.0.0 -master.volumeSizeLimitMB=1024 -volume.max=1000

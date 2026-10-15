@@ -28,16 +28,25 @@ def capture_jpeg_b64() -> str:
 
 
 class ScreenshotThrottle:
-    """True once `app` has held the foreground continuously for >= `after` seconds, then at most once every
-    `every` seconds after that. Private/incognito windows hide their URL from us, so the screen is the only
-    record of what was viewed: they get a quicker first shot and a tighter cadence."""
+    """When to take the next screenshot.
 
-    def __init__(self, after: float = 60.0, every: float = 60.0, private_after: float = 10.0, private_every: float = 60.0):
-        self.after, self.every = after, every
+    - The app in front keeps changing: one shot every `every` seconds (default 60) so quick switching between,
+      say, Edge and Photoshop is seen in detail.
+    - The same app stays in front: slow down to one shot every `stable_every` seconds (default 180); a long Photoshop
+      session needs a progress check, not a picture a minute.
+    - Private/incognito windows hide their address from us, so the screen is the only record of what was viewed:
+      first shot after `private_after` seconds, then every `private_every`, regardless of stability.
+    Nothing is captured while the user is idle or no program is in front. The first shot after starting (or coming
+    back from idle) is taken straight away."""
+
+    def __init__(self, every: float = 60.0, stable_every: float = 180.0, private_after: float = 10.0,
+                 private_every: float = 60.0):
+        self.every, self.stable_every = every, stable_every
         self.private_after, self.private_every = private_after, private_every
         self.key = None
         self.app_since = 0.0
-        self.last_shot = float("-inf")  # -inf = no shot taken yet for this window
+        self.changed = True               # app switched since the last shot
+        self.last_shot = float("-inf")
 
     def tick(self, now: float, app: str, idle: bool, private: bool = False) -> bool:
         if idle or not app:
@@ -45,10 +54,13 @@ class ScreenshotThrottle:
             return False
         key = (app, private)
         if key != self.key:
-            self.key, self.app_since, self.last_shot = key, now, float("-inf")
-        after, every = (self.private_after, self.private_every) if private else (self.after, self.every)
-        held = now - self.app_since
-        if held >= after and now - self.last_shot >= every:
-            self.last_shot = now
+            self.key, self.app_since, self.changed = key, now, True
+        gap = now - self.last_shot
+        if private:
+            due = now - self.app_since >= self.private_after and gap >= self.private_every
+        else:
+            due = gap >= (self.every if self.changed else self.stable_every)
+        if due:
+            self.last_shot, self.changed = now, False
             return True
         return False

@@ -6,7 +6,7 @@
 <div class="daybar">
  <select id="u" aria-label="Employee"></select>
  <button id="prev" aria-label="Previous day">◀</button><input type="date" id="d" aria-label="Day"><button id="next" aria-label="Next day">▶</button>
- <button class="chip" id="today">Today</button><span class="sep"></span>
+ <button class="chip" id="today">Today</button><button id="shotNow" title="Ask this PC for a screenshot right now">Screenshot now</button><span class="sep"></span>
  <span id="slotHere"></span><span class="mut">Colour by</span><button class="chip on" data-c="app">Application</button><button class="chip" data-c="label">Productivity</button>
 </div>
 <div id="err" class="callout" style="display:none"></div>
@@ -26,7 +26,7 @@
 <script src="/static/app.js"></script>
 <script>
 const {$,fmt,esc}=TB;
-let events=[],shots=[],sel=-1,colorBy='app',keyOf,colorOf,t0=0,t1=0,seq=0;
+let wantId=0,events=[],shots=[],sel=-1,colorBy='app',keyOf,colorOf,t0=0,t1=0,seq=0;
 const urls={};
 const nameOf=e=>e.name||(e.idle?'Idle / away':(e.domain||e.app||'unknown'));
 const p0=TB.params();
@@ -40,6 +40,7 @@ TB.users().then(u=>{
 
 const shift=n=>{const d=new Date($('#d').value+'T00:00');d.setDate(d.getDate()+n);const v=TB.ymd(d);if(v>$('#d').max)return;$('#d').value=v;load()};
 $('#prev').onclick=()=>shift(-1);$('#next').onclick=()=>shift(1);
+$('#shotNow').onclick=()=>TB.screenshotNow($('#u').value,{onDone:id=>{if($('#d').value===TB.ymd(new Date())){wantId=id;load()}}}).catch(TB.error);
 $('#today').onclick=()=>{$('#d').value=TB.ymd(new Date());load()};
 $('#d').onchange=()=>load();$('#u').onchange=()=>load();
 let slotMin=0;
@@ -65,7 +66,8 @@ async function load(first){
       TB.kpi('Screenshots',shots.length,`<span class="dl mut">${shots.length?'captured this day':'none captured'}</span>`);
     setup();timeline();log();film();
     const t=first&&+p0.t;
-    if(shots.length)select(t?nearest(t):0,{scroll:false});else select(-1);
+    const wi=wantId?shots.findIndex(x=>x.id===wantId):-1;wantId=0;
+    if(shots.length)select(wi>=0?wi:t?nearest(t):0,{scroll:wi>=0});else select(-1);
   }catch(e){if(me===seq)TB.error(e)}
 }
 

@@ -22,7 +22,9 @@ REGION = "us-east-1"  # ignored by SeaweedFS; any value works
 
 
 class ObjectStoreError(RuntimeError):
-    pass
+    def __init__(self, msg: str, code: int | None = None):
+        super().__init__(msg)
+        self.code = code   # HTTP status from the store, None if it was unreachable
 
 
 class S3Store:
@@ -72,7 +74,7 @@ class S3Store:
                 return r.read()
         except urllib.error.HTTPError as e:
             body = e.read().decode(errors="replace")
-            raise ObjectStoreError(f"{method} {key} -> {e.code}: {body[:300]}") from e
+            raise ObjectStoreError(f"{method} {key} -> {e.code}: {body[:300]}", e.code) from e
         except urllib.error.URLError as e:
             # DNS not resolved yet (SeaweedFS container not up/registered), connection
             # refused, timeout, etc. -- anything below the HTTP layer. Previously only
@@ -106,7 +108,15 @@ class S3Store:
         print(f"WARNING: SeaweedFS unreachable after {retries} attempts, continuing without it: {last}")
 
     def put(self, key: str, data: bytes, content_type: str = "image/jpeg") -> None:
-        self._request("PUT", key, data)
+        try:
+            self._request("PUT", key, data)
+        except ObjectStoreError as e:
+            if e.code != 404:
+                raise
+            # The bucket does not exist (it could not be created at startup because SeaweedFS was still
+            # coming up, and nothing retried): create it now and try once more instead of failing forever.
+            self._request("PUT", "")
+            self._request("PUT", key, data)
 
     def get(self, key: str) -> bytes:
         return self._request("GET", key)
@@ -114,5 +124,6 @@ class S3Store:
     def delete(self, key: str) -> None:
         try:
             self._request("DELETE", key)
-        except ObjectStoreError:
-            pass  # idempotent: already gone counts as deleted
+        except ObjectStoreError as e:
+            if e.code != 404:     # already gone counts as deleted; any other failure is a real failure
+                raise

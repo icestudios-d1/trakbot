@@ -49,6 +49,7 @@ APPS = {
     "notepad": "Notepad", "notepad++": "Notepad++", "mspaint": "Paint", "calculatorapp": "Calculator",
     "calc": "Calculator", "snippingtool": "Snipping Tool", "taskmgr": "Task Manager", "telegram": "Telegram",
     "whatsapp": "WhatsApp", "discord": "Discord", "steam": "Steam", "keynote": "Keynote",
+    "qbittorrent": "qBittorrent", "utorrent": "uTorrent",
     "msedge": "Edge", "edge": "Edge", "chrome": "Chrome", "google-chrome": "Chrome", "firefox": "Firefox",
     "brave": "Brave", "opera": "Opera", "vivaldi": "Vivaldi", "arc": "Arc", "safari": "Safari",
 }

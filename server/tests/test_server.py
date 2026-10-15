@@ -306,7 +306,9 @@ def test_manifest_with_utf8_bom_is_readable():
 
 def test_reporting_interval_setting_and_its_effect():
     assert c.get("/api/settings").status_code == 401
-    assert c.get("/api/settings", headers=A).json() == {"report_interval": 0, "report_interval_choices": [0, 1, 5, 10, 15, 30]}
+    st0 = c.get("/api/settings", headers=A).json()
+    assert st0["report_interval"] == 0 and st0["report_interval_choices"] == [0, 1, 5, 10, 15, 30]
+    assert st0["screenshot_every"] == 60 and st0["screenshot_stable_every"] == 180
     assert c.put("/api/settings", headers=A, json={"report_interval": 7}).status_code == 400
     # two apps inside one 15-minute block: Photoshop 6 min, reddit 8 min -> the block counts as reddit (unproductive)
     base = time.mktime(time.strptime("2031-06-02 10:00", "%Y-%m-%d %H:%M")) - time.timezone  # 10:00 UTC
@@ -381,3 +383,93 @@ def test_published_build_id_falls_back_to_the_exe_checksum():
     assert c.get("/api/install-info", headers=A).json()["build"] == "7feedf0"
     os.remove(path)
     assert c.get("/api/install-info", headers=A).json()["build"] is None
+
+
+def test_screenshot_intervals_are_a_server_setting_agents_pick_up():
+    r = c.put("/api/settings", headers=A, json={"screenshot_every": 30, "screenshot_stable_every": 300}).json()
+    assert r["screenshot_every"] == 30 and r["screenshot_stable_every"] == 300
+    assert r["report_interval"] == 0                                     # untouched settings stay put
+    assert c.put("/api/settings", headers=A, json={"screenshot_every": 7}).status_code == 400
+    assert c.get("/api/agent/poll", params={"device": "PC-X"}).status_code == 401
+    assert c.get("/api/agent/poll", params={"device": "PC-X"}, headers=K).json()["config"] == {"screenshot_every": 30, "screenshot_stable_every": 300}
+    c.put("/api/settings", headers=A, json={"screenshot_every": 60, "screenshot_stable_every": 180})
+
+
+def test_screenshot_now_round_trip():
+    now = time.time()
+    c.post("/api/ingest", headers=K, json={"user": "live", "device": "PC-LIVE", "events": [{"ts": now, "dur": 5, "app": "code"}]})
+    assert c.post("/api/screenshot-now", json={"device": "PC-LIVE"}).status_code == 401
+    assert c.post("/api/screenshot-now", headers=A, json={"device": "NOPE"}).status_code == 404
+    cid = c.post("/api/screenshot-now", headers=A, json={"device": "PC-LIVE"}).json()["id"]
+    assert c.get(f"/api/screenshot-now/{cid}", headers=A).json()["status"] == "pending"
+    # another PC's poll sees nothing; this PC's poll gets the command once, then it is "delivered"
+    assert c.get("/api/agent/poll", params={"device": "PC-OTHER"}, headers=K).json()["commands"] == []
+    assert c.get("/api/agent/poll", params={"device": "PC-LIVE"}, headers=K).json()["commands"] == [{"id": cid, "kind": "screenshot"}]
+    assert c.get("/api/agent/poll", params={"device": "PC-LIVE"}, headers=K).json()["commands"] == []
+    assert c.get(f"/api/screenshot-now/{cid}", headers=A).json()["status"] == "delivered"
+    # the agent answers by uploading a screenshot that names the command
+    jpeg = base64.b64encode(b"\xff\xd8\xff\xe0fake").decode()
+    sid = c.post("/api/screenshot", headers=K, json={"user": "live", "device": "PC-LIVE", "ts": now, "app": "code",
+                                                    "title": "t", "image_b64": jpeg, "command_id": cid}).json()["id"]
+    done = c.get(f"/api/screenshot-now/{cid}", headers=A).json()
+    assert done["status"] == "done" and done["screenshot_id"] == sid
+    # a failed capture is reported back with its reason
+    cid2 = c.post("/api/screenshot-now", headers=A, json={"device": "PC-LIVE"}).json()["id"]
+    c.get("/api/agent/poll", params={"device": "PC-LIVE"}, headers=K)
+    c.post("/api/agent/command-result", headers=K, json={"device": "PC-LIVE", "id": cid2, "ok": False, "error": "screen locked"})
+    assert c.get(f"/api/screenshot-now/{cid2}", headers=A).json() == {**c.get(f"/api/screenshot-now/{cid2}", headers=A).json(), "status": "failed", "error": "screen locked"}
+    # a PC that never answers expires instead of hanging forever
+    cid3 = c.post("/api/screenshot-now", headers=A, json={"device": "PC-LIVE"}).json()["id"]
+    with mock.patch("cyril_server.app.time.time", return_value=time.time() + 200):
+        assert c.get(f"/api/screenshot-now/{cid3}", headers=A).json()["status"] == "expired"
+        assert c.get("/api/agent/poll", params={"device": "PC-LIVE"}, headers=K).json()["commands"] == []   # stale ones are not delivered
+
+
+def test_delete_employee_removes_everything_about_them_and_only_them():
+    now = time.time()
+    for u, d in (("gone", "PC-RENTAL"), ("stays", "PC-OWN"), ("gone", "PC-SHARED"), ("stays", "PC-SHARED")):
+        c.post("/api/ingest", headers=K, json={"user": u, "device": d, "events": [
+            {"ts": now - 700, "dur": 20, "app": "qbittorrent.exe", "title": "t"},      # also raises an alert
+            {"ts": now - 600, "dur": 30, "app": "code"}]})
+    jpeg = base64.b64encode(b"\xff\xd8\xff\xe0fake").decode()
+    ids = [c.post("/api/screenshot", headers=K, json={"user": u, "device": d, "ts": now - 650 + i, "app": "code", "title": "t",
+                                                      "image_b64": jpeg}).json()["id"] for i, (u, d) in enumerate(
+        (("gone", "PC-RENTAL"), ("gone", "PC-RENTAL"), ("stays", "PC-OWN")))]
+    c.post("/api/users/rename", headers=A, json={"user": "gone", "name": "Returned Renter"})
+    for dev, u in (("PC-RENTAL", "gone"), ("PC-SHARED", "gone"), ("PC-OWN", "stays")):
+        c.post("/api/agent/status", headers=K, json={"user": u, "device": dev, "info": {"v": 1}})
+
+    assert c.get("/api/users/delete-preview", params={"user": "gone"}).status_code == 401
+    assert c.post("/api/users/delete", json={"user": "gone"}).status_code == 401
+    pv = c.get("/api/users/delete-preview", headers=A, params={"user": "gone"}).json()
+    assert pv["events"] == 4 and pv["screenshots"] == 2 and pv["alerts"] == 2 and sorted(pv["devices"]) == ["PC-RENTAL", "PC-SHARED"]
+    assert pv["still_reporting"] is True        # their PC reported minutes ago: warn to uninstall the agent first
+
+    r = c.post("/api/users/delete", headers=A, json={"user": "gone"}).json()
+    assert r == {"deleted": {"events": 4, "screenshots": 2, "alerts": 2}, "failed_screenshots": 0}
+    # gone: rows, image files, name; the other employee is untouched
+    assert "gone" not in [u["user"] for u in c.get("/api/users", headers=A).json()]
+    assert c.get(f"/api/screenshots/{ids[0]}/image", headers=A).status_code == 404
+    assert c.get(f"/api/screenshots/{ids[2]}/image", headers=A).status_code == 200
+    assert not [a for a in c.get("/api/alerts", headers=A, params={"user": "gone"}).json()]
+    assert [a for a in c.get("/api/alerts", headers=A, params={"user": "stays"}).json()]
+    devs = {d["device"] for d in c.get("/api/devices", headers=A).json()}
+    assert "PC-RENTAL" not in devs and {"PC-OWN", "PC-SHARED"} <= devs        # a shared PC stays (the other login uses it)
+    st = {d["device"]: d["status"] for d in c.get("/api/devices", headers=A).json()}
+    assert st["PC-OWN"] == {"v": 1} and st["PC-SHARED"] == {"v": 1}
+    assert c.post("/api/users/delete", headers=A, json={"user": "gone"}).status_code == 404     # nothing left
+    assert c.get("/api/users/delete-preview", headers=A, params={"user": "gone"}).status_code == 404
+
+
+def test_storage_health_and_the_502_explains_itself():
+    assert c.get("/api/storage-health").status_code == 401
+    assert c.get("/api/storage-health", headers=A).json() == {"ok": True, "error": ""}
+    jpeg = base64.b64encode(b"\xff\xd8\xff\xe0fake").decode()
+    body = {"user": "u", "device": "d", "ts": time.time(), "app": "a", "title": "t", "image_b64": jpeg}
+    from cyril_server import app as appmod
+    boom = ObjectStoreError("PUT u/1.jpg -> 500: no free volumes")
+    with mock.patch.object(appmod.store, "put", side_effect=boom):
+        r = c.post("/api/screenshot", headers=K, json=body)
+        assert r.status_code == 502 and "no free volumes" in r.json()["detail"]          # the reason is in the response
+        h = c.get("/api/storage-health", headers=A).json()
+        assert h["ok"] is False and "no free volumes" in h["error"]

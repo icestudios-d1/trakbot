@@ -156,6 +156,63 @@ def users():
     return [dict(r) for r in rows]
 
 
+def _user_footprint(c, user: str) -> dict:
+    n = lambda q: c.execute(q, (user,)).fetchone()[0]  # noqa: E731
+    devs = [r[0] for r in c.execute("SELECT device FROM events WHERE user=? UNION SELECT device FROM screenshots WHERE user=?", (user, user))]
+    return {"events": n("SELECT COUNT(*) FROM events WHERE user=?"), "screenshots": n("SELECT COUNT(*) FROM screenshots WHERE user=?"),
+            "alerts": n("SELECT COUNT(*) FROM alerts WHERE user=?"), "devices": devs,
+            "last_seen": c.execute("SELECT MAX(ts+dur) FROM events WHERE user=?", (user,)).fetchone()[0]}
+
+
+@app.get("/api/users/delete-preview", dependencies=[Depends(admin)])
+def delete_user_preview(user: str):
+    """Exactly what deleting this employee would remove, plus whether their PC is still reporting."""
+    with db.conn() as c:
+        f = _user_footprint(c, user)
+    if not (f["events"] or f["screenshots"] or f["alerts"]):
+        raise HTTPException(404, "no data for that employee")
+    return {**f, "user": user, "still_reporting": bool(f["last_seen"] and time.time() - f["last_seen"] < 600)}
+
+
+class UserDeleteIn(BaseModel):
+    user: str = Field(min_length=1, max_length=128)
+
+
+@app.post("/api/users/delete", dependencies=[Depends(admin)])
+def delete_user(b: UserDeleteIn):
+    """Permanently remove an employee and everything recorded about them: activity, screenshots (the image files
+    too), alerts, their display name, and the status/commands of devices nobody else uses. Typical use: a rented
+    PC is returned, the agent is uninstalled, and the data is wiped. If a screenshot file can't be removed its row is
+    kept (so nothing is orphaned) and the count is returned so the delete can simply be run again."""
+    with db.conn() as c:
+        f = _user_footprint(c, b.user)
+        shots = [dict(r) for r in c.execute("SELECT id, path FROM screenshots WHERE user=?", (b.user,))]
+    if not (f["events"] or f["screenshots"] or f["alerts"]):
+        raise HTTPException(404, "no data for that employee")
+    removed, failed = [], 0
+    for r in shots:                       # image files first, outside the DB lock (thousands of HTTP calls)
+        try:
+            store.delete(r["path"])
+            removed.append(r["id"])
+        except ObjectStoreError as e:
+            failed += 1
+            print(f"delete employee: could not remove screenshot {r['path']}: {e!r}")
+    with db.conn() as c:
+        for i in range(0, len(removed), 500):
+            chunk = removed[i:i + 500]
+            c.execute(f"DELETE FROM screenshots WHERE id IN ({','.join('?' * len(chunk))})", chunk)
+        c.execute("DELETE FROM events WHERE user=?", (b.user,))
+        c.execute("DELETE FROM alerts WHERE user=?", (b.user,))
+        if not failed:
+            c.execute("DELETE FROM user_names WHERE user=?", (b.user,))
+        for d in f["devices"]:            # a device other logins still use keeps its status
+            if not c.execute("SELECT 1 FROM events WHERE device=? LIMIT 1", (d,)).fetchone():
+                c.execute("DELETE FROM agent_status WHERE device=?", (d,))
+                c.execute("DELETE FROM agent_commands WHERE device=?", (d,))
+    return {"deleted": {"events": f["events"], "screenshots": len(removed), "alerts": f["alerts"]},
+            "failed_screenshots": failed}
+
+
 class RenameIn(BaseModel):
     user: str = Field(min_length=1, max_length=128)
     name: str = Field(max_length=100)
@@ -299,22 +356,54 @@ def _slot(param: int | None) -> int:
     return param
 
 
+SHOT_EVERY = (15, 30, 60, 120, 300)            # seconds between shots while the app in front keeps changing
+SHOT_STABLE_EVERY = (60, 120, 180, 300, 600, 900)  # seconds between shots while the same app stays in front
+
+
+def _setting_int(key: str, default: int, allowed: tuple) -> int:
+    with db.conn() as c:
+        row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    try:
+        v = int(row["value"]) if row else default
+    except ValueError:
+        v = default
+    return v if v in allowed else default
+
+
+def _screenshot_settings() -> dict:
+    return {"screenshot_every": _setting_int("screenshot_every", 60, SHOT_EVERY),
+            "screenshot_stable_every": _setting_int("screenshot_stable_every", 180, SHOT_STABLE_EVERY)}
+
+
 class SettingsIn(BaseModel):
-    report_interval: int
+    report_interval: int | None = None
+    screenshot_every: int | None = None
+    screenshot_stable_every: int | None = None
 
 
 @app.get("/api/settings", dependencies=[Depends(admin)])
 def get_settings():
-    return {"report_interval": _slot_setting(), "report_interval_choices": list(SLOT_CHOICES)}
+    return {"report_interval": _slot_setting(), "report_interval_choices": list(SLOT_CHOICES),
+            **_screenshot_settings(), "screenshot_every_choices": list(SHOT_EVERY),
+            "screenshot_stable_every_choices": list(SHOT_STABLE_EVERY)}
 
 
 @app.put("/api/settings", dependencies=[Depends(admin)])
 def put_settings(s: SettingsIn):
-    if s.report_interval not in SLOT_CHOICES:
-        raise HTTPException(400, f"report_interval must be one of {list(SLOT_CHOICES)}")
+    """Change any subset of the settings. Screenshot intervals reach every agent within about a minute."""
+    changes = {}
+    for key, value, allowed in (("report_interval", s.report_interval, SLOT_CHOICES),
+                                ("screenshot_every", s.screenshot_every, SHOT_EVERY),
+                                ("screenshot_stable_every", s.screenshot_stable_every, SHOT_STABLE_EVERY)):
+        if value is None:
+            continue
+        if value not in allowed:
+            raise HTTPException(400, f"{key} must be one of {list(allowed)}")
+        changes[key] = value
     with db.conn() as c:
-        c.execute("INSERT INTO settings(key,value) VALUES('report_interval',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                  (str(s.report_interval),))
+        for key, value in changes.items():
+            c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                      (key, str(value)))
     return get_settings()
 
 
@@ -501,6 +590,7 @@ class ScreenshotIn(BaseModel):
     app: str = ""
     title: str = ""
     image_b64: str = Field(min_length=1, max_length=MAX_SHOT_B64)
+    command_id: int | None = None   # set when this shot answers a "screenshot now" request
 
 
 @app.post("/api/screenshot", dependencies=[Depends(agent)])
@@ -519,11 +609,15 @@ def upload_screenshot(s: ScreenshotIn):
         # SeaweedFS actually said -- auth mismatch, bucket missing, disk
         # full, unreachable, etc. all looked identical from the outside.
         print(f"screenshot upload failed, image store error: {e!r}")
-        raise HTTPException(502, "image store unavailable")
+        # The reason travels back to the agent (and from there to Install agents), so "502" is never a mystery.
+        raise HTTPException(502, f"image store error: {str(e)[:240]}")
     with db.conn() as c:
         cur = c.execute(
             "INSERT INTO screenshots(user,device,ts,app,title,path,bytes) VALUES(?,?,?,?,?,?,?)",
             (s.user, s.device, s.ts, s.app, s.title, key, len(data)))
+        if s.command_id is not None:
+            c.execute("UPDATE agent_commands SET status='done', screenshot_id=? WHERE id=? AND device=?",
+                      (cur.lastrowid, s.command_id, s.device))
     return {"id": cur.lastrowid}
 
 
@@ -699,6 +793,65 @@ def agent_status(s: AgentStatusIn):
     return {"ok": True}
 
 
+COMMAND_TTL = 90   # seconds a "screenshot now" request stays valid; a PC that is off just never answers
+
+
+class ShotNowIn(BaseModel):
+    device: str = Field(min_length=1, max_length=128)
+
+
+@app.post("/api/screenshot-now", dependencies=[Depends(admin)])
+def screenshot_now(b: ShotNowIn):
+    """Ask one PC for a screenshot right now (agents pick it up on their next poll, ~10 s)."""
+    with db.conn() as c:
+        if not c.execute("SELECT 1 FROM events WHERE device=? LIMIT 1", (b.device,)).fetchone():
+            raise HTTPException(404, "no such device")
+        cur = c.execute("INSERT INTO agent_commands(device,kind,created) VALUES(?, 'screenshot', ?)", (b.device, time.time()))
+    return {"id": cur.lastrowid}
+
+
+@app.get("/api/screenshot-now/{cid}", dependencies=[Depends(admin)])
+def screenshot_now_status(cid: int):
+    """pending (waiting for the PC) -> delivered (PC has it) -> done (screenshot_id set) | failed | expired."""
+    with db.conn() as c:
+        r = c.execute("SELECT * FROM agent_commands WHERE id=?", (cid,)).fetchone()
+    if not r:
+        raise HTTPException(404)
+    status = r["status"]
+    if status in ("pending", "delivered") and time.time() - r["created"] > COMMAND_TTL:
+        status = "expired"
+    return {"id": cid, "status": status, "screenshot_id": r["screenshot_id"], "error": r["error"],
+            "waited": round(time.time() - r["created"], 1)}
+
+
+@app.get("/api/agent/poll", dependencies=[Depends(agent)])
+def agent_poll(device: str = Query(min_length=1, max_length=128)):
+    """Agents ask every few seconds: is there anything for me to do, and what intervals should I use?"""
+    now = time.time()
+    with db.conn() as c:
+        rows = c.execute("SELECT id, kind FROM agent_commands WHERE device=? AND status='pending' AND created>=?",
+                         (device, now - COMMAND_TTL)).fetchall()
+        for r in rows:
+            c.execute("UPDATE agent_commands SET status='delivered', delivered=? WHERE id=?", (now, r["id"]))
+    return {"commands": [{"id": r["id"], "kind": r["kind"]} for r in rows], "config": _screenshot_settings()}
+
+
+class CommandResultIn(BaseModel):
+    device: str = Field(min_length=1, max_length=128)
+    id: int
+    ok: bool
+    error: str = Field(default="", max_length=500)
+
+
+@app.post("/api/agent/command-result", dependencies=[Depends(agent)])
+def agent_command_result(r: CommandResultIn):
+    """Only failures need reporting; a successful screenshot completes its command when it is uploaded."""
+    if not r.ok:
+        with db.conn() as c:
+            c.execute("UPDATE agent_commands SET status='failed', error=? WHERE id=? AND device=?", (r.error, r.id, r.device))
+    return {"ok": True}
+
+
 @app.get("/api/agent/seen", dependencies=[Depends(agent)])
 def agent_seen(device: str = Query(min_length=1, max_length=128), since: float = 0):
     """Used by the installer to confirm a first report arrived. `with_app` counts samples where the agent saw a
@@ -709,6 +862,19 @@ def agent_seen(device: str = Query(min_length=1, max_length=128), since: float =
             "SELECT COUNT(*) n, COALESCE(SUM(app<>'' AND idle=0),0) with_app, MAX(ts+dur) last "
             "FROM events WHERE device=? AND ts+dur>=?", (device, since)).fetchone()
     return {"seen": r["n"] > 0, "events": r["n"], "with_app": r["with_app"], "last_seen": r["last"]}
+
+
+@app.get("/api/storage-health", dependencies=[Depends(admin)])
+def storage_health():
+    """Write, read back and delete a tiny test object in the screenshot store, and say exactly what failed."""
+    key = f"_healthcheck/{int(time.time() * 1000)}.txt"
+    try:
+        store.put(key, b"ok", "text/plain")
+        ok = store.get(key) == b"ok"
+        store.delete(key)
+    except ObjectStoreError as e:
+        return {"ok": False, "error": str(e)[:400]}
+    return {"ok": ok, "error": "" if ok else "wrote an object but could not read the same bytes back"}
 
 
 @app.get("/api/devices", dependencies=[Depends(admin)])
