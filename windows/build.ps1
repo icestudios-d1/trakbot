@@ -21,7 +21,7 @@ pip install --quiet -r "$root\agent\requirements.txt"
 
 pyinstaller --onefile --noconsole --name cyril `
   --paths "$root\agent" `
-  --collect-all uiautomation --collect-all comtypes `
+  --collect-data certifi --collect-all uiautomation --collect-all comtypes `
   --distpath $out --workpath "$root\build" --specpath "$root\build" `
   "$root\agent\cyril_entry.py"
 

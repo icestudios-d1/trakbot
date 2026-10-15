@@ -27,7 +27,7 @@ pip install --quiet -r "$ROOT/agent/requirements.txt"      # pulls pyobjc (Cocoa
 BIN="$OUT/cyril-mac-$ARCH"
 pyinstaller --onefile --name "cyril-mac-$ARCH" \
   --paths "$ROOT/agent" \
-  --hidden-import AppKit --hidden-import Quartz --hidden-import Foundation \
+  --collect-data certifi --hidden-import AppKit --hidden-import Quartz --hidden-import Foundation \
   --distpath "$OUT" --workpath "$ROOT/build/mac-$ARCH" --specpath "$ROOT/build/mac-$ARCH" \
   "$ROOT/agent/cyril_entry.py"
 
