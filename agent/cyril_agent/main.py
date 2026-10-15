@@ -29,7 +29,7 @@ LATEST = {"app": "", "title": "", "idle": False}   # what is in front right now 
 
 # Health counters sent to the server after every flush, so the dashboard can show WHY websites or screenshots are
 # missing on a given PC without anyone reading logs on it.
-STATUS = {"version": VERSION, "session": None, "browser_samples": 0, "url_extension": 0, "url_uia": 0,
+STATUS = {"version": VERSION, "platform": {"win32": "Windows", "darwin": "Mac"}.get(sys.platform, sys.platform), "session": None, "browser_samples": 0, "url_extension": 0, "url_uia": 0,
           "uia_not_found": 0, "uia_error": "", "shots_ok": 0, "shots_failed": 0, "shots_queued": 0, "last_error": ""}
 
 
@@ -187,22 +187,48 @@ def command_loop(server: str, key: str, user: str, device: str, throttle: Screen
         time.sleep(every)
 
 
-def read_browser_url(w: dict) -> str:
-    """Address of the page in the foreground Chromium browser, read from its address bar (Windows)."""
-    if sys.platform != "win32" or not w.get("hwnd") or not is_chromium_browser(w["app"]):
-        return ""
+def read_browser_url(w: dict) -> tuple[str, bool]:
+    """(address, is_private) of the page in the foreground browser, read from the browser itself: Windows via UI
+    Automation on the address bar, macOS via AppleScript. No browser extension needed."""
     try:
-        from .platform.browser_url import read_address_bar
-        raw = read_address_bar(w["hwnd"])
-    except Exception as e:  # missing dependency, COM trouble, browser hung ...: never let this stop the agent
+        if sys.platform == "win32":
+            if not w.get("hwnd") or not is_chromium_browser(w["app"]):
+                return "", False
+            from .platform.browser_url import read_address_bar
+            raw = read_address_bar(w["hwnd"])
+            if raw is None:
+                STATUS["uia_not_found"] += 1
+                return "", False
+            return normalize_url(raw), False
+        if sys.platform == "darwin":
+            from .platform import macos
+            if not macos.is_scriptable_browser(w["app"]):
+                return "", False
+            url, private = macos.browser_address(w["app"])
+            if not url and not private:
+                STATUS["uia_not_found"] += 1
+            return normalize_url(url), private
+    except Exception as e:  # missing dependency, COM/Apple-event trouble, browser hung ...: never stop the agent
         if STATUS["uia_error"] != repr(e)[:200]:
-            log.error("reading the browser address bar failed: %r", e)
+            log.error("reading the browser address failed: %r", e)
         STATUS["uia_error"] = repr(e)[:200]
-        return ""
-    if raw is None:
-        STATUS["uia_not_found"] += 1
-        return ""
-    return normalize_url(raw)
+    return "", False
+
+
+def is_url_browser(app: str) -> bool:
+    """Browsers whose address the agent can read itself."""
+    if sys.platform == "darwin":
+        from .platform import macos
+        return macos.is_scriptable_browser(app)
+    return is_chromium_browser(app)
+
+
+def refresh_permissions() -> None:
+    """macOS: report which permissions are granted, so the dashboard can say what to enable."""
+    if sys.platform != "darwin":
+        return
+    from .platform import macos
+    STATUS["permissions"] = {"screen_recording": macos.screen_recording_granted()}
 
 
 def windows_session_id() -> int | None:
@@ -239,6 +265,11 @@ def main():
     ap.add_argument("--update-check-every", type=float, default=3600.0, help="seconds between self-update checks; 0 disables")
     a = ap.parse_args()
     if a.selftest:
+        if sys.platform == "darwin":
+            try:
+                import AppKit, Quartz  # noqa: F401, E401
+            except Exception:
+                sys.exit(3)
         if sys.platform == "win32":   # the address-bar reader must be inside the build, or websites go missing silently
             try:
                 import uiautomation  # noqa: F401
@@ -272,6 +303,13 @@ def main():
                     "The agent must run in the logged-in user's session (scheduled task 'At log on').")
     if not key:
         log.error("no agent key configured: the server will reject every report")
+    if sys.platform == "darwin" and not a.selftest:
+        from .platform import macos
+        refresh_permissions()
+        if STATUS.get("permissions", {}).get("screen_recording") is False:
+            log.warning("macOS Screen Recording is not granted: screenshots and window titles will be blank until it is "
+                        "(System Settings > Privacy & Security > Screen Recording > cyril). Asking now.")
+            macos.request_screen_recording()
 
     agg, spool, last_flush = Aggregator(), Spool(spool_path), time.time()
     no_window = 0
@@ -301,17 +339,18 @@ def main():
         w = w or {"app": "", "title": ""}
         idle = idle_seconds() >= a.idle_after
         url = browser_url(w["app"], ext_report, now)
-        if is_chromium_browser(w["app"]) and not idle and not is_private(w["title"]):
+        mac_private = False
+        if is_url_browser(w["app"]) and not idle and not is_private(w["title"]):
             STATUS["browser_samples"] += 1
             if url:
                 STATUS["url_extension"] += 1
             else:
-                url = read_browser_url(w)   # no extension needed
+                url, mac_private = read_browser_url(w)   # no extension needed
                 if url:
                     STATUS["url_uia"] += 1
         title = ext_report["title"] if url and ext_report and not w["title"] else w["title"]
 
-        private = is_private(title)
+        private = is_private(title) or mac_private
         if private:
             # We can see a private-browsing window is open, but not its content
             # (that's the browser's own privacy boundary) -- don't store the title/URL.
@@ -343,6 +382,7 @@ def main():
                     log.info("report %s: %d event(s)%s", "sent" if ok else "FAILED, will retry (spooled)", len(queued),
                              "" if ok else f" queued on disk at {spool_path}")
                     sent_ok = ok
+            refresh_permissions()
             _post(server, "/api/agent/status", key, {"user": user, "device": device, "info": dict(STATUS)})
             last_flush = now
         time.sleep(a.interval)

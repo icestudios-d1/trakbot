@@ -517,3 +517,31 @@ def test_browser_rule_does_not_flatten_every_website():
     assert t(app="msedge.exe", domain="reddit.com")["label"] == "unproductive"
     assert t(app="msedge.exe")["label"] == "neutral"
     c.delete(f"/api/rules/{rid}", headers=A)
+
+
+def test_mac_installer_and_manifest_routes():
+    # the installer is personalised like the Windows one
+    plain = c.get("/install.sh").text
+    assert "{{" not in plain and "SERVER_URL='http://testserver'" in plain and "AGENT_KEY=''" in plain
+    keyed = c.get("/install.sh", params={"key": "agent"}, headers={"Host": "cyril.icestudios.in", "X-Forwarded-Proto": "https"}).text
+    assert "SERVER_URL='https://cyril.icestudios.in'" in keyed and "AGENT_KEY='agent'" in keyed
+    assert c.get("/install.sh", params={"key": "nope"}).status_code == 401
+    assert c.get("/install.sh").headers["cache-control"] == "no-store" and plain.isascii()
+    assert "launchctl" in plain and "uninstall.sh" in c.get("/install.sh").text
+    assert "Nothing is left running" in c.get("/uninstall.sh").text
+    # install-info carries the Mac commands and which CPU builds are published
+    i = c.get("/api/install-info", headers=A).json()
+    assert i["mac_install"] == "curl -fsSL 'http://testserver/install.sh?key=agent' | sudo bash"
+    assert i["mac_uninstall"] == "curl -fsSL 'http://testserver/uninstall.sh' | sudo bash"
+    assert i["mac_published"] == {"arm64": False, "x86_64": False}
+    # plain key=value manifest for the shell installer (no JSON parser on a fresh Mac)
+    assert c.get("/api/agent/mac-manifest", params={"arch": "arm64"}).status_code == 404
+    assert c.get("/api/agent/mac-manifest", params={"arch": "ppc"}).status_code == 400
+    d = os.environ["CYRIL_DIST_DIR"]
+    with open(os.path.join(d, "manifest-mac-arm64.json"), "wb") as f:
+        f.write(b'\xef\xbb\xbf{"version": "0.3.0", "build": "abc1234", "url": "/dist/cyril-mac-arm64", "sha256": "ff00", "selftest": true}')
+    open(os.path.join(d, "cyril-mac-arm64"), "wb").write(b"x")
+    m = c.get("/api/agent/mac-manifest", params={"arch": "arm64"})
+    assert m.text == "version=0.3.0\nbuild=abc1234\nurl=/dist/cyril-mac-arm64\nsha256=ff00\nselftest=1\n"
+    assert c.get("/api/install-info", headers=A).json()["mac_published"] == {"arm64": True, "x86_64": False}
+    os.remove(os.path.join(d, "manifest-mac-arm64.json")); os.remove(os.path.join(d, "cyril-mac-arm64"))

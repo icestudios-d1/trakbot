@@ -120,7 +120,7 @@ def setup_logging(log_path: str) -> logging.Logger:
     return log
 
 
-CHROMIUM_BROWSERS = ("msedge", "chrome", "chromium", "brave", "opera", "vivaldi")
+CHROMIUM_BROWSERS = ("msedge", "microsoft edge", "chrome", "chromium", "brave", "opera", "vivaldi")
 
 
 def is_chromium_browser(app: str) -> bool:

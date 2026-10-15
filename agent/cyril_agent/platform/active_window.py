@@ -44,6 +44,13 @@ return n & "||" & t'''
 
 
 def _mac_window():
+    try:
+        from . import macos
+        w = macos.frontmost_window()   # Cocoa/Quartz: one permission (Screen Recording), no scripting prompts
+        if w is not None:
+            return w
+    except ImportError:
+        pass                            # pyobjc not available: fall back to AppleScript below
     out = subprocess.run(["osascript", "-e", _MAC], capture_output=True, text=True, timeout=5).stdout.strip()
     app, _, title = out.partition("||")
     return {"app": app or "unknown", "title": title} if out else None

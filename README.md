@@ -143,6 +143,27 @@ slot report (CSV)** with one row per block (app, category, productivity, share o
 Totals of tracked time are preserved; what changes is attribution (a 15-minute block that was 8 min Photoshop and 7 min
 YouTube counts fully as Photoshop). API: `GET/PUT /api/settings` (`report_interval`), or `?slot=N` on a single request.
 
+### macOS agent
+
+Same agent, same dashboard. **Install agents -> Mac** has the one-liner (`curl -fsSL '.../install.sh?key=...' | sudo bash`)
+and the matching uninstall command.
+
+- **Build it on a Mac** (PyInstaller builds for the CPU it runs on): `./mac/build.sh` in the repo, once on an Apple Silicon
+  Mac (arm64) and once on an Intel Mac (x86_64) if you have both. It self-tests the result, writes
+  `server/dist/cyril-mac-<arch>` + `manifest-mac-<arch>.json` (the folder the server serves; no copy, no restart) and
+  refuses to publish a build that can't start. Needs Python 3.11+.
+- **What the installer does:** installs to `/Library/Application Support/Cyril`, adds a **LaunchAgent** (runs in the
+  logged-in user's session, started at login, restarted by launchd if closed) and a root **LaunchDaemon** that re-runs the
+  installer daily ~03:00 and at every start, so new builds reach every Mac. It then waits for the Mac's first report and
+  tells you the result; re-running updates in place and `--user "Name"` sets the reporting name.
+- **Two permissions only the person can grant** (macOS asks them, no script can): **Screen Recording** (screenshots and
+  window titles) and, per browser, **Automation** (reading the page address from Chrome, Edge, Brave, Vivaldi, Opera or
+  Safari; a private window's address is never recorded). *Install agents* shows "Screen Recording not allowed" per Mac
+  until it is on. On Macs you manage with an MDM these can be pre-approved with a privacy-preferences profile.
+- **Remove:** `curl -fsSL '.../uninstall.sh' | sudo bash` lists each item it removes. A user can stop their own
+  LaunchAgent with `launchctl`, as a Windows user can end the process; only an administrator can remove the jobs.
+- Firefox can't be scripted, so its page addresses aren't read (time still counts under "Firefox").
+
 ### Updating the server
 
 ```bash

@@ -57,6 +57,7 @@ if DIST_DIR.exists():
     # no-store: the agent build must never be served from a stale proxy/CDN cache.
     app.mount("/dist", _Static(directory=str(DIST_DIR), cache_control="no-store"), name="dist")
 WINSCRIPTS = Path(__file__).parent / "winscripts"
+MACSCRIPTS = Path(__file__).parent / "macscripts"
 
 # SeaweedFS's S3 gateway (bundled as the `seaweedfs` service in docker-compose.yml).
 store = S3Store(
@@ -728,6 +729,13 @@ def _base_url(request: Request) -> str:
     return f"{proto}://{host}"
 
 
+MAC_ARCHES = ("arm64", "x86_64")
+
+
+def _sh_quote(v: str) -> str:
+    return v.replace("'", "'\\''")   # for use inside a '...' string in a shell script
+
+
 def _ps_quote(v: str) -> str:
     return v.replace("'", "''")  # for use inside a PowerShell single-quoted string
 
@@ -736,6 +744,8 @@ def _agent_one_liners(base: str, key: str) -> dict:
     return {
         "install": f"& ([scriptblock]::Create((irm '{base}/install.ps1?key={quote(key, safe='')}')))",
         "uninstall": f"& ([scriptblock]::Create((irm '{base}/uninstall.ps1')))",
+        "mac_install": f"curl -fsSL '{base}/install.sh?key={quote(key, safe='')}' | sudo bash",
+        "mac_uninstall": f"curl -fsSL '{base}/uninstall.sh' | sudo bash",
     }
 
 
@@ -762,6 +772,36 @@ def _published_build(manifest: dict | None) -> str | None:
     return manifest.get("build") or (manifest.get("windows_exe", {}).get("sha256") or "")[:12] or None
 
 
+@app.get("/install.sh")
+def install_script_mac(request: Request, key: str | None = None):
+    """The macOS installer with this server's address (and, with the right ?key=, the agent key) filled in."""
+    if key is not None and not (AGENT_KEY and hmac.compare_digest(key, AGENT_KEY)):
+        raise HTTPException(401, "wrong agent key in the install URL")
+    text = (MACSCRIPTS / "install.sh").read_text(encoding="utf-8")
+    text = text.replace("{{SERVER_URL}}", _sh_quote(_base_url(request))).replace("{{AGENT_KEY}}", _sh_quote(key or ""))
+    return PlainTextResponse(text, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/uninstall.sh")
+def uninstall_script_mac():
+    return PlainTextResponse((MACSCRIPTS / "uninstall.sh").read_text(encoding="utf-8"), headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/agent/mac-manifest")
+def mac_manifest(arch: str):
+    """The published Mac build for a CPU type, as plain key=value lines (the shell installer has no JSON parser)."""
+    import json
+    if arch not in MAC_ARCHES:
+        raise HTTPException(400, "arch must be arm64 or x86_64")
+    path = DIST_DIR / f"manifest-mac-{arch}.json"
+    if not path.exists():
+        raise HTTPException(404, f"no Mac build for {arch} has been published; run mac/build.sh on a {arch} Mac")
+    m = json.loads(path.read_text(encoding="utf-8-sig"))
+    lines = {"version": m.get("version", ""), "build": m.get("build", ""), "url": m.get("url", f"/dist/cyril-mac-{arch}"),
+             "sha256": m.get("sha256", ""), "selftest": "1" if m.get("selftest") else "0"}
+    return PlainTextResponse("".join(f"{k}={v}\n" for k, v in lines.items()))
+
+
 @app.get("/api/install-info", dependencies=[Depends(admin)])
 def install_info(request: Request):
     """What the dashboard's Install page shows: the copy-paste commands and whether the agent build is published."""
@@ -775,6 +815,8 @@ def install_info(request: Request):
             pass
     return {"server_url": base, **_agent_one_liners(base, AGENT_KEY),
             "exe_published": (DIST_DIR / "cyril.exe").is_file(),
+            "mac_published": {a: (DIST_DIR / f"manifest-mac-{a}.json").is_file() and (DIST_DIR / f"cyril-mac-{a}").is_file()
+                              for a in MAC_ARCHES},
             "extension_published": (DIST_DIR / "cyril-extension.zip").is_file(),
             "version": (manifest or {}).get("version"), "build": _published_build(manifest)}
 

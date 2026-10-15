@@ -23,3 +23,11 @@ def test_browser_time_is_named_after_the_website():
     assert display_name("msedge.exe", "www.youtube.com") == "YouTube"
     assert display_name("msedge.exe", "") == "Edge"            # URL unknown -> fall back to the browser
     assert display_name("Photoshop.exe", "") == "Photoshop"
+
+
+def test_mac_app_names():
+    for raw, nice in (("Google Chrome", "Chrome"), ("Microsoft Edge", "Edge"), ("Adobe Photoshop 2025", "Photoshop"),
+                      ("Adobe Illustrator 2024", "Illustrator"), ("Final Cut Pro", "Final Cut Pro"), ("Visual Studio Code", "VS Code"),
+                      ("Microsoft Excel", "Excel"), ("Finder", "Finder"), ("Safari", "Safari")):
+        assert app_name(raw) == nice, raw
+    assert display_name("Google Chrome", "www.claude.ai") == "Claude" and display_name("Google Chrome", "") == "Chrome"

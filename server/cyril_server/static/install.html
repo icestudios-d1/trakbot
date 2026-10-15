@@ -2,10 +2,12 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Install agents · Cyril</title><link rel="stylesheet" href="/static/app.css"></head>
 <body><main>
-<div class="pagehead"><div><h1>Install agents</h1><p>Put the Cyril agent on a Windows PC with one pasted command. Removing it is one command too.</p></div></div>
+<div class="pagehead"><div><h1>Install agents</h1><p>Put the Cyril agent on a Windows PC or a Mac with one pasted command. Removing it is one command too.</p></div></div>
 <div id="err" class="callout" style="display:none"></div>
 <div class="grid g-main">
 <div class="card">
+ <div class="formrow" style="margin-bottom:14px"><span class="mut">Install on</span><button class="chip on" data-osbtn="win">Windows</button><button class="chip" data-osbtn="mac">Mac</button></div>
+<div data-os="win">
  <ol class="steps">
   <li><h2>Open PowerShell as administrator</h2><div class="mut">On the employee's PC: Start menu, type <b>PowerShell</b>, right-click, <b>Run as administrator</b>.</div></li>
   <li><h2>Paste and run this</h2>
@@ -19,6 +21,22 @@
  <div class="mut sm">Same elevated PowerShell on that PC. Needs administrator rights on purpose, so staff cannot remove it themselves.</div>
  <div class="cmd"><code id="uninst">Loading…</code><button data-copy="uninst">Copy</button></div>
  <div class="mut sm">Stops and deletes both scheduled tasks, the program, its config, key, log and spool files, and restores Incognito if an older installer had disabled it, then lists each item it removed. History already on the server stays until you delete it.</div>
+</div>
+<div data-os="mac" style="display:none">
+ <ol class="steps">
+  <li><h2>Open Terminal on the Mac</h2><div class="mut">Applications, Utilities, <b>Terminal</b> (or press Cmd+Space and type Terminal). Use an account that is an administrator.</div></li>
+  <li><h2>Paste and run this</h2>
+   <div class="cmd"><code id="minst">Loading…</code><button class="primary" data-copy="minst">Copy</button></div>
+   <div class="mut sm">It asks for the Mac's password (that is <code>sudo</code>), downloads the agent from this server, checks it, installs it to start whenever someone logs in, then waits for the Mac's first report and tells you whether it arrived. Safe to run again. To report under a name instead of the Mac login, change the end to <code>sudo bash -s -- --user "Priya"</code>. The command contains the agent key, so share it only with whoever sets up Macs.</div></li>
+  <li><h2>Allow the two permissions, once</h2><div class="mut">macOS asks the person, and no installer can answer for them: <b>Screen Recording</b> (screenshots and window titles; System Settings, Privacy &amp; Security, Screen Recording, switch <b>cyril</b> on, then it restarts itself) and, for each browser, <b>Automation</b> (click OK on "cyril wants to control Google Chrome"; this is how page addresses are read). The installer opens the Screen Recording pane for you. The machine list below shows when a permission is still missing.</div></li>
+  <li><h2>Watch it appear</h2><div class="mut">The Mac shows up in the list below within a minute or two.</div></li>
+ </ol>
+ <hr style="border:0;border-top:1px solid var(--bd);margin:6px 0 16px">
+ <h2>Remove an agent</h2>
+ <div class="mut sm">Same Terminal on that Mac. Needs sudo on purpose, so staff cannot remove it themselves.</div>
+ <div class="cmd"><code id="muninst">Loading…</code><button data-copy="muninst">Copy</button></div>
+ <div class="mut sm">Stops and deletes the agent job, the updater job, the program, its config, key, log and queued data, then lists each item it removed. History already on the server stays until you delete it. The permissions stay listed in System Settings but do nothing without the program.</div>
+</div>
 </div>
 <div>
  <div class="card" style="margin-bottom:16px"><h2>Ready to install?</h2><div id="checks" style="margin-top:8px"></div></div>
@@ -35,11 +53,12 @@ async function info(){
   try{
     const i=await TB.api('/api/install-info');
     published=i.build;
-    $('#inst').textContent=i.install;$('#uninst').textContent=i.uninstall;
+    $('#inst').textContent=i.install;$('#uninst').textContent=i.uninstall;$('#minst').textContent=i.mac_install;$('#muninst').textContent=i.mac_uninstall;
     const sh=await TB.api('/api/storage-health').catch(e=>({ok:false,error:e.message}));
     $('#checks').innerHTML=
       chk(true,'Server address',`Agents will use <code>${esc(i.server_url)}</code>${i.server_url.startsWith('http://')?' <b>(not HTTPS)</b>':''}`)+
       chk(i.exe_published,'Agent program (cyril.exe)',i.exe_published?`Published${i.version?' · version '+esc(i.version):''}${i.build?' · build '+esc(i.build):''}`:'Not on the server yet. Run <code>windows\\build.ps1</code> in the repo on the server machine: it writes into <code>server\\dist</code>, which the server serves (if you built on another PC, copy the files there). Installs will fail until then.')+
+      chk(i.mac_published.arm64||i.mac_published.x86_64,'Mac agent',(i.mac_published.arm64||i.mac_published.x86_64)?`Published for ${['arm64','x86_64'].filter(a=>i.mac_published[a]).map(a=>a==='arm64'?'Apple Silicon':'Intel').join(' and ')}${(i.mac_published.arm64&&i.mac_published.x86_64)?'':'. Macs with the other CPU need their own build'}`:'Not published yet. On a Mac, in the repo, run <code>./mac/build.sh</code> (once on an Apple Silicon Mac and once on an Intel Mac for both). It writes into <code>server/dist</code>.')+
       chk(i.extension_published,'Browser extension (optional)',i.extension_published?'Published':'Not published; installs still work without it, but website addresses will not be captured.')+
       chk(sh.ok,'Screenshot storage',sh.ok?'Saving and reading back a test image works.':`<b>Screenshots cannot be saved.</b> ${esc(sh.hint||'')}<br><span class="mut">Technical detail: <code>${esc(sh.error)}</code></span>`);
   }catch(e){TB.error(e)}
@@ -61,6 +80,7 @@ async function devices(){
     };
     const shots=st=>{
       if(!st)return '<span class="mut">–</span>';
+      if(st.permissions&&st.permissions.screen_recording===false)return '<span style="color:var(--c-u)">✕ Screen Recording not allowed</span><div class="mut sm">System Settings, Privacy &amp; Security, Screen Recording: switch cyril on</div>';
       const ok=st.shots_ok||0,bad=st.shots_failed||0;
       if(bad&&!ok)return `<span style="color:var(--c-u)" title="${esc(st.last_error||'')}">✕ ${bad} failed</span><div class="mut sm">${esc((st.last_error||'').slice(0,80))}</div>`;
       if(bad)return `<span title="${esc(st.last_error||'')}">${ok} sent · <span style="color:var(--c-u)">${bad} failed</span></span>`;
@@ -74,10 +94,11 @@ async function devices(){
     };
     $('#dev').innerHTML=d.length?`<thead><tr><th>Machine</th><th>Login / name</th><th>Last report</th><th>Agent build</th><th>Websites</th><th>Screenshots</th></tr></thead><tbody>`+d.map(x=>{
       const ago=now-x.last_seen,on=ago<180,isNew=fresh.some(f=>f.device===x.device&&f.user===x.user);
-      return `<tr><td title="${esc(x.device)}" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.device)}</td><td>${TB.who(x.user)}${isNew?' <span class="tag productive">new</span>':''}</td><td class="nowrap"><span class="live ${on?'on':''}"></span>${on?'online':ago<3600?Math.round(ago/60)+' min ago':TB.when(x.last_seen)}</td><td>${build(x.status)}</td><td>${web(x.status)}</td><td>${shots(x.status)}</td></tr>`}).join('')+'</tbody>':'<tbody><tr><td class="empty">No machines have reported yet.</td></tr></tbody>';
+      return `<tr><td title="${esc(x.device)}" style="max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.device)}${x.status&&x.status.platform?`<div class="mut sm">${esc(x.status.platform)}</div>`:''}</td><td>${TB.who(x.user)}${isNew?' <span class="tag productive">new</span>':''}</td><td class="nowrap"><span class="live ${on?'on':''}"></span>${on?'online':ago<3600?Math.round(ago/60)+' min ago':TB.when(x.last_seen)}</td><td>${build(x.status)}</td><td>${web(x.status)}</td><td>${shots(x.status)}</td></tr>`}).join('')+'</tbody>':'<tbody><tr><td class="empty">No machines have reported yet.</td></tr></tbody>';
     $('#devSub').textContent=`${d.filter(x=>now-x.last_seen<180).length} online of ${d.length} · updates every few seconds`;
   }catch(e){TB.error(e)}
 }
+document.querySelectorAll('[data-osbtn]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-osbtn]').forEach(x=>x.classList.toggle('on',x===b));document.querySelectorAll('[data-os]').forEach(d=>d.style.display=d.dataset.os===b.dataset.osbtn?'':'none')});
 document.addEventListener('click',e=>{const b=e.target.closest('[data-copy]');if(!b)return;
   const t=$('#'+b.dataset.copy).textContent;
   (navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).catch(()=>{const r=document.createRange();r.selectNodeContents($('#'+b.dataset.copy));getSelection().removeAllRanges();getSelection().addRange(r);document.execCommand('copy')});

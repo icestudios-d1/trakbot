@@ -50,6 +50,13 @@ APPS = {
     "calc": "Calculator", "snippingtool": "Snipping Tool", "taskmgr": "Task Manager", "telegram": "Telegram",
     "whatsapp": "WhatsApp", "discord": "Discord", "steam": "Steam", "keynote": "Keynote",
     "qbittorrent": "qBittorrent", "utorrent": "uTorrent",
+    # macOS app names ("Adobe Photoshop 2025" is handled by the generic Adobe rules)
+    "google chrome": "Chrome", "microsoft edge": "Edge", "brave browser": "Brave", "microsoft word": "Word",
+    "microsoft excel": "Excel", "microsoft powerpoint": "PowerPoint", "microsoft outlook": "Outlook",
+    "microsoft teams": "Teams", "finder": "Finder", "terminal": "Terminal", "iterm2": "iTerm", "iterm": "iTerm",
+    "visual studio code": "VS Code", "preview": "Preview", "pages": "Pages", "numbers": "Numbers",
+    "system settings": "System Settings", "system preferences": "System Settings", "activity monitor": "Activity Monitor",
+    "quicktime player": "QuickTime", "affinity photo 2": "Affinity Photo", "affinity designer 2": "Affinity Designer",
     "msedge": "Edge", "edge": "Edge", "chrome": "Chrome", "google-chrome": "Chrome", "firefox": "Firefox",
     "brave": "Brave", "opera": "Opera", "vivaldi": "Vivaldi", "arc": "Arc", "safari": "Safari",
 }
