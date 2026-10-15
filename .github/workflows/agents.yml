@@ -1,0 +1,49 @@
+# Builds the Windows and Mac agents on GitHub's own Windows/macOS machines and publishes them to a rolling
+# release called "agent-latest". The server PC's update.ps1 downloads that release into server/dist, so nobody
+# has to own a Mac (or build anything by hand). Runs on every push to main that touches the agent.
+name: agents
+on:
+  push:
+    branches: [main]
+    paths: ["agent/**", "browser-extension/**", "windows/build.ps1", "mac/build.sh", ".github/workflows/agents.yml"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: ./windows/build.ps1 -OutDir "$PWD\out"
+        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with: { name: win, path: out/* }
+  mac:
+    strategy:
+      matrix:
+        os: [macos-14, macos-13]   # arm64 (Apple Silicon) and x86_64 (Intel)
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: OUT_DIR="$PWD/out" ./mac/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-${{ matrix.os }}
+          path: out/*
+  publish:
+    needs: [windows, mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: files, merge-multiple: true }
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete agent-latest --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+          gh release create agent-latest files/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Agents (latest)" --notes "Built from $GITHUB_SHA"

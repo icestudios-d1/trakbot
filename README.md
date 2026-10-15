@@ -164,6 +164,16 @@ and the matching uninstall command.
   LaunchAgent with `launchctl`, as a Windows user can end the process; only an administrator can remove the jobs.
 - Firefox can't be scripted, so its page addresses aren't read (time still counts under "Firefox").
 
+### One-command update (`update.ps1`)
+
+On the server PC, in the repo: `.\update.ps1`. It pulls `main`, fetches the freshly built agents into `server\dist`
+and rebuilds/restarts the server. Nobody needs a Mac: **GitHub Actions** (`.github/workflows/agents.yml`) builds the
+Windows exe and both Mac binaries (Apple Silicon + Intel) on every push to `main` that touches the agent, and
+publishes them to the rolling `agent-latest` release; `update.ps1` downloads that with the GitHub CLI
+(`gh auth login` once). Without `gh`, or with `-LocalBuild`, it builds the Windows agent locally instead (only when
+the agent's code changed). PCs and Macs then update themselves from the server. Other switches: `-ForceAgent`,
+`-SkipPull`, `-DryRun`.
+
 ### Updating the server
 
 ```bash
