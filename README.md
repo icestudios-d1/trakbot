@@ -174,8 +174,10 @@ The installer puts the agent at `Program Files\Cyril\cyril.exe` and stores the s
   5 minutes if it was closed. It has to run there: a service or boot-time `SYSTEM` task lives in Windows session 0,
   which has no desktop, so it cannot see windows, screenshots or input. Running as the user also means reports carry
   the real Windows login rather than `PCNAME$`.
-- **Cyril Updater** runs as `SYSTEM` daily at about 03:00 and re-runs the installer; nothing happens unless a new build
-  is published to the server, so a new `windows\build.ps1` build reaches every PC within a day.
+- **Cyril Updater** runs as `SYSTEM` daily at about 03:00 (random delay up to 30 min) **and 5 minutes after every start**,
+  on battery too, retrying 3 times 10 minutes apart if it fails, and re-runs the installer; nothing happens unless a new
+  build is published to the server. It never wakes a sleeping PC: one that was off or asleep at 03:00 catches up when it
+  next starts or resumes, so a new `windows\build.ps1` build reaches every PC within about a day.
 
 It's not hidden: `cyril.exe` shows in Task Manager and both tasks show in `Get-ScheduledTask` under their real names.
 Trade-off to know about: because the agent runs as the employee, an employee *can* end the process and can read

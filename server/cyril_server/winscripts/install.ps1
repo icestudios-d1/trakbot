@@ -157,11 +157,17 @@ Ok "Task '$taskName' registered (runs in the logged-in user's session)"
 Unregister-ScheduledTask -TaskName $updaterName -Confirm:$false -ErrorAction SilentlyContinue
 $cmd = '$c = Get-Content ''' + $cfgFile + ''' -Raw | ConvertFrom-Json; & ([scriptblock]::Create((irm ($c.server + ''/install.ps1?key='' + [uri]::EscapeDataString($c.key))))) -Unattended'
 $uAction    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"$cmd`""
-$uTrigger   = New-ScheduledTaskTrigger -Daily -At "03:00" -RandomDelay (New-TimeSpan -Minutes 30)
+$uDaily     = New-ScheduledTaskTrigger -Daily -At "03:00" -RandomDelay (New-TimeSpan -Minutes 30)
+$uBoot      = New-ScheduledTaskTrigger -AtStartup
+$uBoot.Delay = "PT5M"   # a PC that was off/asleep at 03:00 checks soon after it starts (network needs a moment)
+$uTrigger   = @($uDaily, $uBoot)
 $uPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-$uSettings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+# Laptops: run on battery too (the default is AC power only). A failed attempt (network not up yet, server busy)
+# is retried 3 times, 10 minutes apart, instead of waiting for the next day.
+$uSettings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 10) -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
 Register-ScheduledTask -TaskName $updaterName -Action $uAction -Trigger $uTrigger -Principal $uPrincipal -Settings $uSettings -Force | Out-Null
-Ok "Task '$updaterName' registered (daily, picks up new builds)"
+Ok "Task '$updaterName' registered (daily at ~03:00 and 5 min after every start; picks up new builds)"
 
 # 6. Earlier versions disabled Incognito/InPrivate by browser policy. Cyril does not do that any more
 #    (private windows are flagged and screenshotted instead), so undo it where this installer had set it.
