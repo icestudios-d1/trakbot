@@ -41,7 +41,7 @@ async function info(){
       chk(true,'Server address',`Agents will use <code>${esc(i.server_url)}</code>${i.server_url.startsWith('http://')?' <b>(not HTTPS)</b>':''}`)+
       chk(i.exe_published,'Agent program (cyril.exe)',i.exe_published?`Published${i.version?' · version '+esc(i.version):''}${i.build?' · build '+esc(i.build):''}`:'Not on the server yet. Run <code>windows\\build.ps1</code> in the repo on the server machine: it writes into <code>server\\dist</code>, which the server serves (if you built on another PC, copy the files there). Installs will fail until then.')+
       chk(i.extension_published,'Browser extension (optional)',i.extension_published?'Published':'Not published; installs still work without it, but website addresses will not be captured.')+
-      chk(sh.ok,'Screenshot storage',sh.ok?'Saving and reading back a test image works.':`Screenshots cannot be saved: <code>${esc(sh.error)}</code><br>On the server run <code>docker compose logs seaweedfs --tail 30</code>. "no free volumes" means SeaweedFS has no room to allocate (check free disk space, then <code>docker compose up -d --force-recreate seaweedfs</code>).`);
+      chk(sh.ok,'Screenshot storage',sh.ok?'Saving and reading back a test image works.':`<b>Screenshots cannot be saved.</b> ${esc(sh.hint||'')}<br><span class="mut">Technical detail: <code>${esc(sh.error)}</code></span>`);
   }catch(e){TB.error(e)}
 }
 async function devices(){

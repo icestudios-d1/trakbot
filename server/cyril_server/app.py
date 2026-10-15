@@ -66,6 +66,10 @@ store = S3Store(
     bucket=os.environ.get("CYRIL_S3_BUCKET", "cyril-screenshots"),
     secure=os.environ.get("CYRIL_S3_SECURE", "false").lower() == "true",
 )
+_ak = getattr(store, "access_key", None)
+if _ak is not None and (not _ak or re.search(r"[\s/,]", _ak)):
+    print("WARNING: CYRIL_S3_ACCESS_KEY is empty or contains '/', space or comma: screenshot storage will fail. "
+          "Use letters and digits only (see Install agents in the dashboard).")
 store.ensure_bucket()
 
 
@@ -864,17 +868,46 @@ def agent_seen(device: str = Query(min_length=1, max_length=128), since: float =
     return {"seen": r["n"] > 0, "events": r["n"], "with_app": r["with_app"], "last_seen": r["last"]}
 
 
+_BAD_KEY_CHARS = re.compile(r"[\s/,]")
+
+
+def _storage_hint(error: str, access_key: str) -> str:
+    """Plain-English next step for the common ways the image store setup goes wrong."""
+    e = error.lower()
+    if access_key and _BAD_KEY_CHARS.search(access_key):
+        return ("CYRIL_S3_ACCESS_KEY contains a '/', a space or a comma. It is used as the storage login id and cannot. "
+                "In server/.env change it to letters and digits only (for example cyrilstorage), then run "
+                "docker compose up -d --force-recreate. The secret key may keep any characters.")
+    if not access_key:
+        return "CYRIL_S3_ACCESS_KEY is empty. Set CYRIL_S3_ACCESS_KEY and CYRIL_S3_SECRET_KEY in server/.env, then docker compose up -d --force-recreate."
+    if "mal-formed" in e or "authorizationqueryparameterserror" in e:
+        return ("The storage login id is malformed: CYRIL_S3_ACCESS_KEY probably has a '/', space or comma in it. Use letters "
+                "and digits only, then docker compose up -d --force-recreate.")
+    if "signaturedoesnotmatch" in e:
+        return "The secret key differs between the server and SeaweedFS. Make sure server/.env has one CYRIL_S3_SECRET_KEY, then docker compose up -d --force-recreate."
+    if "invalidaccesskeyid" in e:
+        return "SeaweedFS does not know this access key. Run docker compose up -d --force-recreate so both containers read the same server/.env."
+    if "unreachable" in e:
+        return "The server cannot reach SeaweedFS. Run docker compose ps: the seaweedfs container should be Up (healthy). Try docker compose logs seaweedfs --tail 30."
+    if "no free volume" in e or "no writable volume" in e:
+        return "SeaweedFS has no room to allocate. Free some disk space, then docker compose up -d --force-recreate seaweedfs."
+    return "On the server run docker compose logs seaweedfs --tail 30 and docker compose logs server --tail 30."
+
+
 @app.get("/api/storage-health", dependencies=[Depends(admin)])
 def storage_health():
-    """Write, read back and delete a tiny test object in the screenshot store, and say exactly what failed."""
+    """Write, read back and delete a tiny test object in the screenshot store, and say exactly what failed and what to do."""
+    access_key = getattr(store, "access_key", None)
+    if access_key is not None and (not access_key or _BAD_KEY_CHARS.search(access_key)):   # a request with that id cannot be valid
+        return {"ok": False, "error": "invalid CYRIL_S3_ACCESS_KEY", "hint": _storage_hint("", access_key or "")}
     key = f"_healthcheck/{int(time.time() * 1000)}.txt"
     try:
         store.put(key, b"ok", "text/plain")
         ok = store.get(key) == b"ok"
         store.delete(key)
     except ObjectStoreError as e:
-        return {"ok": False, "error": str(e)[:400]}
-    return {"ok": ok, "error": "" if ok else "wrote an object but could not read the same bytes back"}
+        return {"ok": False, "error": str(e)[:400], "hint": _storage_hint(str(e), access_key or "")}
+    return {"ok": ok, "error": "" if ok else "wrote an object but could not read the same bytes back", "hint": ""}
 
 
 @app.get("/api/devices", dependencies=[Depends(admin)])

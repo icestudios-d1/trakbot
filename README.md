@@ -85,9 +85,11 @@ the update rather than applying anything.
   interval". Agents check in about every 10 seconds; if the PC is off, asleep or on an older agent you get a clear
   "no answer" after 90 seconds. The shot is saved like any other.
 - **Storage check.** *Install agents* shows whether the server can actually save screenshots (it writes, reads back and
-  deletes a test image). If screenshots fail with a 502 the reason is shown there and on the machine's row. A common
-  cause is SeaweedFS having no room to allocate volumes; the compose entrypoint now sets an explicit volume ceiling
-  (after pulling: `docker compose up -d --force-recreate seaweedfs`).
+  deletes a test image). If screenshots fail with a 502 the reason and the fix are shown there and on the machine's row.
+  Common causes: **`CYRIL_S3_ACCESS_KEY` containing `/`, a space or a comma** (it is the storage login id and must be
+  letters and digits only, e.g. `cyrilstorage`; the secret key may contain anything), the two containers reading different
+  `.env` values, or SeaweedFS having no room to allocate volumes. After editing `server/.env` run
+  `docker compose up -d --force-recreate`.
 
 ### Deleting an employee
 

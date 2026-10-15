@@ -463,7 +463,7 @@ def test_delete_employee_removes_everything_about_them_and_only_them():
 
 def test_storage_health_and_the_502_explains_itself():
     assert c.get("/api/storage-health").status_code == 401
-    assert c.get("/api/storage-health", headers=A).json() == {"ok": True, "error": ""}
+    assert c.get("/api/storage-health", headers=A).json() == {"ok": True, "error": "", "hint": ""}
     jpeg = base64.b64encode(b"\xff\xd8\xff\xe0fake").decode()
     body = {"user": "u", "device": "d", "ts": time.time(), "app": "a", "title": "t", "image_b64": jpeg}
     from cyril_server import app as appmod
@@ -473,3 +473,20 @@ def test_storage_health_and_the_502_explains_itself():
         assert r.status_code == 502 and "no free volumes" in r.json()["detail"]          # the reason is in the response
         h = c.get("/api/storage-health", headers=A).json()
         assert h["ok"] is False and "no free volumes" in h["error"]
+
+
+def test_storage_health_explains_a_bad_access_key_and_other_common_failures():
+    from cyril_server import app as appmod
+    # the exact failure seen in production: an access key containing "/" makes the credential malformed
+    with mock.patch.object(appmod.store, "access_key", "ab/cd+ef", create=True):
+        h = c.get("/api/storage-health", headers=A).json()
+    assert h["ok"] is False and "'/'" in h["hint"] and "letters and digits" in h["hint"]
+    with mock.patch.object(appmod.store, "access_key", "", create=True):
+        assert "empty" in c.get("/api/storage-health", headers=A).json()["hint"]
+    malformed = ObjectStoreError("PUT x -> 400: <Error><Code>AuthorizationQueryParametersError</Code><Message>the Credential is mal-formed")
+    for err, word in ((malformed, "malformed"), (ObjectStoreError("PUT x -> 403: SignatureDoesNotMatch"), "secret key"),
+                      (ObjectStoreError("PUT x -> 403: InvalidAccessKeyId"), "does not know"),
+                      (ObjectStoreError("PUT x -> unreachable: [Errno -2] Name or service not known"), "docker compose ps"),
+                      (ObjectStoreError("PUT x -> 500: no free volumes"), "disk space")):
+        with mock.patch.object(appmod.store, "access_key", "goodkey", create=True), mock.patch.object(appmod.store, "put", side_effect=err):
+            assert word in c.get("/api/storage-health", headers=A).json()["hint"], err
