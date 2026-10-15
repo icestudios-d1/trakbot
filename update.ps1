@@ -66,6 +66,9 @@ $build = $ForceAgent -or -not $exePresent -or ($current -ne $previous)
 # Preferred: download what GitHub Actions built (Windows + both Mac CPUs) from the rolling "agent-latest" release.
 # Needs the GitHub CLI (`gh`) signed in once. Fallback / -LocalBuild: build the Windows agent on this PC.
 $fetched = $false
+if (-not $LocalBuild -and -not (Get-Command gh -ErrorAction SilentlyContinue)) {
+    Write-Host "    GitHub CLI (gh) not found, so the Mac agents cannot be downloaded: winget install --id GitHub.cli -e  (then gh auth login). Building the Windows agent locally." -ForegroundColor Yellow
+}
 if (-not $LocalBuild -and (Get-Command gh -ErrorAction SilentlyContinue)) {
     if ($DryRun) { Info "(dry run) would: gh release download agent-latest -> server\dist"; $fetched = $true }
     else {
