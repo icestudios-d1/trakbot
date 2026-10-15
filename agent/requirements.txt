@@ -1,5 +1,6 @@
 mss>=9.0
 certifi
+truststore>=0.9; sys_platform == "darwin"
 Pillow>=10.0
 pywin32>=306; sys_platform == "win32"
 wmi; sys_platform == "win32"
