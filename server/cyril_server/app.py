@@ -657,6 +657,13 @@ def uninstall_script():
     return PlainTextResponse((WINSCRIPTS / "uninstall.ps1").read_text(encoding="utf-8"), headers={"Cache-Control": "no-store"})
 
 
+def _published_build(manifest: dict | None) -> str | None:
+    """Id of the published agent build; installers stamp the same value on each PC (build.txt)."""
+    if not manifest:
+        return None
+    return manifest.get("build") or (manifest.get("windows_exe", {}).get("sha256") or "")[:12] or None
+
+
 @app.get("/api/install-info", dependencies=[Depends(admin)])
 def install_info(request: Request):
     """What the dashboard's Install page shows: the copy-paste commands and whether the agent build is published."""
@@ -671,7 +678,7 @@ def install_info(request: Request):
     return {"server_url": base, **_agent_one_liners(base, AGENT_KEY),
             "exe_published": (DIST_DIR / "cyril.exe").is_file(),
             "extension_published": (DIST_DIR / "cyril-extension.zip").is_file(),
-            "version": (manifest or {}).get("version"), "build": (manifest or {}).get("build")}
+            "version": (manifest or {}).get("version"), "build": _published_build(manifest)}
 
 
 class AgentStatusIn(BaseModel):

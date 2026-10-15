@@ -62,7 +62,7 @@ try { Invoke-WebRequest -UseBasicParsing -Uri "$ServerUrl/api/health" -TimeoutSe
 catch { Fail "Cannot reach $ServerUrl ($($_.Exception.Message)). Check the address and this machine's network." }
 Ok "Server reachable"
 
-$expectedHash = $null; $buildInfo = ""; $canSelftest = $false
+$expectedHash = $null; $buildInfo = ""; $canSelftest = $false; $ver = $null
 try {
     $ver = Invoke-RestMethod -UseBasicParsing -Uri "$ServerUrl/api/agent/version" -TimeoutSec 15
     $expectedHash = $ver.windows_exe.sha256
@@ -129,6 +129,9 @@ elseif (Test-Path $cfgFile) {
 icacls $cfgDir /inheritance:r | Out-Null
 icacls $cfgDir /grant:r "SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" "*${usersSid}:(OI)(CI)RX" | Out-Null
 icacls $dataDir /grant:r "*${usersSid}:(OI)(CI)M" | Out-Null
+# Stamp which build is installed here; the agent reports it so the dashboard can show "update pending".
+$stamp = if ($ver -and $ver.build) { "$($ver.build)" } elseif ($expectedHash) { $expectedHash.Substring(0, 12) } else { "" }
+if ($stamp) { [IO.File]::WriteAllText((Join-Path $cfgDir "build.txt"), $stamp) }
 Ok "Config written"
 
 # 5. Tasks ---------------------------------------------------------------------------------------------------

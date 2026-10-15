@@ -15,7 +15,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from .core import (Aggregator, Spool, browser_url, data_dir, is_chromium_browser, is_private, load_config,
-                   normalize_url, setup_logging)
+                   normalize_url, read_build, setup_logging)
 from .platform.active_window import get_active_window, idle_seconds
 from .shots import ScreenshotThrottle, capture_jpeg_b64
 from .update import VERSION, check_and_apply
@@ -189,6 +189,7 @@ def main():
 
     sess = windows_session_id()
     STATUS["session"] = sess
+    STATUS["build"] = read_build(a.config)
     log.info("starting: user=%r device=%r server=%r flush_every=%ss session=%s pid=%s",
              user, device, server, a.flush, sess, os.getpid())
     if sess == 0:

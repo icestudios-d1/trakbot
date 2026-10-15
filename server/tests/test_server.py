@@ -368,3 +368,16 @@ def test_agent_status_shows_up_on_devices():
     info["shots_failed"] = 0
     c.post("/api/agent/status", headers=K, json={"user": "stu", "device": "PC-ST", "info": info})   # upsert, not append
     assert [x for x in c.get("/api/devices", headers=A).json() if x["device"] == "PC-ST"][0]["status"]["shots_failed"] == 0
+
+
+def test_published_build_id_falls_back_to_the_exe_checksum():
+    d = os.environ["CYRIL_DIST_DIR"]
+    path = os.path.join(d, "manifest.json")
+    with open(path, "w") as f:
+        f.write('{"version": "0.3.0", "windows_exe": {"url": "/dist/cyril.exe", "sha256": "0123456789abcdef0123"}}')
+    assert c.get("/api/install-info", headers=A).json()["build"] == "0123456789ab"      # first 12 of the hash
+    with open(path, "w") as f:
+        f.write('{"version": "0.3.0", "build": "7feedf0", "windows_exe": {"sha256": "ff"}}')
+    assert c.get("/api/install-info", headers=A).json()["build"] == "7feedf0"
+    os.remove(path)
+    assert c.get("/api/install-info", headers=A).json()["build"] is None

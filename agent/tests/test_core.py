@@ -1,5 +1,5 @@
 import os
-from cyril_agent.core import Aggregator, Spool, browser_url, is_private, load_config, data_dir, setup_logging, normalize_url, is_chromium_browser
+from cyril_agent.core import Aggregator, Spool, browser_url, is_private, load_config, data_dir, setup_logging, normalize_url, is_chromium_browser, read_build
 
 
 def test_merge_and_drain():
@@ -102,3 +102,11 @@ def test_chromium_detection():
         assert is_chromium_browser(app), app
     for app in ("Photoshop.exe", "firefox.exe", "", "code"):
         assert not is_chromium_browser(app), app
+
+
+def test_read_build_stamp(tmp_path):
+    cfg = tmp_path / "config.json"
+    cfg.write_text("{}")
+    assert read_build(str(cfg)) == "" and read_build(None) == ""
+    (tmp_path / "build.txt").write_bytes(b"\xef\xbb\xbfabc1234def\n")   # tolerate a BOM / trailing newline
+    assert read_build(str(cfg)) == "abc1234def"

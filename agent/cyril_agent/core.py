@@ -144,3 +144,14 @@ def normalize_url(text: str | None) -> str:
     if not t.lower().startswith(("http://", "https://")):
         return ""
     return t[:2048]
+
+
+def read_build(config_path: str | None) -> str:
+    """Build id the installer stamped next to the config (build.txt), or ""."""
+    if not config_path:
+        return ""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(config_path)), "build.txt"), encoding="utf-8-sig") as f:
+            return f.read().strip()[:40]
+    except OSError:
+        return ""
