@@ -797,6 +797,7 @@ def agent_status(s: AgentStatusIn):
     return {"ok": True}
 
 
+_LAST_POLL: dict[str, float] = {}   # device -> when its agent last asked for work
 COMMAND_TTL = 90   # seconds a "screenshot now" request stays valid; a PC that is off just never answers
 
 
@@ -832,6 +833,7 @@ def screenshot_now_status(cid: int):
 def agent_poll(device: str = Query(min_length=1, max_length=128)):
     """Agents ask every few seconds: is there anything for me to do, and what intervals should I use?"""
     now = time.time()
+    _LAST_POLL[device] = now
     with db.conn() as c:
         rows = c.execute("SELECT id, kind FROM agent_commands WHERE device=? AND status='pending' AND created>=?",
                          (device, now - COMMAND_TTL)).fetchall()
@@ -923,6 +925,7 @@ def devices():
     out = []
     for r in rows:
         d = dict(r)
+        d["last_poll"] = _LAST_POLL.get(d["device"])   # None = this agent has never asked for work (too old, or off)
         try:
             d["status"] = json.loads(d["status"]) if d["status"] else None
         except ValueError:

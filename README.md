@@ -84,6 +84,13 @@ the update rather than applying anything.
   and shows it in seconds, so you can tell "the feature is working" from "they just switch apps faster than the
   interval". Agents check in about every 10 seconds; if the PC is off, asleep or on an older agent you get a clear
   "no answer" after 90 seconds. The shot is saved like any other.
+- **Nothing is lost while the server or storage is down.** Activity is queued on the PC and resent, and so are
+  screenshots: the agent keeps them in `ProgramData\Cyril\data\shots-pending` (capped at ~300 MB / 7 days) and uploads
+  them, with their original capture times, as soon as the server accepts them again. *Install agents* shows how many are
+  waiting.
+- **Old agents.** An agent built before a feature existed can't use it. *Install agents* marks it "old agent" and
+  **Screenshot now** says so immediately instead of waiting; update it with `Start-ScheduledTask 'Cyril Updater'`
+  (elevated) on that PC after publishing a new build.
 - **Storage check.** *Install agents* shows whether the server can actually save screenshots (it writes, reads back and
   deletes a test image). If screenshots fail with a 502 the reason and the fix are shown there and on the machine's row.
   Common causes: **`CYRIL_S3_ACCESS_KEY` containing `/`, a space or a comma** (it is the storage login id and must be

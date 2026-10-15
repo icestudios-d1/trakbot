@@ -115,6 +115,8 @@
     if (!devs.length) { alert('No PC has reported for this employee yet.'); return; }
     const now = Date.now() / 1000, live = devs.filter((d) => now - d.last_seen < 600);
     const targets = live.length ? live : [devs[0]];
+    // Agents ask the server for work every ~10 s. One that never has is too old for this feature (or off).
+    const silent = targets.filter((d) => !d.last_poll || now - d.last_poll > 60);
     const ov = document.createElement('div');
     ov.className = 'modal';
     ov.innerHTML = `<div class="box"><div class="mtop"><b>Screenshot now · ${TB.esc(TB.dn(user))}</b><button class="x" aria-label="Close">×</button></div><div class="mbody"></div></div>`;
@@ -126,7 +128,7 @@
     ov.querySelector('.x').onclick = close;
     ov.onclick = (e) => { if (e.target === ov) close(); };
     const body = ov.querySelector('.mbody');
-    await Promise.all(targets.map(async (d) => {
+    const askAll = () => Promise.all(targets.map(async (d) => {
       const row = document.createElement('div');
       row.className = 'mrow';
       row.innerHTML = `<div class="mut sm">${TB.esc(d.device.length > 24 ? d.device.slice(0, 24) + '…' : d.device)}${live.length ? '' : ' (not seen recently; may be off)'}</div><div class="st">Asking the PC…</div><div class="img"></div>`;
@@ -151,6 +153,14 @@
         }
       } catch (e) { st.innerHTML = `<b style="color:var(--c-u)">✕ ${TB.esc(e.message)}</b>`; }
     }));
+    if (silent.length === targets.length) {
+      body.innerHTML = `<div class="mrow"><div class="st"><b style="color:var(--c-u)">✕ This PC is not checking in for requests.</b></div>
+        <p class="sm">Either its agent is older than the Screenshot now feature (see <b>Agent build</b> on Install agents: "unknown" or "update pending"), or the PC is off or asleep.</p>
+        <p class="sm">To update a PC: publish a new build (<code>windows\\build.ps1</code> on the server), then on that PC in an elevated PowerShell run
+        <code>Start-ScheduledTask 'Cyril Updater'</code>. It picks the new agent up within a minute or two.</p>
+        <button id="tryAnyway">Try anyway</button></div>`;
+      body.querySelector('#tryAnyway').onclick = () => { body.innerHTML = ''; askAll(); };
+    } else askAll();
   };
 
   // "Group by": the reporting interval. One server-side setting shared by every page and admin; each block of

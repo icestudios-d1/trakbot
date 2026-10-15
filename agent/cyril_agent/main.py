@@ -16,7 +16,7 @@ import urllib.request
 from urllib.parse import quote
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from .core import (Aggregator, Spool, browser_url, data_dir, is_chromium_browser, is_private, load_config,
+from .core import (Aggregator, ShotSpool, Spool, browser_url, data_dir, is_chromium_browser, is_private, load_config,
                    normalize_url, read_build, setup_logging)
 from .platform.active_window import get_active_window, idle_seconds
 from .shots import ScreenshotThrottle, capture_jpeg_b64
@@ -24,12 +24,13 @@ from .update import VERSION, check_and_apply
 
 ext_report = None  # latest {"url","title","at"} from the browser extension
 log = logging.getLogger("cyril-agent")
+SHOT_SPOOL: ShotSpool | None = None   # set in main(): screenshots waiting for the server to come back
 LATEST = {"app": "", "title": "", "idle": False}   # what is in front right now (for "screenshot now")
 
 # Health counters sent to the server after every flush, so the dashboard can show WHY websites or screenshots are
 # missing on a given PC without anyone reading logs on it.
 STATUS = {"version": VERSION, "session": None, "browser_samples": 0, "url_extension": 0, "url_uia": 0,
-          "uia_not_found": 0, "uia_error": "", "shots_ok": 0, "shots_failed": 0, "last_error": ""}
+          "uia_not_found": 0, "uia_error": "", "shots_ok": 0, "shots_failed": 0, "shots_queued": 0, "last_error": ""}
 
 
 def device_id() -> str:
@@ -87,24 +88,31 @@ class ExtHandler(BaseHTTPRequestHandler):
 USER_AGENT = "CyrilAgent/1.0"
 
 
-def _post(server: str, path: str, key: str, payload: dict) -> bool:
+def _post_status(server: str, path: str, key: str, payload: dict) -> int | None:
+    """POST JSON; returns the HTTP status, or None if the server could not be reached at all."""
     url = server.rstrip("/") + path
     req = urllib.request.Request(
         url, json.dumps(payload).encode(),
         {"Content-Type": "application/json", "X-Api-Key": key, "User-Agent": USER_AGENT})
     try:
-        urllib.request.urlopen(req, timeout=20).read()
-        return True
+        return urllib.request.urlopen(req, timeout=20).status
     except Exception as e:
         detail = ""
+        status = None
         if isinstance(e, urllib.error.HTTPError):   # the server says WHY in the body ("image store error: ...")
+            status = e.code
             try:
                 detail = " " + e.read().decode(errors="replace")[:260]
             except Exception:
                 pass
         STATUS["last_error"] = f"{path}: {e!r}{detail}"[:400]
         log.error("POST %s failed: %r%s", url, e, detail)
-        return False
+        return status if status is not None else None
+
+
+def _post(server: str, path: str, key: str, payload: dict) -> bool:
+    status = _post_status(server, path, key, payload)
+    return status is not None and 200 <= status < 300
 
 
 def send_events(server: str, key: str, user: str, device: str, events: list) -> bool:
@@ -126,8 +134,16 @@ def send_screenshot(server: str, key: str, user: str, device: str, ts: float, ap
     payload = {"user": user, "device": device, "ts": ts, "app": app, "title": title, "image_b64": img}
     if command_id is not None:
         payload["command_id"] = command_id
-    ok = _post(server, "/api/screenshot", key, payload)
+    status = _post_status(server, "/api/screenshot", key, payload)
+    ok = status is not None and 200 <= status < 300
     STATUS["shots_ok" if ok else "shots_failed"] += 1
+    if not ok and command_id is None and SHOT_SPOOL is not None and status not in ShotSpool.DROP_STATUSES:
+        # Server down / storage broken: keep the picture and retry, instead of losing that stretch of the day.
+        try:
+            SHOT_SPOOL.push(payload)
+            STATUS["shots_queued"] = SHOT_SPOOL.count()
+        except OSError as e:
+            log.error("could not queue screenshot on disk: %r", e)
 
 
 def command_loop(server: str, key: str, user: str, device: str, throttle: ScreenshotThrottle, shots_enabled: bool,
@@ -149,6 +165,12 @@ def command_loop(server: str, key: str, user: str, device: str, throttle: Screen
                 throttle.every = float(cfg["screenshot_every"])
             if cfg.get("screenshot_stable_every"):
                 throttle.stable_every = float(cfg["screenshot_stable_every"])
+            if SHOT_SPOOL is not None and SHOT_SPOOL.count():   # the server answered: resend what is waiting
+                sent = SHOT_SPOOL.drain(lambda pl: _post_status(server, "/api/screenshot", key, pl))
+                STATUS["shots_queued"] = SHOT_SPOOL.count()
+                if sent:
+                    STATUS["shots_ok"] += sent
+                    log.info("uploaded %d queued screenshot(s), %d still waiting", sent, STATUS["shots_queued"])
             for cmd in data.get("commands", []):
                 if cmd.get("kind") != "screenshot":
                     continue
@@ -232,6 +254,9 @@ def main():
 
     ddir = data_dir(a.config)
     spool_path = a.spool or os.path.join(ddir, "spool.jsonl")
+    global SHOT_SPOOL
+    SHOT_SPOOL = ShotSpool(os.path.join(ddir, "shots-pending"))
+    STATUS["shots_queued"] = SHOT_SPOOL.count()
     setup_logging(a.log or os.path.join(ddir, "agent.log"))
 
     srv = HTTPServer(("127.0.0.1", a.ext_port), ExtHandler)

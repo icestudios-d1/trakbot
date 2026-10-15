@@ -155,3 +155,73 @@ def read_build(config_path: str | None) -> str:
             return f.read().strip()[:40]
     except OSError:
         return ""
+
+
+class ShotSpool:
+    """Screenshots that could not be uploaded wait on disk and are retried, like activity events do.
+
+    One JSON file per shot, named by its capture time, so a shot uploaded hours later still lands at the right
+    moment on the timeline. Bounded (size and age) so a long outage can never fill the disk."""
+
+    DROP_STATUSES = (400, 413, 422)   # the server will never accept these: retrying forever would block the queue
+
+    def __init__(self, folder: str, max_bytes: int = 300_000_000, max_age: float = 7 * 86400):
+        self.folder, self.max_bytes, self.max_age = folder, max_bytes, max_age
+
+    def _files(self) -> list[str]:
+        try:
+            return sorted(os.path.join(self.folder, f) for f in os.listdir(self.folder) if f.endswith(".json"))
+        except OSError:
+            return []
+
+    def count(self) -> int:
+        return len(self._files())
+
+    def push(self, payload: dict) -> None:
+        os.makedirs(self.folder, exist_ok=True)
+        name = f"{int(payload['ts'] * 1000):016d}.json"
+        tmp = os.path.join(self.folder, name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        os.replace(tmp, os.path.join(self.folder, name))
+        self._trim()
+
+    def _trim(self) -> None:
+        import time
+        files = self._files()
+        sizes = {p: os.path.getsize(p) for p in files if os.path.exists(p)}
+        total = sum(sizes.values())
+        for p in files:                                   # oldest first
+            too_old = time.time() - int(os.path.basename(p)[:16]) / 1000 > self.max_age
+            if too_old or total > self.max_bytes:
+                total -= sizes.get(p, 0)
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+    def drain(self, post, limit: int = 5) -> int:
+        """Try to upload up to `limit` queued shots, oldest first. `post(payload)` returns the HTTP status, or None if
+        the server could not be reached. Stops at the first failure (the server is down; try again next time)."""
+        sent = 0
+        for p in self._files()[:limit]:
+            try:
+                with open(p, encoding="utf-8") as f:
+                    payload = json.load(f)
+            except (OSError, ValueError):
+                self._rm(p)
+                continue
+            status = post(payload)
+            if status is not None and (200 <= status < 300 or status in self.DROP_STATUSES):
+                self._rm(p)
+                sent += status < 300
+            else:
+                break
+        return sent
+
+    @staticmethod
+    def _rm(path: str) -> None:
+        try:
+            os.remove(path)
+        except OSError:
+            pass

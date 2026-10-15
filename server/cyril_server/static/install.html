@@ -64,11 +64,12 @@ async function devices(){
       const ok=st.shots_ok||0,bad=st.shots_failed||0;
       if(bad&&!ok)return `<span style="color:var(--c-u)" title="${esc(st.last_error||'')}">✕ ${bad} failed</span><div class="mut sm">${esc((st.last_error||'').slice(0,80))}</div>`;
       if(bad)return `<span title="${esc(st.last_error||'')}">${ok} sent · <span style="color:var(--c-u)">${bad} failed</span></span>`;
+      if(st.shots_queued)return `<span title="Saved on the PC and uploaded as soon as the server accepts them">${ok} sent · <span style="color:var(--c-b)">${st.shots_queued} waiting to upload</span></span>`+(st.last_error?`<div class="mut sm">${esc(st.last_error.slice(0,80))}</div>`:'');
       return ok?`✓ ${ok} sent`:'<span class="mut" title="The first one is taken after a program has been in front for a minute">none yet</span>';
     };
     const build=st=>{
       if(!published)return '<span class="mut">–</span>';
-      if(!st||!st.build)return '<span class="mut" title="This PC has not reported its build yet (installed with an older installer). Update it once with the install command.">unknown</span>';
+      if(!st||!st.build)return '<span style="color:var(--c-b)" title="This agent is older than build tracking, so it also cannot take Screenshot now requests or queue screenshots.">⟳ old agent</span><div class="mut sm">on that PC (admin): Start-ScheduledTask \'Cyril Updater\'</div>';
       return st.build===published?`<span title="build ${esc(st.build)}">✓ current</span>`:`<span style="color:var(--c-b)" title="${esc(`has ${st.build}, published ${published}`)}">⟳ update pending</span><div class="mut sm">gets it ~03:00, or run: Start-ScheduledTask 'Cyril Updater'</div>`;
     };
     $('#dev').innerHTML=d.length?`<thead><tr><th>Machine</th><th>Login / name</th><th>Last report</th><th>Agent build</th><th>Websites</th><th>Screenshots</th></tr></thead><tbody>`+d.map(x=>{

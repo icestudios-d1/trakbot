@@ -490,3 +490,11 @@ def test_storage_health_explains_a_bad_access_key_and_other_common_failures():
                       (ObjectStoreError("PUT x -> 500: no free volumes"), "disk space")):
         with mock.patch.object(appmod.store, "access_key", "goodkey", create=True), mock.patch.object(appmod.store, "put", side_effect=err):
             assert word in c.get("/api/storage-health", headers=A).json()["hint"], err
+
+
+def test_devices_show_whether_an_agent_checks_in_for_requests():
+    c.post("/api/ingest", headers=K, json={"user": "polly", "device": "PC-POLL", "events": [{"ts": time.time(), "dur": 5, "app": "code"}]})
+    dev = lambda: [d for d in c.get("/api/devices", headers=A).json() if d["device"] == "PC-POLL"][0]
+    assert dev()["last_poll"] is None          # an old agent never polls: the dashboard can say so immediately
+    c.get("/api/agent/poll", params={"device": "PC-POLL"}, headers=K)
+    assert time.time() - dev()["last_poll"] < 5
