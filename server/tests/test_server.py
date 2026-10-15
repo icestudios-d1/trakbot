@@ -498,3 +498,22 @@ def test_devices_show_whether_an_agent_checks_in_for_requests():
     assert dev()["last_poll"] is None          # an old agent never polls: the dashboard can say so immediately
     c.get("/api/agent/poll", params={"device": "PC-POLL"}, headers=K)
     assert time.time() - dev()["last_poll"] < 5
+
+
+def test_browser_rule_does_not_flatten_every_website():
+    rid = c.post("/api/rules", headers=A, json={"kind": "app", "pattern": "msedge*", "category": "Browsing", "label": "neutral",
+                                                 "priority": 100}).json()["id"]          # the user's own rule, outranks the built-ins
+    now = time.time()
+    c.post("/api/ingest", headers=K, json={"user": "edgy", "device": "d", "events": [
+        {"ts": now - 900, "dur": 300, "app": "msedge.exe", "title": "poster | Freepik", "url": "https://www.freepik.com/x"},
+        {"ts": now - 600, "dur": 200, "app": "msedge.exe", "title": "feed", "url": "https://www.reddit.com/r/x"},
+        {"ts": now - 400, "dur": 100, "app": "msedge.exe", "title": "some page", "url": ""}]})     # address unreadable
+    q = {"user": "edgy", "start": _day(), "end": _day(), "tz": 0}
+    e = c.get("/api/employee", headers=A, params=q).json()
+    assert e["seconds"]["productive"] == 300 and e["seconds"]["unproductive"] == 200 and e["seconds"]["neutral"] == 100
+    assert {a["name"]: a["label"] for a in e["sites"]} == {"Freepik": "productive", "Reddit": "unproductive"}
+    # tester on the Rules page agrees: site first, browser rule only without an address
+    t = lambda **kw: c.post("/api/rules/test", headers=A, json=kw).json()["rule"]
+    assert t(app="msedge.exe", domain="reddit.com")["label"] == "unproductive"
+    assert t(app="msedge.exe")["label"] == "neutral"
+    c.delete(f"/api/rules/{rid}", headers=A)

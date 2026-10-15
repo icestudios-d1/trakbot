@@ -107,6 +107,14 @@ one-liner on the PC, then delete the employee. If the PC is still reporting it w
 it reported in the last 10 minutes. If a screenshot file can't be removed its row is kept and you are told, so
 nothing is orphaned; run Delete again to retry.
 
+### How rules treat browsers
+
+Rules are tried in priority order, first match wins, with one exception for browsers. When the website is known, a rule
+about the **browser** ("Edge = neutral") never decides: the site is judged by its own domain/title rules, and a site with
+no rule is *Uncategorized* (it appears under **Needs a label** on the Rules page). The browser's rule is only the
+fallback when the address can't be read. In that case the window-title rules go first, so the **Private/Incognito**
+alert still fires even if you have a blanket browser rule. Rules for programs other than a browser are unaffected.
+
 ### Names, websites and the web report
 
 Reports use plain names: **YouTube, Claude, Freepik, PowerShell, Photoshop**, never `youtube.com` or `Photoshop.exe`.
