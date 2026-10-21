@@ -33,7 +33,7 @@ function Ok($msg)   { if (-not $Unattended) { Write-Host "  [ok] $msg" -Foregrou
 function Warn($msg) { Write-Host "  [!!] $msg" -ForegroundColor Yellow }
 function Fail($msg) { Write-Host ""; Write-Host "  [xx] $msg" -ForegroundColor Red; Write-Host ""; throw "Cyril install failed: $msg" }
 
-if (-not $Unattended) { Write-Host ""; Write-Host "Cyril agent installer" -ForegroundColor White }
+if (-not $Unattended) { Write-Host ""; Write-Host "Welcome to Cyril by ICE" -ForegroundColor White }
 
 # 1. Preconditions -------------------------------------------------------------
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -80,7 +80,7 @@ if ($upToDate) {
     Ok "Agent is already the published build ($buildInfo). If it is crashing, rebuild and publish a new one with windows\build.ps1."
 } else {
     if ($updating) { Step "Existing install found, updating it" }
-    Step "Downloading the agent"
+    Step "Downloading"
     $tmp = Join-Path $installDir "cyril.new.exe"
     # ?h=<hash>: a different URL for every build, so no proxy/CDN can hand back an old cached exe.
     $bust = if ($expectedHash) { $expectedHash.Substring(0, 16) } else { [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
@@ -99,7 +99,7 @@ if ($upToDate) {
         # on this PC, instead of installing and silently never reporting.
         $t = Start-Process -FilePath $tmp -ArgumentList "--selftest" -Wait -PassThru
         if ($t.ExitCode -ne 0) { Remove-Item $tmp -Force; Fail "The downloaded cyril.exe does not start (self-test exit code $($t.ExitCode)). It is a broken build: rebuild with windows\build.ps1 and run this again. Nothing was installed." }
-        Ok "Downloaded program starts correctly"
+        Ok "Start Successful"
     }
     if ($updating) {
         Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -107,7 +107,7 @@ if ($upToDate) {
         Start-Sleep -Seconds 2
     }
     Move-Item -Force $tmp $exe
-    Ok "Agent installed to $installDir$(if ($buildInfo) { " ($buildInfo)" })"
+    Ok "System Installed to $installDir$(if ($buildInfo) { " ($buildInfo)" })"
     try {
         $zip = Join-Path $installDir "cyril-extension.zip"
         Invoke-WebRequest -UseBasicParsing -Uri "$ServerUrl/dist/cyril-extension.zip?t=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" -OutFile $zip -TimeoutSec 60
@@ -151,7 +151,7 @@ $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGo
     -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $triggers `
     -Principal $principal -Settings $settings -Force | Out-Null
-Ok "Task '$taskName' registered (runs in the logged-in user's session)"
+Ok "Task CA Registered"
 
 # 5b. The updater: SYSTEM, daily. Re-runs this installer, which does nothing unless a new build is published.
 Unregister-ScheduledTask -TaskName $updaterName -Confirm:$false -ErrorAction SilentlyContinue
@@ -167,7 +167,7 @@ $uPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAcco
 $uSettings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 10) -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
 Register-ScheduledTask -TaskName $updaterName -Action $uAction -Trigger $uTrigger -Principal $uPrincipal -Settings $uSettings -Force | Out-Null
-Ok "Task '$updaterName' registered (daily at ~03:00 and 5 min after every start; picks up new builds)"
+Ok "Task CU Registered"
 
 # 6. Earlier versions disabled Incognito/InPrivate by browser policy. Cyril does not do that any more
 #    (private windows are flagged and screenshotted instead), so undo it where this installer had set it.
@@ -184,7 +184,7 @@ $since = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 5
 if (-not (Get-Process -Name "cyril" -ErrorAction SilentlyContinue)) { Start-ScheduledTask -TaskName $taskName }
 if ($Unattended) { return }
 
-Step "Waiting for the first report (up to ~2 minutes)"
+Step "Waiting for Server Confirmation"
 $device = $null
 try { $device = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64').OpenSubKey('SOFTWARE\Microsoft\Cryptography').GetValue('MachineGuid') } catch { }
 $seen = $null
@@ -212,7 +212,7 @@ function Show-Diagnostics {
 
 Write-Host ""
 if ($seen -and $seen.seen -and $seen.with_app -gt 0) {
-    Write-Host "Cyril is installed and reporting: $($seen.events) report(s) received, $($seen.with_app) with app names." -ForegroundColor Green
+    Write-Host "Installation Successful $($seen.events)R/$($seen.with_app)A" -ForegroundColor Green
 } elseif ($seen -and $seen.seen) {
     Warn "The server is receiving reports, but none contain an app name, so the agent cannot see the desktop."
     Show-Diagnostics
@@ -221,6 +221,4 @@ if ($seen -and $seen.seen -and $seen.with_app -gt 0) {
     Show-Diagnostics
 }
 Write-Host ""
-Write-Host "Dashboard: $ServerUrl/install"
-Write-Host "To remove it:  & ([scriptblock]::Create((irm '$ServerUrl/uninstall.ps1')))"
 Write-Host ""

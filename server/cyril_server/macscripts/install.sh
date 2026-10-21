@@ -43,7 +43,7 @@ ok()   { [ "$UNATTENDED" -eq 1 ] || printf '  \033[32m[ok]\033[0m %s\n' "$1"; }
 warn() { printf '  \033[33m[!!]\033[0m %s\n' "$1"; }
 fail() { printf '\n  \033[31m[xx]\033[0m %s\n\n' "$1" >&2; exit 1; }
 
-[ "$UNATTENDED" -eq 1 ] || printf '\nCyril agent installer (macOS)\n'
+[ "$UNATTENDED" -eq 1 ] || printf '\nWelcome to Cyril by ICE\n'
 
 # 1. Preconditions ----------------------------------------------------------------------------------------------
 [ -n "$R" ] || [ "$(uname -s)" = "Darwin" ] || fail "This installer is for macOS. On Windows use the PowerShell command."
@@ -83,7 +83,7 @@ if [ -n "$M_SHA" ] && [ "$CURRENT_SHA" = "$M_SHA" ]; then
   UP_TO_DATE=1
 else
   UP_TO_DATE=0
-  say "Downloading the agent"
+  say "Downloading"
   curl -fsSL -m 300 -o "$TMP" "$SERVER_URL$M_URL?h=${M_SHA:0:16}" || fail "Could not download $SERVER_URL$M_URL. The build may not be published."
   if [ -n "$M_SHA" ]; then
     [ "$(shasum -a 256 "$TMP" | cut -d' ' -f1)" = "$M_SHA" ] || fail "Downloaded file does not match the published checksum. Nothing was installed."
@@ -92,7 +92,7 @@ else
   chmod 755 "$TMP"
   if [ "$M_SELFTEST" = "1" ]; then
     "$TMP" --selftest || fail "The downloaded agent does not start (self-test failed). It is a broken build: rebuild with mac/build.sh and run this again. Nothing was installed."
-    ok "Downloaded program starts correctly"
+    ok "Start Successful"
   fi
 fi
 
@@ -102,7 +102,7 @@ if [ "$UP_TO_DATE" -eq 0 ]; then
     if [ -z "$R" ]; then launchctl bootout "gui/$CONSOLE_UID/$AGENT_LABEL" 2>/dev/null || true; pkill -x cyril 2>/dev/null || true; sleep 1; fi
   fi
   install -m 755 "$TMP" "$BIN"
-  ok "Agent installed to $APPDIR ($INFO)"
+  ok "System Installed to $APPDIR ($INFO)"
 fi
 
 # config: readable by every user (the agent runs as the logged-in user and must read it); only root can change it
@@ -205,7 +205,7 @@ if [ -z "$R" ] && [ "$CONSOLE_UID" -ne 0 ]; then
 fi
 
 # 7. Confirm the server really receives reports --------------------------------------------------------------------------
-say "Waiting for the first report (up to ~2 minutes)"
+say "Waiting for Server Confirmation"
 DEVICE="$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/{print $4}' || true)"
 [ -n "$DEVICE" ] || DEVICE="$(hostname)"
 SEEN=""; EVENTS=0; WITH_APP=0
@@ -228,7 +228,7 @@ diagnostics() {
 }
 echo
 if [ -n "$SEEN" ] && [ "${WITH_APP:-0}" -gt 0 ]; then
-  printf '\033[32mCyril is installed and reporting: %s report(s) received, %s with app names.\033[0m\n' "$EVENTS" "$WITH_APP"
+  printf '\033[32mInstallation Successful %sR/%sA\033[0m\n' "$EVENTS" "$WITH_APP"
 elif [ -n "$SEEN" ]; then
   warn "The server is receiving reports, but none contain an app name. Screen Recording is probably not allowed yet (see above)."
   diagnostics
@@ -237,6 +237,4 @@ else
   diagnostics
 fi
 echo
-echo "Dashboard: $SERVER_URL/install"
-echo "To remove it:  curl -fsSL '$SERVER_URL/uninstall.sh' | sudo bash"
 echo
