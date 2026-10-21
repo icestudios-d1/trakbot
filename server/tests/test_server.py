@@ -560,3 +560,11 @@ def test_ingest_keeps_the_batch_when_one_event_is_odd():
     assert r.status_code == 200 and r.json()["stored"] == 3 and r.json()["skipped"] == 1
     titles = [e["title"] for e in c.get("/api/timeline", headers=A, params={"user": "odd"}).json()]
     assert "ok" in titles and "after" in titles and all("\x00" not in t for t in titles)
+
+
+def test_installer_registers_the_recovery_check_and_uninstaller_removes_it():
+    """A PC whose uploads fail for an hour fetches the newest agent without waiting for 03:00. The check runs as SYSTEM
+    from the read-only config folder and reads the agent's health.json only as data."""
+    ins, un = c.get("/install.ps1").text, c.get("/uninstall.ps1").text
+    assert "Cyril Recovery Check" in ins and "recovery-check.ps1" in ins and "failing_since" in ins and "3600" in ins
+    assert "Cyril Recovery Check" in un

@@ -133,3 +133,27 @@ def test_sanitize_makes_awkward_values_safe():
 def test_classify_status():
     assert [classify_status(s) for s in (200, None, 530, 502, 500, 422, 401)] == \
         ["ok", "transient", "transient", "transient", "ambiguous", "permanent", "config"]
+
+
+def test_health_file_tracks_continuous_failure(tmp_path):
+    import time
+    from cyril_agent import main
+    from cyril_agent.core import Aggregator
+    main.HEALTH_PATH = str(tmp_path / "health.json")
+    main.STATUS["events_failing_since"] = 0
+    state = {"code": 530}
+    main._post_status = lambda srv, path, key, pl: state["code"] if path == "/api/ingest" else 200
+    sp, agg = Spool(str(tmp_path / "s.jsonl")), Aggregator()
+
+    def flush():
+        agg.add(time.time(), 5, "code", "t", "", False)
+        main.flush_events("http://x", "k", "u", "d", agg, sp, "p", "ok")
+        return json.load(open(main.HEALTH_PATH))
+
+    first = flush()["failing_since"]
+    assert first > 0
+    time.sleep(0.01)
+    assert flush()["failing_since"] == first            # same outage, same start time
+    state["code"] = 200
+    h = flush()
+    assert h["failing_since"] == 0 and h["reason"] == ""    # recovered: cleared

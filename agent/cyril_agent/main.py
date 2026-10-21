@@ -17,13 +17,14 @@ from urllib.parse import quote
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from .core import (Aggregator, ShotSpool, Spool, browser_url, classify_status, data_dir, deliver_events, is_chromium_browser,
-                   is_private, load_config, normalize_url, read_build, sanitize_event, setup_logging)
+                   is_private, load_config, normalize_url, read_build, sanitize_event, setup_logging, write_health)
 from .platform.active_window import get_active_window, idle_seconds
 from .shots import ScreenshotThrottle, capture_jpeg_b64
 from .update import VERSION, check_and_apply
 
 ext_report = None  # latest {"url","title","at"} from the browser extension
 log = logging.getLogger("cyril-agent")
+HEALTH_PATH: str | None = None   # set in main(): read by the machine-level updater, which fetches a fix if this stays red
 SHOT_SPOOL: ShotSpool | None = None   # set in main(): screenshots waiting for the server to come back
 LATEST = {"app": "", "title": "", "idle": False}   # what is in front right now (for "screenshot now")
 
@@ -31,7 +32,7 @@ LATEST = {"app": "", "title": "", "idle": False}   # what is in front right now 
 # missing on a given PC without anyone reading logs on it.
 STATUS = {"version": VERSION, "platform": {"win32": "Windows", "darwin": "Mac"}.get(sys.platform, sys.platform), "session": None, "browser_samples": 0, "url_extension": 0, "url_uia": 0,
           "uia_not_found": 0, "uia_error": "", "shots_ok": 0, "shots_failed": 0, "shots_queued": 0, "last_error": "",
-          "events_ok": 0, "events_dropped": 0, "events_queued": 0, "events_last_ok": 0, "events_error": ""}
+          "events_ok": 0, "events_dropped": 0, "events_queued": 0, "events_last_ok": 0, "events_error": "", "events_failing_since": 0}
 
 
 def device_id() -> str:
@@ -149,6 +150,12 @@ def flush_events(server: str, key: str, user: str, device: str, agg: Aggregator,
     if res["dropped"]:
         log.warning("discarded %d event(s) the server keeps refusing (HTTP %s) so the rest are not blocked",
                     res["dropped"], res["status"])
+    if STATUS["events_error"]:
+        STATUS["events_failing_since"] = STATUS["events_failing_since"] or time.time()
+    else:
+        STATUS["events_failing_since"] = 0
+    if HEALTH_PATH:
+        write_health(HEALTH_PATH, time.time(), STATUS["events_failing_since"], STATUS["events_error"])
     label = ("ok" if not STATUS["events_error"] else
              "unreachable" if kind == "transient" else "rejected" if kind in ("permanent", "ambiguous") else "config")
     if label != sent_ok:
@@ -331,7 +338,8 @@ def main():
 
     ddir = data_dir(a.config)
     spool_path = a.spool or os.path.join(ddir, "spool.jsonl")
-    global SHOT_SPOOL
+    global SHOT_SPOOL, HEALTH_PATH
+    HEALTH_PATH = os.path.join(ddir, "health.json")
     SHOT_SPOOL = ShotSpool(os.path.join(ddir, "shots-pending"))
     STATUS["shots_queued"] = SHOT_SPOOL.count()
     setup_logging(a.log or os.path.join(ddir, "agent.log"))

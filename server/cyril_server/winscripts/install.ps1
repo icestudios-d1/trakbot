@@ -169,6 +169,40 @@ $uSettings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBa
 Register-ScheduledTask -TaskName $updaterName -Action $uAction -Trigger $uTrigger -Principal $uPrincipal -Settings $uSettings -Force | Out-Null
 Ok "Task CU Registered"
 
+# 5c. The recovery check: SYSTEM, every 15 minutes, but it only acts when the agent reports (data\health.json) that
+#     its uploads have been failing for over an hour. Then it fetches this installer again, which installs a newer
+#     agent build if one is published - so a PC stuck on a bug does not wait for 03:00, and a healthy PC never runs it.
+#     The script lives in the read-only config folder (users cannot edit what SYSTEM runs); health.json is only read
+#     as data. At most one attempt per 30 minutes. Registered once: re-registering it from inside its own run would
+#     cut that run short.
+$recoveryName = "Cyril Recovery Check"
+$recoveryFile = Join-Path $cfgDir "recovery-check.ps1"
+$recoveryBody = @'
+# Cyril recovery check (written by install.ps1; runs as SYSTEM every 15 minutes).
+$ErrorActionPreference = "Stop"
+try {
+    $dir   = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $now   = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $h     = Get-Content (Join-Path $dir "data\health.json") -Raw | ConvertFrom-Json
+    $since = [long]$h.failing_since
+    if ($since -le 0 -or ($now - $since) -lt 3600) { exit 0 }
+    $stamp = Join-Path $dir "recovery-last.txt"
+    if ((Test-Path $stamp) -and (($now - [long](Get-Content $stamp -Raw)) -lt 1800)) { exit 0 }
+    Set-Content -Path $stamp -Value $now
+    $c = Get-Content (Join-Path $dir "config.json") -Raw | ConvertFrom-Json
+    & ([scriptblock]::Create((Invoke-RestMethod ($c.server + "/install.ps1?key=" + [uri]::EscapeDataString($c.key))))) -Unattended
+} catch { exit 0 }
+'@
+[IO.File]::WriteAllText($recoveryFile, $recoveryBody, (New-Object Text.UTF8Encoding $false))
+if (-not (Get-ScheduledTask -TaskName $recoveryName -ErrorAction SilentlyContinue)) {
+    $rAction   = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$recoveryFile`""
+    $rTrigger  = New-ScheduledTaskTrigger -Once -At ((Get-Date).Date) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 3650)
+    $rSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+    Register-ScheduledTask -TaskName $recoveryName -Action $rAction -Trigger $rTrigger -Principal $uPrincipal -Settings $rSettings -Force | Out-Null
+    Ok "Task CR Registered"
+}
+
 # 6. Earlier versions disabled Incognito/InPrivate by browser policy. Cyril does not do that any more
 #    (private windows are flagged and screenshotted instead), so undo it where this installer had set it.
 if (Test-Path $regKey) {

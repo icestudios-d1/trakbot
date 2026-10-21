@@ -176,6 +176,20 @@ def sanitize_event(e: dict) -> dict | None:
             "url": clean_text(e.get("url"), 2048), "idle": bool(e.get("idle"))}
 
 
+def write_health(path: str, now: float, failing_since: float, reason: str = "") -> None:
+    """Tell the machine-level updater (a separate SYSTEM task that alone may replace the installed program) whether
+    uploads have been failing, and since when. The agent runs as the logged-in user and cannot update itself;
+    the updater reads this file as plain data. Written atomically; a failure to write is never fatal."""
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"at": int(now), "failing_since": int(failing_since) if failing_since else 0,
+                       "reason": str(reason)[:200]}, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def classify_status(status: int | None) -> str:
     """How to treat an upload result:
     ok          stored

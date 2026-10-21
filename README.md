@@ -74,6 +74,15 @@ same as how Chrome or any managed EDR patches itself — but every step is writt
 endpoint, so the rollout is fully auditable even though it isn't interruptive. A checksum mismatch aborts
 the update rather than applying anything.
 
+**Windows PCs in practice:** the installer starts the agent with `--update-check-every 0` (it runs as the logged-in
+user and cannot replace the installed program), and updating is done by the SYSTEM task "Cyril Updater" (daily ~03:00
+and 5 minutes after start). A PC that is stuck on a bug used to wait for that. Now the agent writes
+`ProgramData\Cyril\data\health.json` after every upload attempt (`failing_since` = when uploads started failing,
+0 when they work). A second SYSTEM task, "Cyril Recovery Check", runs every 15 minutes, reads that file as data, and if
+uploads have been failing for over an hour it runs the installer again to fetch a newer build if one is published
+(at most once per 30 minutes; healthy PCs never trigger it). It cannot help a PC that cannot reach the server at all:
+the update comes from the server.
+
 ### Screenshots: frequency, "Screenshot now", storage
 
 - **Adaptive frequency.** One screenshot a minute while the program in front keeps changing (someone flipping between

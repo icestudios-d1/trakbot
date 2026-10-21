@@ -4,7 +4,7 @@ PowerShell on purpose: a standard employee cannot remove it (see README, tamper 
 
   & ([scriptblock]::Create((irm 'https://cyril.example.com/uninstall.ps1')))
 
-Removes: the "Cyril Agent" and "Cyril Updater" scheduled tasks, the running process,
+Removes: the "Cyril Agent", "Cyril Updater" and "Cyril Recovery Check" scheduled tasks, the running process,
 C:\Program Files\Cyril, C:\ProgramData\Cyril (config, key, agent log and spool), any
 leftover spool/log files from older versions, and the Incognito setting if an older
 installer had disabled it. Data already stored on the server is not touched.
@@ -31,7 +31,7 @@ $regKey     = "HKLM:\SOFTWARE\Cyril"
 $failures   = 0
 
 # Tasks first, so nothing can restart the process we are about to stop.
-foreach ($t in @("Cyril Agent", "Cyril Updater")) {
+foreach ($t in @("Cyril Agent", "Cyril Updater", "Cyril Recovery Check")) {
     if (Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue) {
         try { Stop-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue
               Unregister-ScheduledTask -TaskName $t -Confirm:$false
