@@ -1,3 +1,4 @@
+import json
 import base64
 import os
 import tempfile
@@ -545,3 +546,17 @@ def test_mac_installer_and_manifest_routes():
     assert m.text == "version=0.3.0\nbuild=abc1234\nurl=/dist/cyril-mac-arm64\nsha256=ff00\nselftest=1\n"
     assert c.get("/api/install-info", headers=A).json()["mac_published"] == {"arm64": True, "x86_64": False}
     os.remove(os.path.join(d, "manifest-mac-arm64.json")); os.remove(os.path.join(d, "cyril-mac-arm64"))
+
+
+def test_ingest_keeps_the_batch_when_one_event_is_odd():
+    """A NUL character, a lone surrogate or a non-finite time in one event must not cost a PC the whole batch."""
+    now = time.time()
+    ev = [{"ts": now, "dur": 10, "app": "code", "title": "ok"},
+          {"ts": now + 10, "dur": 10, "app": "co\x00de", "title": "bad \ud83d title", "url": "https://x.example/\x00p"},
+          {"ts": float("nan"), "dur": 10, "app": "code"},
+          {"ts": now + 20, "dur": 10, "app": "code", "title": "after"}]
+    body = json.dumps({"user": "odd", "device": "d", "events": ev}, allow_nan=True)
+    r = c.post("/api/ingest", headers={**K, "Content-Type": "application/json"}, content=body)
+    assert r.status_code == 200 and r.json()["stored"] == 3 and r.json()["skipped"] == 1
+    titles = [e["title"] for e in c.get("/api/timeline", headers=A, params={"user": "odd"}).json()]
+    assert "ok" in titles and "after" in titles and all("\x00" not in t for t in titles)

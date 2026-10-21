@@ -16,8 +16,8 @@ import urllib.request
 from urllib.parse import quote
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from .core import (Aggregator, ShotSpool, Spool, browser_url, data_dir, is_chromium_browser, is_private, load_config,
-                   normalize_url, read_build, setup_logging)
+from .core import (Aggregator, ShotSpool, Spool, browser_url, classify_status, data_dir, deliver_events, is_chromium_browser,
+                   is_private, load_config, normalize_url, read_build, sanitize_event, setup_logging)
 from .platform.active_window import get_active_window, idle_seconds
 from .shots import ScreenshotThrottle, capture_jpeg_b64
 from .update import VERSION, check_and_apply
@@ -30,7 +30,8 @@ LATEST = {"app": "", "title": "", "idle": False}   # what is in front right now 
 # Health counters sent to the server after every flush, so the dashboard can show WHY websites or screenshots are
 # missing on a given PC without anyone reading logs on it.
 STATUS = {"version": VERSION, "platform": {"win32": "Windows", "darwin": "Mac"}.get(sys.platform, sys.platform), "session": None, "browser_samples": 0, "url_extension": 0, "url_uia": 0,
-          "uia_not_found": 0, "uia_error": "", "shots_ok": 0, "shots_failed": 0, "shots_queued": 0, "last_error": ""}
+          "uia_not_found": 0, "uia_error": "", "shots_ok": 0, "shots_failed": 0, "shots_queued": 0, "last_error": "",
+          "events_ok": 0, "events_dropped": 0, "events_queued": 0, "events_last_ok": 0, "events_error": ""}
 
 
 def device_id() -> str:
@@ -95,7 +96,10 @@ def _post_status(server: str, path: str, key: str, payload: dict) -> int | None:
         url, json.dumps(payload).encode(),
         {"Content-Type": "application/json", "X-Api-Key": key, "User-Agent": USER_AGENT})
     try:
-        return urllib.request.urlopen(req, timeout=20).status
+        status = urllib.request.urlopen(req, timeout=20).status
+        if STATUS["last_error"].startswith(path + ":"):   # that problem is over: do not keep reporting it
+            STATUS["last_error"] = ""
+        return status
     except Exception as e:
         detail = ""
         status = None
@@ -115,8 +119,50 @@ def _post(server: str, path: str, key: str, payload: dict) -> bool:
     return status is not None and 200 <= status < 300
 
 
-def send_events(server: str, key: str, user: str, device: str, events: list) -> bool:
-    return _post(server, "/api/ingest", key, {"user": user, "device": device, "events": events})
+def send_events(server: str, key: str, user: str, device: str, events: list) -> int | None:
+    """HTTP status of the upload, or None if the server could not be reached."""
+    return _post_status(server, "/api/ingest", key, {"user": user, "device": device, "events": events})
+
+
+def flush_events(server: str, key: str, user: str, device: str, agg: Aggregator, spool: Spool, spool_path: str,
+                 sent_ok: str | None) -> str | None:
+    """Queue what was collected, then upload as much of the queue as the server takes. Never raises: a problem here
+    must not stop the sampling loop. Returns the outcome label so the caller logs changes, not every minute."""
+    try:
+        fresh = [e for e in (sanitize_event(e) for e in agg.drain(keep_open=False)) if e]
+        spool.push(fresh)
+        res = deliver_events(spool, lambda evs: send_events(server, key, user, device, evs))
+    except Exception as e:   # disk full, permissions, ...
+        log.exception("could not queue or upload events")
+        STATUS["events_error"] = f"{e!r}"[:300]
+        return "error"
+    STATUS["events_ok"] += res["sent"]
+    STATUS["events_dropped"] += res["dropped"]
+    STATUS["events_queued"] = spool.count()
+    if res["sent"]:
+        STATUS["events_last_ok"] = time.time()
+    kind = classify_status(res["status"])
+    if res["outcome"] == "failed" or (res["outcome"] == "partial" and STATUS["events_queued"]):
+        STATUS["events_error"] = f"HTTP {res['status']}" if res["status"] else "server unreachable"
+    else:
+        STATUS["events_error"] = ""
+    if res["dropped"]:
+        log.warning("discarded %d event(s) the server keeps refusing (HTTP %s) so the rest are not blocked",
+                    res["dropped"], res["status"])
+    label = ("ok" if not STATUS["events_error"] else
+             "unreachable" if kind == "transient" else "rejected" if kind in ("permanent", "ambiguous") else "config")
+    if label != sent_ok:
+        if label == "ok":
+            log.info("events: uploading works (%d sent, %d still queued)", res["sent"], STATUS["events_queued"])
+        elif label == "unreachable":
+            log.warning("events: server not reachable (HTTP %s); %d event(s) queued on disk at %s, retrying every minute",
+                        res["status"], STATUS["events_queued"], spool_path)
+        elif label == "rejected":
+            log.error("events: server refused them (HTTP %s); %d queued at %s", res["status"], STATUS["events_queued"], spool_path)
+        else:
+            log.error("events: server answered HTTP %s - check the agent key / server address; %d queued",
+                      res["status"], STATUS["events_queued"])
+    return label
 
 
 def send_screenshot(server: str, key: str, user: str, device: str, ts: float, app: str, title: str,
@@ -314,6 +360,7 @@ def main():
     agg, spool, last_flush = Aggregator(), Spool(spool_path), time.time()
     no_window = 0
     sent_ok = None
+    STATUS["events_queued"] = spool.count()
     shot_throttle = ScreenshotThrottle(a.screenshot_every, a.screenshot_stable_every)
     threading.Thread(target=command_loop, args=(server, key, user, device, shot_throttle, not a.no_screenshots), daemon=True).start()
     last_update_check = time.time()
@@ -326,7 +373,15 @@ def main():
                 check_and_apply(server, key, user, device)  # returns only if no update was applied
             except Exception:
                 pass
-        w = get_active_window()
+        try:
+            w = get_active_window()
+            idle = idle_seconds() >= a.idle_after
+        except Exception as e:   # a locked/switching desktop can make the OS calls fail briefly: skip this sample only
+            if STATUS["last_error"] != f"sampling: {e!r}"[:400]:
+                log.error("sampling failed: %r", e)
+            STATUS["last_error"] = f"sampling: {e!r}"[:400]
+            time.sleep(a.interval)
+            continue
         if w is None:
             no_window += 1
             if no_window == 12:  # a minute of samples with no foreground window
@@ -337,7 +392,6 @@ def main():
                 log.info("foreground window visible again")
             no_window = 0
         w = w or {"app": "", "title": ""}
-        idle = idle_seconds() >= a.idle_after
         url = browser_url(w["app"], ext_report, now)
         mac_private = False
         if is_url_browser(w["app"]) and not idle and not is_private(w["title"]):
@@ -372,17 +426,11 @@ def main():
             # The next add() simply starts a fresh segment of the same
             # activity, so a long session is reported in --flush-sized
             # chunks instead of only once it ends.
-            spool.push(agg.drain(keep_open=False))
-            queued = spool.read()
-            if queued:
-                ok = send_events(server, key, user, device, queued)
-                if ok:
-                    spool.drop(len(queued))
-                if ok != sent_ok:  # log changes (first success, outage start, recovery), not every minute
-                    log.info("report %s: %d event(s)%s", "sent" if ok else "FAILED, will retry (spooled)", len(queued),
-                             "" if ok else f" queued on disk at {spool_path}")
-                    sent_ok = ok
-            refresh_permissions()
+            sent_ok = flush_events(server, key, user, device, agg, spool, spool_path, sent_ok)
+            try:
+                refresh_permissions()
+            except Exception:
+                pass
             _post(server, "/api/agent/status", key, {"user": user, "device": device, "info": dict(STATUS)})
             last_flush = now
         time.sleep(a.interval)

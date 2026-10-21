@@ -93,7 +93,7 @@ function eventAt(ts){return events.find(e=>e.ts<=ts&&ts<e.ts+e.dur)||events.filt
 
 function timeline(){
   const el=$('#tl');
-  if(!events.length){TB.empty(el,'No activity recorded for this person on this day.');return}
+  if(!events.length){TB.empty(el,shots.length?'Screenshots arrived but no activity records did. The PC may be holding them until it can upload (see Install agents, the Last report column); they appear here by themselves once it does.':'No activity recorded for this person on this day.');return}
   t0=Math.floor(Math.min(...events.map(e=>e.ts),...shots.map(s=>s.ts))/3600)*3600;
   t1=Math.max(t0+3600,Math.ceil(Math.max(...events.map(e=>e.ts+e.dur),...shots.map(s=>s.ts))/3600)*3600);
   const H=44,M=16,L=4;

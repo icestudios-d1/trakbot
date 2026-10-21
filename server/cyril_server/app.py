@@ -9,6 +9,7 @@ reachability; agents spool locally and catch up whenever this server is back.
 import base64
 import hashlib
 import hmac
+import math
 import os
 import re
 import time
@@ -111,23 +112,47 @@ def domain_of(url: str) -> str:
     return host.removeprefix("www.")
 
 
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _clean(v: str, limit: int) -> str:
+    """Text SQLite and the dashboard will certainly accept: no NUL or other control characters, no lone surrogates
+    (a window title cut in the middle of an emoji), bounded length."""
+    return _CONTROL.sub("", (v or "").encode("utf-8", "replace").decode("utf-8"))[:limit]
+
+
 @app.post("/api/ingest", dependencies=[Depends(agent)])
 def ingest(b: IngestBatch):
+    """One odd event must never cost a PC its whole day: an event that cannot be stored is skipped and counted, and
+    the rest of the batch is kept (the agent only sees 2xx and moves on)."""
     rules = db.rules()
-    alerts = 0
+    alerts = stored = skipped = 0
     with db.conn() as c:
         for e in b.events:
-            dom = domain_of(e.url)
-            c.execute(
-                "INSERT INTO events(user,device,ts,dur,app,title,url,domain,idle) VALUES(?,?,?,?,?,?,?,?,?)",
-                (b.user, b.device, e.ts, e.dur, e.app, e.title, e.url, dom, int(e.idle)))
-            r = matching_rule({"app": e.app, "title": e.title, "domain": dom, "idle": e.idle}, rules)
-            if r and r["alert"]:
+            if not math.isfinite(e.ts) or e.ts <= 0 or not math.isfinite(e.dur):
+                skipped += 1
+                continue
+            app_, title, url = _clean(e.app, 256), _clean(e.title, 1000), _clean(e.url, 2048)
+            try:
+                dom = domain_of(url)
                 c.execute(
-                    "INSERT INTO alerts(ts,user,device,rule_id,category,app,title,url) VALUES(?,?,?,?,?,?,?,?)",
-                    (e.ts, b.user, b.device, r["id"], r["category"], e.app, e.title, e.url))
-                alerts += 1
-    return {"stored": len(b.events), "alerts": alerts}
+                    "INSERT INTO events(user,device,ts,dur,app,title,url,domain,idle) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (b.user, b.device, e.ts, e.dur, app_, title, url, dom, int(e.idle)))
+                stored += 1
+            except Exception as err:
+                skipped += 1
+                print(f"ingest: skipped one event from {b.user}/{b.device}: {err!r}")
+                continue
+            try:
+                r = matching_rule({"app": app_, "title": title, "domain": dom, "idle": e.idle}, rules)
+                if r and r["alert"]:
+                    c.execute(
+                        "INSERT INTO alerts(ts,user,device,rule_id,category,app,title,url) VALUES(?,?,?,?,?,?,?,?)",
+                        (e.ts, b.user, b.device, r["id"], r["category"], app_, title, url))
+                    alerts += 1
+            except Exception as err:   # a broken rule must not lose the activity itself
+                print(f"ingest: rule check failed for one event: {err!r}")
+    return {"stored": stored, "alerts": alerts, **({"skipped": skipped} if skipped else {})}
 
 
 # --------------------------------------------------------------- reports

@@ -26,7 +26,7 @@ import tempfile
 import time
 import urllib.request
 
-VERSION = "0.2.0"  # bump on every release; must match manifest.json's "version" for a no-op check
+VERSION = "0.2.1"  # bump on every release; must match manifest.json's "version" for a no-op check
 
 
 def _log_path() -> str:

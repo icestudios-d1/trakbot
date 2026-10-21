@@ -87,6 +87,16 @@ async function devices(){
       if(st.shots_queued)return `<span title="Saved on the PC and uploaded as soon as the server accepts them">${ok} sent · <span style="color:var(--c-b)">${st.shots_queued} waiting to upload</span></span>`+(st.last_error?`<div class="mut sm">${esc(st.last_error.slice(0,80))}</div>`:'');
       return ok?`✓ ${ok} sent`:'<span class="mut" title="The first one is taken after a program has been in front for a minute">none yet</span>';
     };
+    // Activity events travel apart from screenshots. Say so when they are held up on the PC, or when the agent is
+    // plainly alive (its health report is fresh) but no activity has arrived for a while.
+    const events=(x,now)=>{
+      const st=x.status||{},q=st.events_queued||0,alive=x.status_ts&&now-x.status_ts<300,stale=now-x.last_seen>900;
+      if(q&&st.events_error)return `<div class="sm" style="color:var(--c-u)" title="${esc(st.events_error)}">⚠ ${q} activity records waiting on the PC (${esc(st.events_error)}). They upload by themselves once the server accepts them.</div>`;
+      if(q>20)return `<div class="sm" style="color:var(--c-b)">${q} activity records uploading…</div>`;
+      if(st.events_dropped)return `<div class="mut sm" title="The server refused ${st.events_dropped} record(s) it could not store; the rest were kept">${st.events_dropped} unusable record(s) skipped</div>`;
+      if(alive&&stale&&st.events_queued===undefined)return `<div class="sm" style="color:var(--c-b)" title="This agent is running but its activity has not arrived. It is an older build that cannot say why; it will take the update and then report.">⚠ running, no activity received</div>`;
+      return '';
+    };
     const build=st=>{
       if(!published)return '<span class="mut">–</span>';
       if(!st||!st.build)return '<span style="color:var(--c-b)" title="This agent is older than build tracking, so it also cannot take Screenshot now requests or queue screenshots.">⟳ old agent</span><div class="mut sm">on that PC (admin): Start-ScheduledTask \'Cyril Updater\'</div>';
@@ -94,7 +104,7 @@ async function devices(){
     };
     $('#dev').innerHTML=d.length?`<thead><tr><th>Machine</th><th>Login / name</th><th>Last report</th><th>Agent build</th><th>Websites</th><th>Screenshots</th></tr></thead><tbody>`+d.map(x=>{
       const ago=now-x.last_seen,on=ago<180,isNew=fresh.some(f=>f.device===x.device&&f.user===x.user);
-      return `<tr><td title="${esc(x.device)}" style="max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.device)}${x.status&&x.status.platform?`<div class="mut sm">${esc(x.status.platform)}</div>`:''}</td><td>${TB.who(x.user)}${isNew?' <span class="tag productive">new</span>':''}</td><td class="nowrap"><span class="live ${on?'on':''}"></span>${on?'online':ago<3600?Math.round(ago/60)+' min ago':TB.when(x.last_seen)}</td><td>${build(x.status)}</td><td>${web(x.status)}</td><td>${shots(x.status)}</td></tr>`}).join('')+'</tbody>':'<tbody><tr><td class="empty">No machines have reported yet.</td></tr></tbody>';
+      return `<tr><td title="${esc(x.device)}" style="max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.device)}${x.status&&x.status.platform?`<div class="mut sm">${esc(x.status.platform)}</div>`:''}</td><td>${TB.who(x.user)}${isNew?' <span class="tag productive">new</span>':''}</td><td class="nowrap"><span class="live ${on?'on':''}"></span>${on?'online':ago<3600?Math.round(ago/60)+' min ago':TB.when(x.last_seen)}${events(x,now)}</td><td>${build(x.status)}</td><td>${web(x.status)}</td><td>${shots(x.status)}</td></tr>`}).join('')+'</tbody>':'<tbody><tr><td class="empty">No machines have reported yet.</td></tr></tbody>';
     $('#devSub').textContent=`${d.filter(x=>now-x.last_seen<180).length} online of ${d.length} · updates every few seconds`;
   }catch(e){TB.error(e)}
 }

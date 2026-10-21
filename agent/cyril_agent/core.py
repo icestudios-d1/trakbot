@@ -2,6 +2,7 @@
 import json
 import logging
 import logging.handlers
+import math
 import os
 import re
 import time
@@ -48,31 +49,231 @@ def browser_url(app: str, ext_report: dict | None, now: float, max_age: float = 
 
 
 class Spool:
-    """Append-only on-disk queue so events survive offline periods/restarts."""
-    def __init__(self, path: str):
+    """Append-only on-disk queue so events survive offline periods/restarts.
+
+    Bounded by size (oldest events are discarded first) so a PC that cannot reach the server for weeks can never
+    fill its disk. A half-written or corrupt line (power cut, crash mid-write) is skipped, never allowed to wedge
+    the queue."""
+
+    def __init__(self, path: str, max_bytes: int = 50_000_000):
         self.path = path
+        self.max_bytes = max_bytes
 
     def push(self, events: list):
         if events:
-            with open(self.path, "a") as f:
+            with open(self.path, "a+b") as f:   # a torn last line (crash mid-write) must not swallow the next event
+                if f.tell():
+                    f.seek(-1, 2)
+                    if f.read(1) != b"\n":
+                        f.write(b"\n")
+            with open(self.path, "a", encoding="utf-8") as f:
                 for e in events:
                     f.write(json.dumps(e) + "\n")
+            self._trim()
 
-    def read(self, limit: int = 1000) -> list:
+    def take(self, limit: int = 500) -> tuple[list, int]:
+        """The oldest `limit` lines: (events that parse, number of lines consumed). Pass the second value to
+        drop() once the events are delivered, so corrupt lines are cleared with them."""
+        out, n = [], 0
         try:
-            with open(self.path) as f:
-                return [json.loads(l) for l in f.readlines()[:limit]]
-        except FileNotFoundError:
-            return []
-
-    def drop(self, n: int):
-        try:
-            with open(self.path) as f:
-                rest = f.readlines()[n:]
-            with open(self.path, "w") as f:
-                f.writelines(rest)
+            with open(self.path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    n += 1
+                    try:
+                        e = json.loads(line)
+                        if isinstance(e, dict):
+                            out.append(e)
+                    except ValueError:
+                        pass
+                    if n >= limit:
+                        break
         except FileNotFoundError:
             pass
+        return out, n
+
+    def read(self, limit: int = 1000) -> list:
+        return self.take(limit)[0]
+
+    def drop(self, n: int):
+        self._rewrite(lambda lines: lines[n:])
+
+    def repair(self) -> None:
+        """Remove lines that are not valid events (left by a crash mid-write)."""
+        def good(lines):
+            out = []
+            for line in lines:
+                try:
+                    if isinstance(json.loads(line), dict):
+                        out.append(line)
+                except ValueError:
+                    pass
+            return out
+        self._rewrite(good)
+
+    def count(self) -> int:
+        try:
+            with open(self.path, "rb") as f:
+                return sum(1 for _ in f)
+        except OSError:
+            return 0
+
+    def _trim(self) -> None:
+        try:
+            if os.path.getsize(self.path) <= self.max_bytes:
+                return
+        except OSError:
+            return
+
+        def keep_newest(lines):
+            total, kept = 0, []
+            for line in reversed(lines):
+                total += len(line.encode("utf-8", "replace"))
+                if total > self.max_bytes * 0.8:
+                    break
+                kept.append(line)
+            return kept[::-1]
+        self._rewrite(keep_newest)
+
+    def _rewrite(self, fn) -> None:
+        try:
+            with open(self.path, encoding="utf-8", errors="replace") as f:
+                rest = fn(f.readlines())
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.writelines(rest)
+            os.replace(tmp, self.path)
+        except FileNotFoundError:
+            pass
+
+
+# ---- what the server will take ------------------------------------------------------------------------------
+MAX_EVENT_SECONDS = 3600   # mirrors the server's limit
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def clean_text(v, limit: int) -> str:
+    """A string the server's database and JSON layer will certainly accept: no control characters (NUL), no lone
+    surrogates (a window title cut in the middle of an emoji), bounded length."""
+    s = "" if v is None else str(v)
+    s = s.encode("utf-8", "replace").decode("utf-8")
+    return _CONTROL_RE.sub("", s)[:limit]
+
+
+def sanitize_event(e: dict) -> dict | None:
+    """Make an event safe to queue, so one odd window title or clock jump can never get a whole batch refused.
+    Returns None for an event with no usable time."""
+    try:
+        ts = float(e["ts"])
+        dur = float(e.get("dur", 0))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not math.isfinite(ts) or ts <= 0:
+        return None
+    if not math.isfinite(dur):
+        dur = 0.0
+    return {"ts": ts, "dur": min(max(dur, 0.0), float(MAX_EVENT_SECONDS)),
+            "app": clean_text(e.get("app"), 256), "title": clean_text(e.get("title"), 1000),
+            "url": clean_text(e.get("url"), 2048), "idle": bool(e.get("idle"))}
+
+
+def classify_status(status: int | None) -> str:
+    """How to treat an upload result:
+    ok          stored
+    transient   server/tunnel/network trouble (no answer, Cloudflare 52x/530, 502-504, 429): keep and retry later
+    config      the key or address is wrong (401/403/404/...): keep, retrying will not hurt and fixing it will help
+    permanent   the server will never accept this content (400/413/422)
+    ambiguous   a bare 500: could be one bad event, could be a broken server"""
+    if status is not None and 200 <= status < 300:
+        return "ok"
+    if status is None or status in (408, 425, 429) or status >= 501:
+        return "transient"
+    if status in (400, 413, 422):
+        return "permanent"
+    if status == 500:
+        return "ambiguous"
+    return "config"
+
+
+def deliver_events(spool: "Spool", post, batch: int = 500, max_batches: int = 20, max_probes: int = 40) -> dict:
+    """Upload queued events, oldest first. `post(events)` returns the HTTP status or None if unreachable.
+
+    - Delivered events are removed from the queue; nothing is removed that the server did not take, EXCEPT a
+      single event the server keeps refusing while it accepts the events around it (a poison event). That one is
+      discarded and counted, so it can never block everything queued behind it.
+    - When a batch is refused for its content, it is split in halves to find the culprit (at most `max_probes`
+      requests per call; the rest is finished on the next flush).
+    - Outage / tunnel down / wrong key: stop, keep everything, try again next flush.
+    Returns {"sent","dropped","status","outcome"}; outcome is "empty", "ok", "partial" or "failed"."""
+    res = {"sent": 0, "dropped": 0, "status": None, "outcome": "empty"}
+    probes = [max_probes]
+    stopped = [False]
+
+    def attempt(evs):
+        probes[0] -= 1
+        res["status"] = post(evs)
+        return classify_status(res["status"])
+
+    for _ in range(max_batches):
+        events, lines = spool.take(batch)
+        if not lines:
+            break
+        if lines != len(events):                        # a damaged line in the middle: clear it, then go on
+            spool.repair()
+            continue
+        kind = attempt(events)
+        if kind == "ok":
+            spool.drop(lines)
+            res["sent"] += len(events)
+            res["outcome"] = "ok"
+            continue
+        if kind not in ("permanent", "ambiguous"):
+            res["outcome"] = "failed"
+            break
+        # Refused for its content: find which events the server takes.
+        verdict: list = [None] * len(events)            # "ok" | "bad" | "amb" | None (not tried yet)
+
+        def isolate(lo: int, hi: int):
+            if hi - lo == 1:
+                return
+            mid = (lo + hi) // 2
+            for a, b in ((lo, mid), (mid, hi)):
+                if probes[0] <= 0 or stopped[0]:
+                    return
+                if b - a == 1:
+                    k = attempt(events[a:b])
+                    verdict[a] = {"ok": "ok", "permanent": "bad", "ambiguous": "amb"}.get(k)
+                    if verdict[a] is None:
+                        stopped[0] = True               # outage in the middle: stop here
+                        return
+                    continue
+                k = attempt(events[a:b])
+                if k == "ok":
+                    verdict[a:b] = ["ok"] * (b - a)
+                elif k in ("permanent", "ambiguous"):
+                    isolate(a, b)
+                else:
+                    stopped[0] = True
+                    return
+        if len(events) == 1:
+            verdict[0] = "bad" if kind == "permanent" else "amb"
+        else:
+            isolate(0, len(events))
+        if "ok" in verdict:                             # the server is healthy, so a refused event is the culprit
+            verdict = ["bad" if v == "amb" else v for v in verdict]
+        done = 0
+        while done < len(verdict) and verdict[done] in ("ok", "bad"):
+            done += 1
+        res["sent"] += verdict[:done].count("ok")
+        res["dropped"] += verdict[:done].count("bad")
+        if done:
+            spool.drop(done if done < len(events) else lines)
+            res["outcome"] = "partial"
+        if done < len(events) or probes[0] <= 0:
+            res["outcome"] = "partial" if done else "failed"
+            break
+    if res["outcome"] == "partial" and not spool.count():
+        res["outcome"] = "ok"
+    return res
 
 
 def load_config(path: str | None) -> dict:
