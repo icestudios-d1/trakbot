@@ -28,6 +28,9 @@ button.chip{padding:4px 10px;border-radius:999px;min-height:30px}
 button.chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
 
 /* top nav */
+.burger{display:none;margin-left:auto;flex-direction:column;justify-content:center;gap:4px;width:40px;height:40px;padding:0 9px;order:2}
+.burger span{display:block;height:2px;background:var(--fg);border-radius:2px}
+.pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap;margin-top:10px}
 .top{position:sticky;top:0;z-index:20;background:var(--card);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:6px;padding:0 20px;min-height:54px;flex-wrap:wrap}
 .brand{font-weight:700;font-size:17px;margin-right:18px;color:var(--fg);display:flex;align-items:center;gap:8px}
 .brand i{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,var(--c-a),var(--c-b));display:inline-block}
@@ -150,3 +153,21 @@ td input,td select{width:100%;min-height:30px;padding:3px 6px}
 .modal .mrow{padding:10px 0;border-top:1px solid var(--bd)}.modal .mrow:first-child{border-top:0}
 .modal .mrow .st{margin:4px 0 8px}
 .modal .img img{width:100%;border-radius:8px;border:1px solid var(--bd);display:block}
+
+@media(max-width:900px){
+  .top{padding:6px 12px;gap:0}
+  .burger{display:flex}
+  .brand{margin-right:0;order:1}
+  .top nav{display:none;order:4;flex:0 0 100%;flex-direction:column;gap:0;padding:6px 0}
+  .top.open nav{display:flex}
+  .top nav a{padding:12px 6px;border-bottom:1px solid var(--bd)}
+  .top nav a.on{border-bottom-color:var(--bd);color:var(--accent)}
+  .top #build{display:none}
+  .top .out{display:none;order:5;flex:0 0 100%;text-align:left;padding:12px 6px}
+  .top.open .out{display:block}
+  .g2,.g3{grid-template-columns:1fr}
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .kpi .val{font-size:22px}
+  .pagehead>.formrow{width:100%}
+  .daybar select,.daybar input{max-width:100%}
+}

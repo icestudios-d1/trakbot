@@ -26,13 +26,13 @@
   <div class="card"><h2>Flagged activity</h2><div id="alerts"></div></div>
 </div>
 <div class="card" style="margin-bottom:16px"><h2>Day by day</h2><div class="sub">Click a day to open it in the day viewer</div><div class="scroll"><table id="days"></table></div></div>
-<div class="card" style="margin-bottom:16px"><div class="pagehead" style="margin-bottom:6px"><div><h2 id="slotTitle">Time slots</h2><div class="sub" id="slotSub" style="margin:0"></div></div><button id="slotCsv" class="noprint">Download slot report (CSV)</button></div><div class="scroll"><table id="slots"></table></div></div>
+<div class="card" style="margin-bottom:16px"><div class="pagehead" style="margin-bottom:6px"><div><h2 id="slotTitle">Time slots</h2><div class="sub" id="slotSub" style="margin:0"></div></div><button id="slotCsv" class="noprint">Download slot report (CSV)</button></div><div class="scroll"><table id="slots"></table></div><div class="pager noprint" id="pager"></div></div>
 <div class="card"><h2>Screenshots</h2><div id="shots"></div></div>
 </div>
 </main>
 <script src="/static/app.js"></script>
 <script>
-const {$,fmt,esc}=TB;let seq=0,cur=null,slotRows=[],slotMin=0;
+const {$,fmt,esc}=TB;let seq=0,cur=null,slotRows=[],slotMin=0,page=0;const PAGE=50;
 const rb=TB.rangeBar($('#range'),{user:true,userAll:null,defDays:14,slot:true,onChange:load});
 async function load(r){
   if(!r.user)return;
@@ -75,7 +75,7 @@ async function load(r){
     try {
       const sr = await TB.api('/api/slots?'+TB.qs({user:r.user,start:r.start,end:r.end,tz:TB.tz}));
       if(me!==seq)return;
-      slotRows=sr.rows;renderSlots(sr.slot);
+      slotRows=sr.rows;page=0;renderSlots(sr.slot);
     } catch(x) { slotRows=[];$('#slots').innerHTML='';$('#slotSub').textContent=x.message; }
     $('#shots').innerHTML=o.screenshots?`<p><b>${o.screenshots}</b> screenshot${o.screenshots>1?'s':''} captured in this range.</p><a href="/screenshots?${TB.qs({user:r.user,start:r.start,end:r.end})}">Review or delete screenshots →</a>`:'<div class="empty">No screenshots in this range.</div>';
   }catch(e){if(me===seq)TB.error(e)}
@@ -87,9 +87,10 @@ function renderSlots(n){
   slotMin=n;
   $('#slotTitle').textContent=n?`Time slots (${n}-minute blocks)`:'Activity log (exact)';
   $('#slotSub').textContent=n?'Each block is reported as the app or site used most in it.':'Every recorded stretch of activity. Choose "Group by" above for a block view.';
-  const MAX=400,rows=slotRows.slice(0,MAX);
+  const pages=Math.max(1,Math.ceil(slotRows.length/PAGE));page=Math.min(page,pages-1);const rows=slotRows.slice(page*PAGE,(page+1)*PAGE);
   $('#slots').innerHTML=slotRows.length?`<thead><tr><th>Day</th><th>Time</th><th>App / site</th><th>Category</th><th>Productivity</th>${n?'<th class="right">Share</th><th>Also in this block</th>':'<th>Window</th>'}</tr></thead><tbody>`+rows.map(x=>`<tr><td class="nowrap">${dayOf(x.ts)}</td><td class="nowrap">${hm(x.ts)}${n?' – '+hm(x.ts+n*60):''}</td><td><b>${esc(what(x))}</b></td><td>${x.idle?'':esc(x.category)}</td><td>${x.idle?'<span class="mut">idle</span>':`<span class="tag ${x.label}">${x.label}</span>`}</td>${n?`<td class="right num">${Math.round(100*x.share)}%</td><td class="mut sm">${x.breakdown.slice(1).map(b=>esc(b.name)+' '+fmt(b.seconds)).join(' · ')}</td>`:`<td class="mut sm" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.title)}</td>`}</tr>`).join('')+'</tbody>':'<tbody><tr><td class="empty">No activity in this range.</td></tr></tbody>';
-  if(slotRows.length>MAX)$('#slotSub').textContent+=` Showing the first ${MAX} of ${slotRows.length}; the CSV has all of them.`;
+  $('#pager').innerHTML=slotRows.length>PAGE?`<span class="mut sm">${page*PAGE+1}–${Math.min(slotRows.length,(page+1)*PAGE)} of ${slotRows.length}</span><button id="pf" ${page?'':'disabled'} aria-label="First page">«</button><button id="pp" ${page?'':'disabled'}>◀ Prev</button><span class="mut num">Page ${page+1} / ${pages}</span><button id="pn" ${page<pages-1?'':'disabled'}>Next ▶</button><button id="pl" ${page<pages-1?'':'disabled'} aria-label="Last page">»</button>`:'';
+  if(slotRows.length>PAGE){const go=p=>{page=p;renderSlots(n);$('#slotTitle').scrollIntoView({block:'nearest'})};$('#pf').onclick=()=>go(0);$('#pp').onclick=()=>go(page-1);$('#pn').onclick=()=>go(page+1);$('#pl').onclick=()=>go(pages-1)}
 }
 $('#slotCsv').onclick=()=>{
   if(!cur)return;const r=rb.get();

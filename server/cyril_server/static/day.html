@@ -6,7 +6,7 @@
 <div class="daybar">
  <select id="u" aria-label="Employee"></select>
  <button id="prev" aria-label="Previous day">◀</button><input type="date" id="d" aria-label="Day"><button id="next" aria-label="Next day">▶</button>
- <button class="chip" id="today">Today</button><button id="shotNow" title="Ask this PC for a screenshot right now">Screenshot now</button><span class="sep"></span>
+ <label class="mut sm" style="display:flex;gap:4px;align-items:center">From <input type="time" id="tf" value="00:00" aria-label="Start time"></label><label class="mut sm" style="display:flex;gap:4px;align-items:center">to <input type="time" id="tt" value="23:59" aria-label="End time"></label><button class="chip" id="today">Today</button><button id="shotNow" title="Ask this PC for a screenshot right now">Screenshot now</button><span class="sep"></span>
  <span id="slotHere"></span><span class="mut">Colour by</span><button class="chip on" data-c="app">Application</button><button class="chip" data-c="label">Productivity</button>
 </div>
 <div id="err" class="callout" style="display:none"></div>
@@ -42,7 +42,8 @@ const shift=n=>{const d=new Date($('#d').value+'T00:00');d.setDate(d.getDate()+n
 $('#prev').onclick=()=>shift(-1);$('#next').onclick=()=>shift(1);
 $('#shotNow').onclick=()=>TB.screenshotNow($('#u').value,{onDone:id=>{if($('#d').value===TB.ymd(new Date())){wantId=id;load()}}}).catch(TB.error);
 $('#today').onclick=()=>{$('#d').value=TB.ymd(new Date());load()};
-$('#d').onchange=()=>load();$('#u').onchange=()=>load();
+$('#tf').value=p0.from||'00:00';$('#tt').value=p0.to||'23:59';
+$('#d').onchange=()=>load();$('#tf').onchange=$('#tt').onchange=()=>load();$('#u').onchange=()=>load();
 let slotMin=0;
 const slotReady=TB.slotSelect($('#slotHere'),n=>{slotMin=n;load()}).then(n=>{slotMin=n;}).catch(TB.error);
 document.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>{colorBy=b.dataset.c;document.querySelectorAll('[data-c]').forEach(x=>x.classList.toggle('on',x===b));setup();timeline();});
@@ -51,13 +52,17 @@ $('#short').onchange=log;
 async function load(first){
   await slotReady;
   const user=$('#u').value,day=$('#d').value,me=++seq;if(!user||!day)return;
-  TB.error();TB.setParams({user,day,t:first?p0.t:''});
+  TB.error();const tf=$('#tf').value||'00:00',tt=$('#tt').value||'23:59';
+  TB.setParams({user,day,t:first?p0.t:'',from:tf==='00:00'?'':tf,to:tt==='23:59'?'':tt});
   const d0=new Date(day+'T00:00'),d1=new Date(d0);d1.setDate(d1.getDate()+1);
   try{
     const [ev,sh]=await Promise.all([TB.api('/api/timeline?'+TB.qs({user,day,tz:TB.tz})),
       TB.api('/api/screenshots?'+TB.qs({user,start:d0/1000,end:d1/1000,limit:2000}))]);
     if(me!==seq)return;
-    events=ev;shots=sh;sel=-1;
+    const ws=new Date(day+'T'+tf).getTime()/1000,we=new Date(day+'T'+tt).getTime()/1000+60;
+    if(we<=ws){TB.error('End time must be after start time.');return}
+    events=ev.filter(e=>e.ts+e.dur>ws&&e.ts<we).map(e=>{if(e.slot||(e.ts>=ws&&e.ts+e.dur<=we))return e;const a=Math.max(e.ts,ws),b=Math.min(e.ts+e.dur,we);return{...e,ts:a,dur:b-a}});
+    shots=sh.filter(x=>x.ts>=ws&&x.ts<we);sel=-1;
     $('#sub').textContent=TB.rangeLabel(day,day)+' · '+TB.dn(user)+TB.slotNote(ev.some(e=>e.slot)?ev.find(e=>e.slot)&&slotMin:0);
     const act=ev.filter(e=>!e.idle),active=act.reduce((a,e)=>a+e.dur,0),prod=act.filter(e=>e.label==='productive').reduce((a,e)=>a+e.dur,0);
     $('#kpis').innerHTML=TB.kpi('Active time',fmt(active),'<span class="dl mut">non-idle, in front</span>')+
