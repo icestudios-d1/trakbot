@@ -16,6 +16,11 @@ $root = Resolve-Path "$PSScriptRoot\.."
 $out = if ($OutDir) { $OutDir } else { "$root\server\dist" }
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
+# Single source of truth: stamp -Version into the agent so the exe reports the version the manifest advertises.
+$upd = "$root\agent\cyril_agent\update.py"
+$src = [IO.File]::ReadAllText($upd)
+[IO.File]::WriteAllText($upd, ($src -replace '(?m)^VERSION = "[^"]*"', "VERSION = `"$Version`""), (New-Object Text.UTF8Encoding $false))
+
 pip install --quiet pyinstaller pywin32 mss pillow
 pip install --quiet -r "$root\agent\requirements.txt"
 

@@ -78,7 +78,10 @@ def idle_seconds() -> float:
             lii = LII(ctypes.sizeof(LII), 0)
             if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
                 return 0.0  # no interactive desktop: report 'not idle' rather than 'idle since boot'
-            return (ctypes.windll.kernel32.GetTickCount() - lii.dwTime) / 1000.0
+            # GetTickCount's ctypes return type is a signed int: mask both sides to unsigned 32-bit so the
+            # subtraction stays right after the counter passes 2**31 ms (~24.8 days; Fast Startup keeps it running).
+            tick = ctypes.windll.kernel32.GetTickCount() & 0xFFFFFFFF
+            return ((tick - lii.dwTime) & 0xFFFFFFFF) / 1000.0
         if sys.platform == "darwin":
             out = subprocess.run(["ioreg", "-c", "IOHIDSystem"], capture_output=True, text=True, timeout=5).stdout
             for line in out.splitlines():

@@ -568,3 +568,10 @@ def test_installer_registers_the_recovery_check_and_uninstaller_removes_it():
     ins, un = c.get("/install.ps1").text, c.get("/uninstall.ps1").text
     assert "Cyril Recovery Check" in ins and "recovery-check.ps1" in ins and "failing_since" in ins and "3600" in ins
     assert "Cyril Recovery Check" in un
+
+
+def test_invalid_title_regex_is_rejected():
+    bad = {"kind": "title", "pattern": "([unclosed", "category": "X", "label": "neutral"}
+    assert c.post("/api/rules", headers=A, json=bad).status_code == 400
+    rid = c.post("/api/rules", headers=A, json={**bad, "pattern": "ok.*"}).json()["id"]
+    assert c.put(f"/api/rules/{rid}", headers=A, json=bad).status_code == 400

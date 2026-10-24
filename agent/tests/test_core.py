@@ -110,3 +110,18 @@ def test_read_build_stamp(tmp_path):
     assert read_build(str(cfg)) == "" and read_build(None) == ""
     (tmp_path / "build.txt").write_bytes(b"\xef\xbb\xbfabc1234def\n")   # tolerate a BOM / trailing newline
     assert read_build(str(cfg)) == "abc1234def"
+
+
+def test_idle_seconds_survives_tick_count_rollover(monkeypatch):
+    """GetTickCount comes back as a signed int from ctypes; past 2**31 ms (~24.8 days) the idle time must stay positive."""
+    import sys, types
+    from cyril_agent.platform import active_window as aw
+    tick = {"v": -2_000_000_000}   # what ctypes returns for 2_294_967_296 ms of uptime
+    k32 = types.SimpleNamespace(GetTickCount=lambda: tick["v"])
+    def last_input(ref):
+        ref._obj.dwTime = 2_294_967_296 - 5000   # last input 5 s ago
+        return 1
+    u32 = types.SimpleNamespace(GetLastInputInfo=last_input)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(aw.ctypes, "windll", types.SimpleNamespace(kernel32=k32, user32=u32), raising=False)
+    assert aw.idle_seconds() == 5.0

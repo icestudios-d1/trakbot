@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS events(
   ts REAL NOT NULL, dur REAL NOT NULL, app TEXT, title TEXT, url TEXT,
   domain TEXT, idle INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS ev_user_ts ON events(user, ts);
+CREATE INDEX IF NOT EXISTS ev_ts ON events(ts);   -- team-wide reports filter by time only
 CREATE TABLE IF NOT EXISTS rules(
   id INTEGER PRIMARY KEY, kind TEXT NOT NULL, pattern TEXT NOT NULL,
   category TEXT NOT NULL, label TEXT NOT NULL, alert INTEGER NOT NULL DEFAULT 0,
@@ -18,6 +19,7 @@ CREATE TABLE IF NOT EXISTS rules(
 CREATE TABLE IF NOT EXISTS alerts(
   id INTEGER PRIMARY KEY, ts REAL NOT NULL, user TEXT NOT NULL, device TEXT,
   rule_id INTEGER, category TEXT, app TEXT, title TEXT, url TEXT, acked INTEGER DEFAULT 0);
+CREATE INDEX IF NOT EXISTS al_ts ON alerts(ts);
 CREATE TABLE IF NOT EXISTS agent_commands(
   id INTEGER PRIMARY KEY, device TEXT NOT NULL, kind TEXT NOT NULL, created REAL NOT NULL, delivered REAL,
   status TEXT NOT NULL DEFAULT 'pending', screenshot_id INTEGER, error TEXT);
@@ -43,6 +45,7 @@ class DB:
         if d:
             os.makedirs(d, exist_ok=True)
         with self.conn() as c:
+            c.execute("PRAGMA journal_mode=WAL")   # persistent: readers no longer block the ingest writer
             c.executescript(SCHEMA)
             if c.execute("SELECT COUNT(*) FROM rules").fetchone()[0] == 0:
                 c.executemany(
@@ -54,6 +57,7 @@ class DB:
         with self._lock:
             c = sqlite3.connect(self.path)
             c.row_factory = sqlite3.Row
+            c.execute("PRAGMA synchronous=NORMAL")   # per-connection; safe with WAL
             try:
                 yield c
                 c.commit()

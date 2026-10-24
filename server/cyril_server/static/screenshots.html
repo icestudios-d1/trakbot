@@ -22,13 +22,14 @@ const parse=(v,endOfDay)=>!v?null:p.exact?new Date(v+'Z'):new Date(v+(v.length==
 const now=new Date();
 $('#from').value=local(parse(p.start,false)||new Date(now-864e5));$('#to').value=local(parse(p.end,true)||new Date(+now+6e4));
 TB.users().then(u=>{$('#u').innerHTML+=u.map(x=>`<option value="${esc(x.user)}">${esc(TB.dn(x.user))}</option>`).join('');if(p.user){$('#u').value=p.user;load()}}).catch(TB.error);
+let urls=[];
 async function load(){
-  TB.error();if(!$('#u').value){$('#shots').innerHTML='<span class="mut">Pick an employee first.</span>';return}
+  TB.error();urls.forEach(URL.revokeObjectURL);urls=[];if(!$('#u').value){$('#shots').innerHTML='<span class="mut">Pick an employee first.</span>';return}
   try{
     const rows=await TB.api('/api/screenshots?'+TB.qs({user:$('#u').value,start:new Date($('#from').value)/1000,end:new Date($('#to').value)/1000}));
     $('#count').textContent=rows.length+' screenshot(s)';
     $('#shots').innerHTML=rows.map(r=>`<div class="shot" data-id="${r.id}"><label><input type="checkbox" class="pick" aria-label="Select"><img alt="Screenshot of ${esc(r.name||r.app)}"></label><div class="meta">${TB.when(r.ts)} · ${esc(r.name||r.app)}<br>${esc((r.title||'').slice(0,60))}</div></div>`).join('')||'<span class="mut">No screenshots in this range.</span>';
-    for(const d of $('#shots').querySelectorAll('.shot')){TB.blobUrl(`/api/screenshots/${d.dataset.id}/image`).then(u=>{const i=d.querySelector('img');i.src=u;i.style.cursor='zoom-in';i.onclick=e=>{e.preventDefault();window.open(u)}}).catch(()=>{})}
+    for(const d of $('#shots').querySelectorAll('.shot')){TB.blobUrl(`/api/screenshots/${d.dataset.id}/image`).then(u=>{urls.push(u);const i=d.querySelector('img');i.src=u;i.style.cursor='zoom-in';i.onclick=e=>{e.preventDefault();window.open(u)}}).catch(()=>{})}
   }catch(e){TB.error(e)}
 }
 const fmtS=n=>n<60?n+' seconds':n%60?(n/60)+' minutes':(n/60)+(n===60?' minute':' minutes');

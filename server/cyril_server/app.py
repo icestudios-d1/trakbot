@@ -489,6 +489,14 @@ class RuleIn(BaseModel):
     priority: int = 0
 
 
+def _check_rule(r: RuleIn):
+    if r.kind == "title":
+        try:
+            re.compile(r.pattern)
+        except re.error as e:
+            raise HTTPException(400, f"Invalid regular expression: {e}")
+
+
 @app.get("/api/rules", dependencies=[Depends(admin)])
 def list_rules():
     return db.rules()
@@ -496,6 +504,7 @@ def list_rules():
 
 @app.post("/api/rules", dependencies=[Depends(admin)])
 def add_rule(r: RuleIn):
+    _check_rule(r)
     with db.conn() as c:
         cur = c.execute("INSERT INTO rules(kind,pattern,category,label,alert,priority) VALUES(?,?,?,?,?,?)",
                         (r.kind, r.pattern, r.category, r.label, int(r.alert), r.priority))
@@ -504,6 +513,7 @@ def add_rule(r: RuleIn):
 
 @app.put("/api/rules/{rid}", dependencies=[Depends(admin)])
 def edit_rule(rid: int, r: RuleIn):
+    _check_rule(r)
     with db.conn() as c:
         cur = c.execute("UPDATE rules SET kind=?,pattern=?,category=?,label=?,alert=?,priority=? WHERE id=?",
                         (r.kind, r.pattern, r.category, r.label, int(r.alert), r.priority, rid))
