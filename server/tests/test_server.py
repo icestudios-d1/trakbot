@@ -395,7 +395,7 @@ def test_screenshot_intervals_are_a_server_setting_agents_pick_up():
     assert r["report_interval"] == 0                                     # untouched settings stay put
     assert c.put("/api/settings", headers=A, json={"screenshot_every": 7}).status_code == 400
     assert c.get("/api/agent/poll", params={"device": "PC-X"}).status_code == 401
-    assert c.get("/api/agent/poll", params={"device": "PC-X"}, headers=K).json()["config"] == {"screenshot_every": 30, "screenshot_stable_every": 300}
+    assert c.get("/api/agent/poll", params={"device": "PC-X"}, headers=K).json()["config"] == {"screenshot_every": 30, "screenshot_stable_every": 300, "oms_origins": []}
     c.put("/api/settings", headers=A, json={"screenshot_every": 60, "screenshot_stable_every": 180})
 
 
@@ -693,3 +693,56 @@ def test_thumbnails_are_built_on_the_server_and_cleaned_up():
     c.post("/api/screenshots/delete", headers=A, json={"ids": [sid]})
     assert srv._thumb_key(path) not in srv.store.objects and path not in srv.store.objects
     assert c.get(f"/api/screenshots/{sid}/thumb", headers=A).status_code == 404
+
+
+# ------------------------------------------------------------------ sealed uploads
+def _agent_seal():
+    import sys as _s
+    _s.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "agent"))
+    from cyril_agent.seal import make_sealer
+    import cyril_server.app as srv
+    return make_sealer(srv.opener.public_b64), srv
+
+
+def test_sealed_events_and_screenshots_are_accepted_and_plain_ones_can_be_refused():
+    seal, srv = _agent_seal()
+    now = time.time()
+    ev = {"ts": now, "dur": 30, "app": "Photoshop.exe", "title": "sealed-title"}
+    r = c.post("/api/ingest", headers=K, json={"user": "sealu", "device": "PC-SEAL", "events": [seal(ev), seal({**ev, "ts": now + 40})]})
+    assert r.status_code == 200 and r.json()["stored"] == 2
+    assert "enc" in seal(ev) and "sealed-title" not in json.dumps(seal(ev))
+    rows = c.get("/api/timeline", headers=A, params={"user": "sealu", "day": time.strftime("%Y-%m-%d")}).json()
+    assert any(x["title"] == "sealed-title" for x in rows)
+    # a damaged / foreign envelope is 400 (the agent then discards just that item); a bad event is still 422
+    assert c.post("/api/ingest", headers=K, json={"user": "u", "device": "d", "events": [{"enc": {"v": 1, "k": "AAAA", "n": "AAAA", "c": "AAAA"}}]}).status_code == 400
+    assert c.post("/api/ingest", headers=K, json={"user": "u", "device": "d", "events": [seal({"ts": 1, "dur": 99999})]}).status_code == 422
+    # screenshots: who/when in the clear, the image/title/app inside the seal
+    raw = _jpeg(800, 500)
+    body = {"user": "sealu", "device": "PC-SEAL", "ts": now, **seal({"app": "Figma.exe", "title": "sealed-shot", "image_b64": base64.b64encode(raw).decode()})}
+    assert "image_b64" not in body and "sealed-shot" not in json.dumps(body)
+    sid = c.post("/api/screenshot", headers=K, json=body).json()["id"]
+    assert c.get(f"/api/screenshots/{sid}/image", headers=A).content == raw
+    shot = [x for x in c.get("/api/screenshots", headers=A, params={"user": "sealu", "start": now - 5, "end": now + 5}).json() if x["id"] == sid][0]
+    assert shot["title"] == "sealed-shot" and shot["app"] == "Figma.exe"
+    # old agents (plain) still work until the admin sets CYRIL_REQUIRE_SEALED
+    assert c.post("/api/ingest", headers=K, json={"user": "u", "device": "d", "events": [ev]}).status_code == 200
+    srv.REQUIRE_SEALED = True
+    try:
+        assert c.post("/api/ingest", headers=K, json={"user": "u", "device": "d", "events": [ev]}).status_code == 403
+        assert c.post("/api/ingest", headers=K, json={"user": "u", "device": "d", "events": [seal(ev)]}).status_code == 200
+    finally:
+        srv.REQUIRE_SEALED = False
+
+
+def test_installers_carry_only_the_public_key_and_poll_lists_oms_origins():
+    import cyril_server.app as srv
+    ps = c.get("/install.ps1", params={"key": "agent"}).text
+    sh = c.get("/install.sh", params={"key": "agent"}).text
+    assert srv.opener.public_b64 in ps and srv.opener.public_b64 in sh and "{{" not in ps + sh
+    key_file = open(os.path.join(os.path.dirname(os.environ["CYRIL_DB"]), "payload.key")).read().strip()
+    assert key_file not in ps + sh                                    # the private key never leaves the server
+    srv.OMS_ORIGINS[:] = ["https://oms.example.com"]
+    try:
+        assert c.get("/api/agent/poll", params={"device": "PC-OMS"}, headers=K).json()["config"]["oms_origins"] == ["https://oms.example.com"]
+    finally:
+        srv.OMS_ORIGINS[:] = []

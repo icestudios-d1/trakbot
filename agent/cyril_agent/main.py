@@ -19,9 +19,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from .core import (Aggregator, ShotSpool, Spool, browser_url, classify_status, data_dir, deliver_events, is_chromium_browser,
                    is_private, load_config, normalize_url, read_build, sanitize_event, setup_logging, write_health)
 from .platform.active_window import get_active_window, idle_seconds
+from .seal import make_sealer
 from .shots import ScreenshotThrottle, capture_jpeg_b64
 from .update import VERSION, check_and_apply
 
+SEAL = lambda obj: obj   # noqa: E731  set in main(): seals everything that is queued or sent (see seal.py)
+OMS_ORIGINS: set = set()   # web origins allowed to read the "OMS Ping" answer (from the server and config.json)
+IDENT = {"user": "", "device": ""}
 ext_report = None  # latest {"url","title","at"} from the browser extension
 log = logging.getLogger("cyril-agent")
 HEALTH_PATH: str | None = None   # set in main(): read by the machine-level updater, which fetches a fix if this stays red
@@ -65,23 +69,82 @@ def device_id() -> str:
     return platform.node()  # fallback: hostname
 
 
+EXT_SCHEMES = ("chrome-extension://", "moz-extension://", "safari-web-extension://")
+OMS_PING_PATH = "/oms/ping"
+
+
 class ExtHandler(BaseHTTPRequestHandler):
+    """The agent's only local door, bound to 127.0.0.1. Two things come in:
+    - POST /          the browser extension reporting the active tab's address. ONLY a browser extension may do this:
+                      a request carrying a web page's Origin is refused, so no website can feed the agent a made-up
+                      URL (this used to answer `Access-Control-Allow-Origin: *`, i.e. any page could).
+    - GET /oms/ping   "OMS Ping": lets the company's sign-in site ask 'is Cyril on this computer?'. Only origins the
+                      admin listed (server setting CYRIL_OMS_ORIGINS, or "oms_origins" in config.json) can read the answer.
+    Requests whose Host is not 127.0.0.1/localhost are refused (DNS-rebinding guard)."""
+
+    def _origin(self) -> str:
+        return (self.headers.get("Origin") or "").strip()
+
+    def _host_ok(self) -> bool:
+        return self.headers.get("Host", "").rsplit(":", 1)[0].strip("[]").lower() in ("127.0.0.1", "localhost")
+
+    def _send(self, status: int, body: dict | None = None, origin: str = "") -> None:
+        data = json.dumps(body).encode() if body is not None else b""
+        self.send_response(status)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Vary", "Origin")
+        if origin:   # only for an origin the admin allowed: the browser then lets that page read the answer
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Private-Network", "true")
+        if body is not None:
+            self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if data:
+            self.wfile.write(data)
+
     def do_POST(self):
         global ext_report
+        o = self._origin()
+        if not self._host_ok() or (o and not o.startswith(EXT_SCHEMES)):
+            return self._send(403)
+        if not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
+            return self._send(415)
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)))[:8192])
             ext_report = {"url": str(body["url"])[:2048], "title": str(body.get("title", ""))[:512], "at": time.time()}
-            self.send_response(204)
         except Exception:
-            self.send_response(400)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
+            return self._send(400)
+        self._send(204)
 
     def do_OPTIONS(self):
+        o = self._origin()
+        allowed = self._host_ok() and o in OMS_ORIGINS and self.path.split("?")[0] == OMS_PING_PATH
         self.send_response(204)
-        for h, v in (("Allow-Origin", "*"), ("Allow-Headers", "Content-Type"), ("Allow-Methods", "POST")):
-            self.send_header("Access-Control-" + h, v)
+        if allowed:
+            for h, v in (("Allow-Origin", o), ("Allow-Methods", "GET, OPTIONS"), ("Allow-Headers", "Content-Type"),
+                         ("Allow-Private-Network", "true"), ("Max-Age", "600")):
+                self.send_header("Access-Control-" + h, v)
+        self.send_header("Vary", "Origin")
+        self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def do_GET(self):
+        path, _, query = self.path.partition("?")
+        if not self._host_ok():
+            return self._send(403)
+        if path != OMS_PING_PATH:
+            return self._send(404)
+        o = self._origin()
+        if o and o not in OMS_ORIGINS:      # some other website: it learns nothing (no CORS header, minimal body)
+            return self._send(200, {"ok": True, "app": "cyril"})
+        nonce = ""
+        for part in query.split("&"):
+            if part.startswith("nonce="):
+                nonce = part[6:70]
+        self._send(200, {"ok": True, "app": "cyril", "ping": "pong", "version": VERSION, "build": STATUS.get("build") or "",
+                         "platform": STATUS.get("platform"), "device": IDENT["device"], "user": IDENT["user"],
+                         "sealed": bool(STATUS.get("sealed")), "time": time.time(), "nonce": nonce}, origin=o)
 
     def log_message(self, *a):
         pass
@@ -130,7 +193,7 @@ def flush_events(server: str, key: str, user: str, device: str, agg: Aggregator,
     """Queue what was collected, then upload as much of the queue as the server takes. Never raises: a problem here
     must not stop the sampling loop. Returns the outcome label so the caller logs changes, not every minute."""
     try:
-        fresh = [e for e in (sanitize_event(e) for e in agg.drain(keep_open=False)) if e]
+        fresh = [SEAL(e) for e in (sanitize_event(e) for e in agg.drain(keep_open=False)) if e]   # sealed BEFORE it touches the disk
         spool.push(fresh)
         res = deliver_events(spool, lambda evs: send_events(server, key, user, device, evs))
     except Exception as e:   # disk full, permissions, ...
@@ -184,7 +247,8 @@ def send_screenshot(server: str, key: str, user: str, device: str, ts: float, ap
             _post(server, "/api/agent/command-result", key,
                   {"device": device, "id": command_id, "ok": False, "error": f"capture failed: {e!r}"[:400]})
         return
-    payload = {"user": user, "device": device, "ts": ts, "app": app, "title": title, "image_b64": img}
+    # who/when stay readable; the picture, the window title and the app are sealed (ciphertext in the queue and on the wire)
+    payload = {"user": user, "device": device, "ts": ts, **SEAL({"app": app, "title": title, "image_b64": img})}
     if command_id is not None:
         payload["command_id"] = command_id
     status = _post_status(server, "/api/screenshot", key, payload)
@@ -216,6 +280,9 @@ def command_loop(server: str, key: str, user: str, device: str, throttle: Screen
             cfg = data.get("config") or {}
             if cfg.get("screenshot_every"):
                 throttle.every = float(cfg["screenshot_every"])
+            if "oms_origins" in cfg:
+                OMS_ORIGINS.clear()
+                OMS_ORIGINS.update(o for o in cfg["oms_origins"] if isinstance(o, str))
             if cfg.get("screenshot_stable_every"):
                 throttle.stable_every = float(cfg["screenshot_stable_every"])
             if SHOT_SPOOL is not None and SHOT_SPOOL.count():   # the server answered: resend what is waiting
@@ -328,6 +395,13 @@ def main():
                 import uiautomation  # noqa: F401
             except Exception:
                 sys.exit(3)
+        try:   # the sealing library must be inside the build, or every upload would silently go unsealed
+            from .seal import seal
+            from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+            from cryptography.hazmat.primitives import serialization as _s
+            seal({"probe": 1}, base64.b64encode(X25519PrivateKey.generate().public_key().public_bytes(_s.Encoding.Raw, _s.PublicFormat.Raw)).decode())
+        except Exception:
+            sys.exit(3)
         return  # reaching here means every import above worked: that is all a build check needs
 
     cfg = load_config(a.config)
@@ -335,6 +409,11 @@ def main():
     key = cfg.get("key", a.key)
     user = cfg.get("user", a.user)
     device = cfg.get("device") or a.device or device_id()
+    global SEAL
+    SEAL = make_sealer(cfg.get("payload_key"))
+    STATUS["sealed"] = SEAL({"x": 1}) != {"x": 1}
+    IDENT.update(user=user, device=device)
+    OMS_ORIGINS.update(o for o in cfg.get("oms_origins", []) if isinstance(o, str))
 
     ddir = data_dir(a.config)
     spool_path = a.spool or os.path.join(ddir, "spool.jsonl")

@@ -19,10 +19,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from .classify import LABELS, make_classifier, matching_rule
 from .db import DB
@@ -30,6 +30,7 @@ from .default_rules import STUDIO_RULES
 from .reports import SLOT_CHOICES, aggregate, clip_hours, in_work_hours, previous_span, slotize, span, totals
 from .names import display_name, site_name
 from .objstore import ObjectStoreError, S3Store
+from .payloadcrypto import BadEnvelope, Opener
 
 ADMIN_TOKEN = os.environ.get("CYRIL_ADMIN_TOKEN", "")
 AGENT_KEY = os.environ.get("CYRIL_AGENT_KEY", "")
@@ -37,11 +38,18 @@ DB_PATH = os.environ.get("CYRIL_DB", "data/cyril.db")
 WORK_START = int(os.environ.get("CYRIL_WORK_START", "8"))    # the dashboard's "Work" view: local hours [start, end)
 WORK_END = int(os.environ.get("CYRIL_WORK_END", "22"))
 SESSION_COOKIE = "cyril_session"
+# Web origins (e.g. https://oms.icestudios.in) whose pages may read the agent's "OMS Ping" answer on 127.0.0.1:7077.
+OMS_ORIGINS = [o.strip().rstrip("/") for o in os.environ.get("CYRIL_OMS_ORIGINS", "").split(",") if o.strip()]
+# Agents seal what they collect to this server's public key (agent/cyril_agent/seal.py): the queue on the PC and the
+# bytes on the wire are ciphertext that only this process can open. Set CYRIL_REQUIRE_SEALED=1 once every PC has
+# updated, to refuse unsealed (old-style) uploads.
+REQUIRE_SEALED = os.environ.get("CYRIL_REQUIRE_SEALED", "").lower() in ("1", "true", "yes")
 MAX_EVENT_SECONDS = 3600
 MAX_SHOT_B64 = 3_000_000  # ~2.2MB decoded; agent targets far smaller JPEGs
 
 app = FastAPI(title="Cyril")
 db = DB(DB_PATH)
+opener = Opener(os.path.join(os.path.dirname(DB_PATH) or ".", "payload.key"))
 STATIC = Path(__file__).parent / "static"
 class _Static(StaticFiles):
     """StaticFiles with an explicit Cache-Control. Without one, browsers and CDNs (Cloudflare caches .exe by
@@ -123,7 +131,27 @@ class Event(BaseModel):
 class IngestBatch(BaseModel):
     user: str = Field(min_length=1, max_length=128)
     device: str = Field(min_length=1, max_length=128)
-    events: list[Event] = Field(max_length=2000)
+    events: list[dict] = Field(max_length=2000)    # each is an event, or {"enc": ...} sealed by the agent
+
+
+def _unseal(raw: dict) -> dict:
+    """The plain dict for an upload item: opened if sealed (400 if it will not open: the agent then discards just
+    that item), passed through if a pre-sealing agent sent it plain (403 when REQUIRE_SEALED forbids that)."""
+    if "enc" in raw:
+        try:
+            return opener.open(raw)
+        except BadEnvelope as e:
+            raise HTTPException(400, str(e))
+    if REQUIRE_SEALED:
+        raise HTTPException(403, "this server only accepts sealed uploads: update the agent")
+    return raw
+
+
+def _validated(model, data: dict):
+    try:
+        return model.model_validate(data)
+    except ValidationError as e:
+        raise HTTPException(422, e.errors(include_url=False, include_context=False, include_input=False))
 
 
 def domain_of(url: str) -> str:
@@ -144,13 +172,15 @@ def _clean(v: str, limit: int) -> str:
 
 
 @app.post("/api/ingest", dependencies=[Depends(agent)])
-def ingest(b: IngestBatch):
+def ingest(batch: dict = Body(...)):
     """One odd event must never cost a PC its whole day: an event that cannot be stored is skipped and counted, and
     the rest of the batch is kept (the agent only sees 2xx and moves on)."""
+    b = _validated(IngestBatch, batch)
+    events = [_validated(Event, _unseal(raw)) for raw in b.events]
     rules = db.rules()
     alerts = stored = skipped = 0
     with db.conn() as c:
-        for e in b.events:
+        for e in events:
             if not math.isfinite(e.ts) or e.ts <= 0 or not math.isfinite(e.dur):
                 skipped += 1
                 continue
@@ -852,7 +882,10 @@ class ScreenshotIn(BaseModel):
 
 
 @app.post("/api/screenshot", dependencies=[Depends(agent)])
-def upload_screenshot(s: ScreenshotIn):
+def upload_screenshot(body: dict = Body(...)):
+    # who/when/which request stay readable; what was on screen (image, window title, app) is inside the seal
+    fields = {**{k: v for k, v in body.items() if k != "enc"}, **_unseal(body)} if "enc" in body else _unseal(body)
+    s = _validated(ScreenshotIn, fields)
     try:
         data = base64.b64decode(s.image_b64, validate=True)
     except Exception:
@@ -1080,7 +1113,7 @@ def install_script(request: Request, key: str | None = None):
     if key is not None and not (AGENT_KEY and hmac.compare_digest(key, AGENT_KEY)):
         raise HTTPException(401, "wrong agent key in the install URL")
     text = (WINSCRIPTS / "install.ps1").read_text(encoding="utf-8")
-    text = text.replace("{{SERVER_URL}}", _ps_quote(_base_url(request))).replace("{{AGENT_KEY}}", _ps_quote(key or ""))
+    text = text.replace("{{SERVER_URL}}", _ps_quote(_base_url(request))).replace("{{AGENT_KEY}}", _ps_quote(key or "")).replace("{{PAYLOAD_KEY}}", opener.public_b64)
     return PlainTextResponse(text, headers={"Cache-Control": "no-store"})
 
 
@@ -1102,7 +1135,7 @@ def install_script_mac(request: Request, key: str | None = None):
     if key is not None and not (AGENT_KEY and hmac.compare_digest(key, AGENT_KEY)):
         raise HTTPException(401, "wrong agent key in the install URL")
     text = (MACSCRIPTS / "install.sh").read_text(encoding="utf-8")
-    text = text.replace("{{SERVER_URL}}", _sh_quote(_base_url(request))).replace("{{AGENT_KEY}}", _sh_quote(key or ""))
+    text = text.replace("{{SERVER_URL}}", _sh_quote(_base_url(request))).replace("{{AGENT_KEY}}", _sh_quote(key or "")).replace("{{PAYLOAD_KEY}}", opener.public_b64)
     return PlainTextResponse(text, headers={"Cache-Control": "no-store"})
 
 
@@ -1137,7 +1170,7 @@ def install_info(request: Request):
             manifest = json.loads((DIST_DIR / "manifest.json").read_text(encoding="utf-8-sig"))
         except ValueError:
             pass
-    return {"server_url": base, **_agent_one_liners(base, AGENT_KEY),
+    return {"server_url": base, "sealed_uploads": True, "require_sealed": REQUIRE_SEALED, **_agent_one_liners(base, AGENT_KEY),
             "exe_published": (DIST_DIR / "cyril.exe").is_file(),
             "mac_published": {a: (DIST_DIR / f"manifest-mac-{a}.json").is_file() and (DIST_DIR / f"cyril-mac-{a}").is_file()
                               for a in MAC_ARCHES},
@@ -1205,7 +1238,8 @@ def agent_poll(device: str = Query(min_length=1, max_length=128)):
                          (device, now - COMMAND_TTL)).fetchall()
         for r in rows:
             c.execute("UPDATE agent_commands SET status='delivered', delivered=? WHERE id=?", (now, r["id"]))
-    return {"commands": [{"id": r["id"], "kind": r["kind"]} for r in rows], "config": _screenshot_settings()}
+    return {"commands": [{"id": r["id"], "kind": r["kind"]} for r in rows],
+            "config": {**_screenshot_settings(), "oms_origins": OMS_ORIGINS}}
 
 
 class CommandResultIn(BaseModel):

@@ -20,6 +20,7 @@ set -euo pipefail
 
 SERVER_URL='{{SERVER_URL}}'
 AGENT_KEY='{{AGENT_KEY}}'
+PAYLOAD_KEY='{{PAYLOAD_KEY}}'   # the server's PUBLIC key: the agent seals everything to it and cannot read it back
 USER_NAME=""
 UNATTENDED=0
 SILENT=0
@@ -117,6 +118,7 @@ esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 {
   printf '{\n  "server": "%s",\n  "key": "%s"' "$(esc "$SERVER_URL")" "$(esc "$AGENT_KEY")"
   if [ -n "$USER_NAME" ]; then printf ',\n  "user": "%s"' "$(esc "$USER_NAME")"; fi
+  case "$PAYLOAD_KEY" in ""|*[{]*) ;; *) printf ',\n  "payload_key": "%s"' "$(esc "$PAYLOAD_KEY")" ;; esac
   printf '\n}\n'
 } > "$CFG"
 if [ -n "$NEW_BUILD_STAMP" ]; then printf '%s' "$NEW_BUILD_STAMP" > "$APPDIR/build.txt"; fi

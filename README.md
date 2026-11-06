@@ -200,6 +200,16 @@ the agent's code changed). PCs and Macs then update themselves from the server. 
   beside the original (`thumbs/...`); galleries and the filmstrip load only those, lazily. Older screenshots get theirs
   the first time they are looked at. Full-size loads only for the one you open.
 
+### Sealed uploads and OMS Ping
+
+- Agents encrypt every event and every screenshot's image/title/app to the server's **public** key before queueing or sending
+  (`agent/cyril_agent/seal.py`), so the on-disk queue and the network traffic are unreadable on the PC. Only the server opens
+  them (`payload.key` next to the database, back it up). Old agents keep working until updated; *Install agents* shows
+  🔒 sealed per PC, and `CYRIL_REQUIRE_SEALED=1` then refuses unsealed uploads.
+- `GET http://127.0.0.1:7077/oms/ping` lets the sign-in site check that Cyril is installed. Only origins listed in
+  `CYRIL_OMS_ORIGINS` can read the answer. The same local port no longer accepts URL reports from web pages (extension only).
+  Details: `docs/PRODUCTION_NOTE.md` §6 and §7.
+
 ### Silent install
 
 Windows: add `-Silent` after the one-liner (`... ))) -Silent`); Mac: `... | sudo bash -s -- --silent`. No step list and no

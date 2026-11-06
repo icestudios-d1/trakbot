@@ -24,6 +24,7 @@ task, running as SYSTEM, re-runs this installer daily so new builds reach every 
 param(
     [string]$ServerUrl = '{{SERVER_URL}}',
     [string]$AgentKey = '{{AGENT_KEY}}',
+    [string]$PayloadKey = '{{PAYLOAD_KEY}}',   # the server's PUBLIC key: the agent seals everything to it and cannot read it back
     [string]$User = $null,
     [switch]$Unattended,
     [switch]$Silent
@@ -125,6 +126,7 @@ if ($upToDate) {
 # The agent runs as the logged-in user, so it must be able to READ its config (server + key).
 # Only admins and SYSTEM can change it. The data folder (log + spool) is the one place users can write.
 $cfg = @{ server = $ServerUrl; key = $AgentKey }
+if ("$PayloadKey".Trim() -and "$PayloadKey" -notmatch '[{]') { $cfg.payload_key = "$PayloadKey".Trim() }
 if ($User) { $cfg.user = $User }
 elseif (Test-Path $cfgFile) {
     try { $old = Get-Content $cfgFile -Raw | ConvertFrom-Json; if ($old.user) { $cfg.user = $old.user } } catch { }

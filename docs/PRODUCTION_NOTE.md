@@ -88,6 +88,9 @@ curl http://localhost:8000/api/health      # {"ok":true,...,"build":"xxxxxxxx"}
 | `CYRIL_S3_SECRET_KEY` | yes | SeaweedFS secret; any characters. |
 | `CYRIL_PUBLIC_URL` | recommended | Address agents are told to use, e.g. `https://cyril.icestudios.in`. If empty the server uses whatever address the browser used. |
 | `CYRIL_WORK_START` / `CYRIL_WORK_END` | no | Hours of the dashboard's **Work** view (default `8` and `22`, viewer's local time). |
+| `CYRIL_REQUIRE_SEALED` | no | `1` = refuse uploads that are not sealed (old agents). Turn on once *Install agents* shows 🔒 sealed on every PC. |
+| `CYRIL_PAYLOAD_KEY` | no | Base64 of the server's 32-byte private payload key. Normally leave empty: the server creates `payload.key` next to the database on first start. |
+| `CYRIL_OMS_ORIGINS` | no | Comma-separated web origins allowed to read the agent's **OMS Ping** (§7), e.g. `https://oms.icestudios.in`. Reaches agents through their 10-second poll. |
 | `CYRIL_CACHE_TTL` | no | Seconds the Overview/Employee report is cached (default `30`; `0` disables). |
 
 Inside the container, compose also sets `CYRIL_DB=/data/cyril.db`, `CYRIL_DIST_DIR=/dist`, `CYRIL_S3_ENDPOINT=seaweedfs:8333`, `CYRIL_S3_BUCKET=cyril-screenshots`.
@@ -119,7 +122,7 @@ Rebuild is required whenever `requirements.txt` changes (this release adds **Pil
 
 ### 2.6 Backups and retention (**Confirm**)
 
-Nothing in the repository backs anything up. At minimum back up the two Docker volumes (SQLite file and SeaweedFS data) and `server/.env`.
+Nothing in the repository backs anything up. At minimum back up the two Docker volumes (SQLite file and SeaweedFS data), `server/.env`, and **`payload.key`** (it lives in the `cyril_db` volume, next to the database; without it nothing still queued on PCs can be opened).
 Retention: screenshots can be bulk-deleted by date range from the dashboard; **events, titles, URLs and alerts have no automatic retention limit.**
 Encrypt the server's disk (BitLocker/LUKS): the database and screenshots are not encrypted at rest by the application.
 
@@ -237,43 +240,59 @@ What the installer does (Windows; the Mac one mirrors it): checks the server, re
 
 **What is protected.** Dashboard and data behind the admin token; screenshots only through the authenticated server; agents can only submit; SeaweedFS has no exposed port; agent downloads are checksum-verified and self-tested before install; every update is logged (`update_log`, local `~/.cyril-update.log`).
 
-**Encryption — the honest picture**
+**Encryption — how payloads are protected (sealed uploads)**
+
+The server owns an X25519 key pair (`payload.key`). The installer writes only the **public** key into each PC's admin-only `config.json`.
+The agent seals every event, and every screenshot's image / window title / app name, to that public key (fresh ephemeral key per item,
+HKDF-SHA256, AES-256-GCM; `agent/cyril_agent/seal.py`) **before** it touches the disk or the network. A public key can encrypt but cannot
+decrypt, so the agent itself cannot read what it queued. Result:
 
 | Where | Status |
 |---|---|
-| Agent → server | **TLS only if the address is `https://`.** Events and screenshots (base64 JPEG inside JSON) are encrypted by HTTPS in transit; there is **no additional application-level payload encryption.** If a Cloudflare-type proxy terminates TLS, that proxy sees plaintext. On a plain-HTTP LAN address nothing is encrypted. |
-| Server at rest | SQLite and SeaweedFS data are **not encrypted by the application**; use full-disk encryption on the server. |
-| On the employee's PC | The agent runs **as the employee**. They can read `ProgramData\Cyril\config.json` (server address + agent key, read-only for them), and the queue under `data\` (`spool.jsonl` events, `shots-pending\*.json` screenshots) in clear. With local admin rights they can also install a proxy root certificate and read the HTTPS traffic of the agent (it trusts the OS certificate store; on Mac it explicitly uses the system store). |
-| Cookie / token | Browser holds the admin token in `localStorage`/`sessionStorage` (by the "keep me signed in" choice) plus the HttpOnly cookie. |
+| Queue on the PC (`spool.jsonl`, `shots-pending\*.json`) | **Ciphertext.** An employee (even a local admin) sees only who/when plus encrypted blobs. Nothing readable is stored on the PC. |
+| On the wire | Sealed items inside TLS. A proxy or a user-installed root certificate shows ciphertext, not apps, titles, URLs or pictures. Still readable: login name, device id, and a screenshot's capture time. |
+| Server | Opens each item on arrival (private key never leaves `payload.key` / `CYRIL_PAYLOAD_KEY`) and stores it as before. The database and SeaweedFS are **not encrypted at rest** by the application; use full-disk encryption on the server. |
+| Old agents | Keep sending plain until updated (daily ~03:00). *Install agents* shows 🔒 sealed / ⚠ not sealed yet per PC. Then set `CYRIL_REQUIRE_SEALED=1`. |
+| Browser | The admin token sits in `localStorage`/`sessionStorage` (by the "keep me signed in" choice) plus the HttpOnly cookie. |
+
+Limits to be honest about: the plaintext necessarily exists in the agent's memory for a moment before sealing, so someone with local admin
+rights who attaches a debugger to the process, or replaces the binary, can still capture it; a local admin can also replace the public key in
+`config.json` (this only affects what is queued *afterwards*, and the server will fail to open it, which shows up as 400s). The agent key
+is still readable from `config.json` (it allows *submitting* only). Sealing removes the practical routes (reading the queue, reading the
+traffic); the stronger step is a SYSTEM service owning the agent's work (item 3 below).
 
 **What would actually raise the bar** (not built; in order of value for effort):
 1. Always `https://`, with HSTS on the proxy; refuse plain HTTP outside a closed LAN.
-2. Standard employees without local admin (removes proxy-certificate tricks and tamper with the tasks).
-3. Certificate/public-key **pinning** in the agent for the production host (defeats user-installed root CAs; needs a pin rotation plan — pin a long-lived key you control, plus a backup pin).
-4. **Split the agent**: a small SYSTEM service owns the key, the spool and the upload; the user-session part only captures and hands over through a named pipe. This is the only way the employee cannot read the queue or the key, because anything the user's own process can read, the user can read.
-5. Per-device keys (revocable) instead of one shared agent key.
-6. Envelope-encrypt payloads to a server public key — protects against network/proxy observers (e.g. the CDN), **not** against the person at the machine, where the plaintext exists.
+2. Standard employees without local admin (removes debugger/replace-the-binary tricks and tamper with the tasks).
+3. **Split the agent**: a small SYSTEM service owns the agent key and the upload; the user-session part only captures and hands over through a named pipe. Then even the key and the process memory are out of the employee's reach.
+4. Per-device keys (revocable) instead of one shared agent key.
+5. Certificate pinning in the agent (only matters now for hiding who-reports-when metadata from a user-installed proxy).
 What cannot be hidden: the employee can always see their own screen, and a determined local administrator can observe anything a process on their machine does. Cyril deliberately does not hide itself (visible in Task Manager and Task Scheduler); see README "What we deliberately didn't build".
 
 **Other items to be aware of**
-- The agent's local listener `127.0.0.1:7077` (used by the browser extension) answers `Access-Control-Allow-Origin: *` on `POST`, so any web page open on that PC could post a fake "current URL" to the agent. Restrict it to the extension's origin before building anything else on that port.
+- The agent's local listener `127.0.0.1:7077` **no longer accepts reports from web pages**: `POST /` is refused unless it comes from a browser extension (or has no Origin), must be `application/json`, and the Host must be `127.0.0.1`/`localhost` (DNS-rebinding guard); it sends no `Access-Control-Allow-Origin`. A website can therefore no longer feed the agent a made-up URL. (Another program running on the PC as the same user still can; that is inside the trust boundary.)
 - `seaweedfs` image is `chrislusf/seaweedfs:latest` — pin a tag before production (comment in `docker-compose.yml`).
 - Unsigned agent binaries (see §4.1). Single admin token. No retention on events/URLs/titles. Legal/consent: the README's *Scope & compliance* section applies; keep the employee notice and agreement in step with what is collected.
 
 ---
 
-## 7. Detecting from a website whether Cyril is installed on the visitor's machine
+## 7. OMS Ping — letting the sign-in site check that Cyril is on the PC
 
-*(Design note — not built.)* A web page cannot see installed programs; the agent has to answer. Options, from simplest to strongest:
+The agent already listens on `127.0.0.1:7077`. It now answers **`GET http://127.0.0.1:7077/oms/ping`**:
 
-1. **Server-side correlation (no agent change).** The sign-in site's back end asks the Cyril server "has a device reported for login X in the last N minutes?" (new admin/service endpoint). Weak: it proves *some* machine with that login reported, not the one in front of the browser.
-2. **Browser extension handshake.** The existing extension already talks to the agent. Add a content script for the sign-in origin that posts `{cyril: true, version}` to the page (`window.postMessage`). Works in every browser where the extension is deployed (Chrome/Edge policy); no CORS issues; only as reliable as the extension rollout.
-3. **Local agent endpoint (recommended).** The agent already listens on `127.0.0.1:7077`. Add `GET /v1/status` returning `{installed:true, version, build, device, user}` and let the page `fetch('http://127.0.0.1:7077/v1/status')`.
-   - Answer CORS with an **allow-list of the sign-in site's exact origin** (never `*`), `Vary: Origin`, and the `Access-Control-Allow-Private-Network: true` header on the preflight (Chrome's Private Network Access).
-   - Browser support: Chrome/Edge/Firefox allow an HTTPS page to call loopback; **Safari blocks it** — fall back to option 2 or 4 there.
-   - Make the claim **unspoofable** with a server-checked handshake: the page gets a one-time `nonce` from its server → calls the local agent `POST /v1/claim {nonce}` → the agent calls the Cyril server `POST /api/agent/claim {device, user, nonce}` with its agent key → the page (or its back end) asks the server `GET /api/claims/{nonce}` and learns which device/user/build answered. A page cannot forge the server's record. Rate-limit and expire nonces (e.g. 60 s). Per-device keys (§6) would make the claim stronger.
-4. **Custom URL scheme** (`cyril://check`) registered by the installer: works without a listener but shows a browser prompt — poor for a login page.
-Work needed for option 3: agent (endpoint, origin allow-list setting such as `signin_origin` in `config.json`, claim call), server (`/api/agent/claim`, `/api/claims/{nonce}` with auth for the sign-in site, expiry, tests), the sign-in page (a ~20-line script), a Mac/Windows test matrix, and a privacy review (only answer the allow-listed origin; do not expose the device GUID to arbitrary sites).
+```js
+// on the OMS sign-in page
+const r = await fetch('http://127.0.0.1:7077/oms/ping?nonce=' + crypto.randomUUID(), {cache: 'no-store'});
+const p = await r.json();     // {ok:true, app:"cyril", ping:"pong", version, build, platform, device, user, sealed, time, nonce}
+```
+If the fetch throws (connection refused) Cyril is not running on that computer.
+
+- **Who can read it:** only origins listed in the server setting `CYRIL_OMS_ORIGINS` (comma separated, e.g. `https://oms.icestudios.in`). Agents pick the list up from their 10-second poll (or `"oms_origins": [...]` in `config.json`). Any other website gets a minimal `{ok:true}` with no CORS header, so the browser hides it. A request with no `Origin` (a local tool such as `curl`) gets the full answer.
+- **Private Network Access:** Chrome/Edge first send an `OPTIONS` preflight when a public HTTPS page calls a loopback address; the agent answers it with `Access-Control-Allow-Origin: <that origin>` and `Access-Control-Allow-Private-Network: true` for allowed origins only.
+- **Safety checks:** Host must be `127.0.0.1`/`localhost` (DNS-rebinding guard); responses are `no-store`; the optional `nonce` is echoed (max 64 chars) so the page can tell a fresh answer from a cached one.
+- **Browsers:** Chrome, Edge and Firefox allow an HTTPS page to call loopback; **Safari blocks it** (mixed content), so Safari users need the browser-extension route (a content script on the OMS origin that reports `{cyril:true}` to the page) if you must support them.
+- **It is a convenience check, not proof.** A page can only trust what the browser tells it; a user could run a fake listener on port 7077. If OMS must *enforce* it, add a server-checked handshake: OMS gives the page a one-time nonce → page calls `/oms/ping?nonce=…` → OMS's back end asks the Cyril server (new endpoint) whether that device reported that nonce recently. Not built; say if you want it.
+- **Rollout:** needs the new agent build (GitHub Actions on merge to `main`, then `update.ps1`, PCs update ~03:00) and the server setting `CYRIL_OMS_ORIGINS`. Tests: `agent/tests/test_local_door.py`.
 
 ---
 
@@ -285,6 +304,6 @@ Work needed for option 3: agent (endpoint, origin allow-list setting such as `si
 - [ ] Code signing for `cyril.exe` / Mac binaries; SmartScreen/Gatekeeper/AV exclusions.
 - [ ] Pin the SeaweedFS image tag.
 - [ ] Individual admin accounts and an access log if policy needs one.
-- [ ] Restrict the agent's `127.0.0.1:7077` CORS (§6).
+- [ ] Set `CYRIL_OMS_ORIGINS`, then `CYRIL_REQUIRE_SEALED=1` once every PC shows 🔒 sealed.
 - [ ] An MDM profile to pre-approve Screen Recording/Automation on Macs.
-- [ ] Decide on the encryption/hardening steps in §6.
+- [ ] Decide on the remaining hardening steps in §6 (no local admin for staff; SYSTEM-service split).
