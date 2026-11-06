@@ -1,6 +1,11 @@
 # Builds the Windows and Mac agents on GitHub's own Windows/macOS machines and publishes them to a rolling
 # release called "agent-latest". The server PC's update.ps1 downloads that release into server/dist, so nobody
 # has to own a Mac (or build anything by hand). Runs on every push to main that touches the agent.
+#
+# The Intel Mac build is the odd one out: GitHub has very few Intel Mac runners, and a job waiting for one can sit
+# queued for a long time. So the release does NOT wait for it. Windows + Apple Silicon publish as soon as they are
+# built; the Intel binary is added to the same release whenever its runner turns up (`publish-intel`), and until
+# then the previously published Intel binary is carried over, so Intel Macs can still be installed and updated.
 name: agents
 on:
   push:
@@ -9,6 +14,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+concurrency:
+  group: agents-release        # two runs must never delete/recreate the release at the same time
+  cancel-in-progress: false
 jobs:
   windows:
     runs-on: windows-latest
@@ -20,30 +28,54 @@ jobs:
         shell: pwsh
       - uses: actions/upload-artifact@v4
         with: { name: win, path: out/* }
-  mac:
-    strategy:
-      matrix:
-        os: [macos-15, macos-15-intel]   # arm64 (Apple Silicon) and x86_64 (Intel)
-    runs-on: ${{ matrix.os }}
+  mac:   # Apple Silicon (arm64)
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: OUT_DIR="$PWD/out" ./mac/build.sh
       - uses: actions/upload-artifact@v4
-        with:
-          name: mac-${{ matrix.os }}
-          path: out/*
+        with: { name: mac-arm64, path: out/* }
+  mac-intel:   # x86_64: not waited for by `publish`
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: OUT_DIR="$PWD/out" ./mac/build.sh
+      - uses: actions/upload-artifact@v4
+        with: { name: mac-x86_64, path: out/* }
   publish:
     needs: [windows, mac]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
-        with: { path: files, merge-multiple: true }
+        with: { path: files, name: win }
+      - uses: actions/download-artifact@v4
+        with: { path: files, name: mac-arm64 }
       - name: Publish rolling release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Keep the Intel binary of the previous release until a fresh one is built.
+          mkdir -p old
+          gh release download agent-latest --repo "$GITHUB_REPOSITORY" --dir old \
+            --pattern 'cyril-mac-x86_64' --pattern 'manifest-mac-x86_64.json' || true
+          for f in cyril-mac-x86_64 manifest-mac-x86_64.json; do
+            [ -f "old/$f" ] && [ ! -f "files/$f" ] && cp "old/$f" "files/$f"
+          done
           gh release delete agent-latest --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
           gh release create agent-latest files/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "Agents (latest)" --notes "Built from $GITHUB_SHA"
+            --title "Agents (latest)" --notes "Built from $GITHUB_SHA. The Intel Mac build may lag behind if its runner was busy."
+  publish-intel:
+    needs: [mac-intel, publish]
+    if: ${{ needs.mac-intel.result == 'success' && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: intel, name: mac-x86_64 }
+      - name: Add the Intel build to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload agent-latest intel/* --clobber --repo "$GITHUB_REPOSITORY"

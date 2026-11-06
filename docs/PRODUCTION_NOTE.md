@@ -150,8 +150,12 @@ Server-only changes (dashboard, API) do **not** rebuild agents. Work on a featur
 | Job | Runner | What it does | Output (workflow artifact) |
 |---|---|---|---|
 | `windows` | `windows-latest`, Python 3.12 | `./windows/build.ps1 -OutDir out`: installs PyInstaller + deps, builds `cyril.exe` (`--onefile --noconsole`, bundles `uiautomation`, `comtypes`, `certifi`), **runs `cyril.exe --selftest` and refuses to publish if it fails**, zips the browser extension, writes `manifest.json` (SHA-256, `build` = short git SHA, `selftest: true`) | `win` → `cyril.exe`, `cyril-extension.zip`, `manifest.json` |
-| `mac` (matrix) | `macos-15` (Apple Silicon, arm64) and `macos-15-intel` (x86_64) | `OUT_DIR=out ./mac/build.sh`: venv, PyInstaller one-file build, self-test, writes `manifest-mac-<arch>.json` | `mac-<runner>` → `cyril-mac-<arch>`, `manifest-mac-<arch>.json` |
-| `publish` | `ubuntu-latest`, needs both | downloads all artifacts, **deletes** the release `agent-latest` (and its tag), **re-creates** it at the commit SHA with all files attached, using the built-in `GITHUB_TOKEN` (`permissions: contents: write`) | GitHub Release **`agent-latest`** ("Agents (latest)") |
+| `mac` | `macos-15` (Apple Silicon, arm64) | `OUT_DIR=out ./mac/build.sh`: venv, PyInstaller one-file build, self-test, writes `manifest-mac-arm64.json` | `mac-arm64` → `cyril-mac-arm64`, `manifest-mac-arm64.json` |
+| `mac-intel` | `macos-15-intel` (x86_64) | same script | `mac-x86_64` → `cyril-mac-x86_64`, `manifest-mac-x86_64.json` |
+| `publish` | `ubuntu-latest`, needs **`windows` + `mac` only** | downloads those artifacts, carries over the Intel files from the previous release, **deletes** the release `agent-latest` (and its tag), **re-creates** it at the commit SHA, using the built-in `GITHUB_TOKEN` (`permissions: contents: write`) | GitHub Release **`agent-latest`** ("Agents (latest)") |
+| `publish-intel` | `ubuntu-latest`, needs `mac-intel` + `publish` | adds the fresh Intel binary and manifest to the release (`gh release upload --clobber`) | same release |
+
+The Intel build is deliberately **not** waited for: GitHub has few Intel Mac runners and a job can sit queued for a long time. Windows and Apple Silicon publish at once; Intel Macs keep the previously published Intel build until the new one arrives. A `concurrency` group stops two runs from recreating the release at the same time.
 
 **What is in the release (7 files):** `cyril.exe`, `cyril-extension.zip`, `manifest.json`, `cyril-mac-arm64`, `manifest-mac-arm64.json`, `cyril-mac-x86_64`, `manifest-mac-x86_64.json`.
 
