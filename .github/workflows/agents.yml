@@ -2,10 +2,10 @@
 # release called "agent-latest". The server PC's update.ps1 downloads that release into server/dist, so nobody
 # has to own a Mac (or build anything by hand). Runs on every push to main that touches the agent.
 #
-# The Intel Mac build is the odd one out: GitHub has very few Intel Mac runners, and a job waiting for one can sit
-# queued for a long time. So the release does NOT wait for it. Windows + Apple Silicon publish as soon as they are
-# built; the Intel binary is added to the same release whenever its runner turns up (`publish-intel`), and until
-# then the previously published Intel binary is carried over, so Intel Macs can still be installed and updated.
+# GitHub's Mac runners (Intel especially) are scarce, and a job waiting for one can sit queued for a long time. So the
+# release does NOT wait for any Mac: Windows publishes as soon as it is built, and each Mac binary is added to the same
+# release whenever its runner turns up (publish-mac-*). Until then the previously published Mac binaries are carried
+# over, so Macs can still be installed and updated.
 name: agents
 on:
   push:
@@ -28,7 +28,7 @@ jobs:
         shell: pwsh
       - uses: actions/upload-artifact@v4
         with: { name: win, path: out/* }
-  mac:   # Apple Silicon (arm64)
+  mac-arm64:   # Apple Silicon
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -37,7 +37,7 @@ jobs:
       - run: OUT_DIR="$PWD/out" ./mac/build.sh
       - uses: actions/upload-artifact@v4
         with: { name: mac-arm64, path: out/* }
-  mac-intel:   # x86_64: not waited for by `publish`
+  mac-x86_64:   # Intel
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
@@ -47,35 +47,42 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: mac-x86_64, path: out/* }
   publish:
-    needs: [windows, mac]
+    needs: [windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with: { path: files, name: win }
-      - uses: actions/download-artifact@v4
-        with: { path: files, name: mac-arm64 }
       - name: Publish rolling release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Keep the Intel binary of the previous release until a fresh one is built.
+          # Keep the Mac binaries of the previous release until fresh ones are built.
           mkdir -p old
           gh release download agent-latest --repo "$GITHUB_REPOSITORY" --dir old \
-            --pattern 'cyril-mac-x86_64' --pattern 'manifest-mac-x86_64.json' || true
-          for f in cyril-mac-x86_64 manifest-mac-x86_64.json; do
-            [ -f "old/$f" ] && [ ! -f "files/$f" ] && cp "old/$f" "files/$f"
+            --pattern 'cyril-mac-*' --pattern 'manifest-mac-*.json' || true
+          for f in old/*; do
+            [ -f "$f" ] && [ ! -f "files/$(basename "$f")" ] && cp "$f" "files/$(basename "$f")"
           done
           gh release delete agent-latest --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
           gh release create agent-latest files/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "Agents (latest)" --notes "Built from $GITHUB_SHA. The Intel Mac build may lag behind if its runner was busy."
-  publish-intel:
-    needs: [mac-intel, publish]
-    if: ${{ needs.mac-intel.result == 'success' && needs.publish.result == 'success' }}
+            --title "Agents (latest)" --notes "Built from $GITHUB_SHA. A Mac build may lag behind if its runner was busy."
+  publish-mac-arm64:
+    needs: [mac-arm64, publish]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
-        with: { path: intel, name: mac-x86_64 }
+        with: { path: mac, name: mac-arm64 }
+      - name: Add the Apple Silicon build to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload agent-latest mac/* --clobber --repo "$GITHUB_REPOSITORY"
+  publish-mac-x86_64:
+    needs: [mac-x86_64, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: mac, name: mac-x86_64 }
       - name: Add the Intel build to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload agent-latest intel/* --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload agent-latest mac/* --clobber --repo "$GITHUB_REPOSITORY"
