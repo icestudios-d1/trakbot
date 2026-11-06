@@ -9,21 +9,63 @@
   TB.setToken = (t, remember) => {
     try { localStorage.removeItem(KEY); sessionStorage.removeItem(KEY); (remember ? localStorage : sessionStorage).setItem(KEY, t); } catch (e) { /* storage blocked */ }
   };
-  TB.signOut = () => { try { localStorage.removeItem(KEY); sessionStorage.removeItem(KEY); } catch (e) {} location.href = '/login'; };
-  const toLogin = () => { location.replace('/login?next=' + encodeURIComponent(location.pathname + location.search)); };
+  // The server only sends a dashboard page to a browser holding its sign-in cookie, which it sets here once the admin
+  // token has been accepted. (The cookie is HttpOnly: this code cannot read it, and it holds no token.)
+  TB.startSession = (t, remember) => fetch('/api/session', { method: 'POST', headers: { Authorization: 'Bearer ' + t, 'Content-Type': 'application/json' }, body: JSON.stringify({ remember: !!remember }) }).then((r) => { if (!r.ok) throw new Error('Could not start a session (' + r.status + ')'); });
+  TB.signOut = async () => { try { localStorage.removeItem(KEY); sessionStorage.removeItem(KEY); } catch (e) {} try { await fetch('/api/logout', { method: 'POST' }); } catch (e) {} location.href = '/login'; };
+  // Drop the cookie too: with a valid cookie but no token the login page would bounce straight back here.
+  const toLogin = async () => { try { await fetch('/api/logout', { method: 'POST' }); } catch (e) {} location.replace('/login?next=' + encodeURIComponent(location.pathname + location.search)); };
   if (!isLogin && !TB.token()) { toLogin(); }
 
+  /* ---------- work / all view ---------- */
+  // "Work" = 8 AM to 10 PM your time: every number and list is trimmed to those hours (the server does the cutting).
+  const SCOPE_KEY = 'tb_scope';
+  TB.scope = () => { try { return localStorage.getItem(SCOPE_KEY) === 'work' ? 'work' : 'all'; } catch (e) { return 'all'; } };
+  TB.setScope = (v) => { try { localStorage.setItem(SCOPE_KEY, v); } catch (e) {} location.reload(); };
+  const SCOPED = /^\/api\/(overview|employee|slots|timeline|web|screenshots|summary|trend)(\?|$)/;
+  const scoped = (path) => {
+    if (TB.scope() !== 'work' || !SCOPED.test(path)) return path;
+    const u = new URL(path, location.origin);
+    u.searchParams.set('scope', 'work');
+    if (!u.searchParams.has('tz')) u.searchParams.set('tz', TB.tz);
+    return u.pathname + u.search;
+  };
+
+  /* ---------- loading indicator ---------- */
+  // Any request that takes more than a moment shows a progress bar and a "Loading" note, and dims the page, so a slow
+  // report never looks like a frozen one. Background polling passes {quiet:true} to stay invisible.
+  let pending = 0, showT, slowT;
+  const busy = (d) => {
+    pending += d;
+    if (d > 0 && pending === 1) {
+      showT = setTimeout(() => {
+        document.body.classList.add('loading');
+        let el = document.getElementById('busy');
+        if (!el) { el = document.createElement('div'); el.id = 'busy'; el.setAttribute('role', 'status'); el.innerHTML = '<i class="spin"></i><span id="busyTxt">Loading…</span>'; document.body.append(el); }
+        el.style.display = 'flex'; document.getElementById('busyTxt').textContent = 'Loading…';
+        slowT = setTimeout(() => { const t = document.getElementById('busyTxt'); if (t) t.textContent = 'Still working… a long date range or a lot of data takes a little longer'; }, 6000);
+      }, 150);
+    } else if (pending <= 0) {
+      pending = 0; clearTimeout(showT); clearTimeout(slowT);
+      document.body.classList.remove('loading');
+      const el = document.getElementById('busy'); if (el) el.style.display = 'none';
+    }
+  };
+  TB.busy = busy;
+
   TB.api = async (path, opts = {}) => {
-    const r = await fetch(path, { ...opts, headers: { Authorization: 'Bearer ' + TB.token(), 'Content-Type': 'application/json', ...(opts.headers || {}) } });
-    if (r.status === 401) { if (!isLogin) toLogin(); throw new Error('Not signed in'); }
-    if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch (e) {} throw new Error(m); }
-    return r.json();
+    const { quiet, ...init } = opts;
+    if (!quiet) busy(1);
+    try {
+      const r = await fetch(scoped(path), { ...init, headers: { Authorization: 'Bearer ' + TB.token(), 'Content-Type': 'application/json', ...(init.headers || {}) } });
+      if (r.status === 401) { if (!isLogin) toLogin(); throw new Error('Not signed in'); }
+      if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch (e) {} throw new Error(m); }
+      return await r.json();
+    } finally { if (!quiet) busy(-1); }
   };
-  TB.blobUrl = async (path) => {
-    const r = await fetch(path, { headers: { Authorization: 'Bearer ' + TB.token() } });
-    if (!r.ok) throw new Error(r.statusText);
-    return URL.createObjectURL(await r.blob());
-  };
+  // Screenshots are plain <img> tags now: the browser loads them lazily and caches them, and the sign-in cookie
+  // authorises them. Thumbnails are made on the server, so a gallery never downloads the full-size images.
+  TB.shotUrl = (id, full) => `/api/screenshots/${id}/${full ? 'image' : 'thumb'}`;
   TB.tz = -new Date().getTimezoneOffset(); // minutes east of UTC, so the server buckets days/hours in *your* time
   TB.qs = (o) => new URLSearchParams(Object.fromEntries(Object.entries(o).filter(([, v]) => v !== '' && v != null))).toString();
 
@@ -60,12 +102,13 @@
     const here = location.pathname === '/employee' ? '/employees' : location.pathname;
     const top = document.createElement('header');
     top.className = 'top';
-    top.innerHTML = `<a class="brand" href="/"><i></i>Cyril</a><button class="burger" id="burger" aria-label="Menu" aria-expanded="false" aria-controls="mainnav"><span></span><span></span><span></span></button><nav id="mainnav">${NAV.map(([h, t]) => `<a href="${h}" class="${h === here ? 'on' : ''}">${t}${h === '/alerts' ? '<span id="alertBadge"></span>' : ''}</a>`).join('')}</nav><span class="sm mut" id="build" title="Version of the server code that is running"></span><button class="out" id="signout">Sign out</button>`;
+    top.innerHTML = `<a class="brand" href="/"><i></i>Cyril</a><button class="burger" id="burger" aria-label="Menu" aria-expanded="false" aria-controls="mainnav"><span></span><span></span><span></span></button><nav id="mainnav">${NAV.map(([h, t]) => `<a href="${h}" class="${h === here ? 'on' : ''}">${t}${h === '/alerts' ? '<span id="alertBadge"></span>' : ''}</a>`).join('')}</nav><span class="scope" id="scope" role="group" aria-label="Which hours to show" title="Work shows only 8 AM to 10 PM (your time) in every number and list. All shows the whole day."><button data-v="work">Work</button><button data-v="all">All</button></span><span class="sm mut" id="build" title="Version of the server code that is running"></span><button class="out" id="signout">Sign out</button>`;
     document.body.prepend(top);
     $('#signout').onclick = TB.signOut;
+    document.querySelectorAll('#scope button').forEach((b) => { b.classList.toggle('on', b.dataset.v === TB.scope()); b.onclick = () => { if (b.dataset.v !== TB.scope()) TB.setScope(b.dataset.v); }; });
     $('#burger').onclick = () => { const o = top.classList.toggle('open'); $('#burger').setAttribute('aria-expanded', o); };
     fetch('/api/health').then((r) => r.json()).then((h) => { if (h.build) $('#build').textContent = 'build ' + h.build; }).catch(() => {});
-    TB.api('/api/alerts?' + TB.qs({ unacked: 'true', limit: 1000 })).then((a) => { if (a.length) $('#alertBadge').outerHTML = `<span class="badge">${a.length}</span>`; }).catch(() => {});
+    TB.api('/api/alerts?' + TB.qs({ unacked: 'true', limit: 1000 }), { quiet: true }).then((a) => { if (a.length) $('#alertBadge').outerHTML = `<span class="badge">${a.length}</span>`; }).catch(() => {});
     const tip = document.createElement('div'); tip.id = 'tip'; document.body.append(tip);
     document.addEventListener('mousemove', (e) => {
       const t = e.target.closest && e.target.closest('[data-tip]');
@@ -78,12 +121,28 @@
   }
 
   /* ---------- users + range bar ---------- */
+  // Groups (business units, machines not allocated yet...). '' = the regular view: everyone except groups marked
+  // "exclude from reports"; 'all' = literally everyone; 'none' = employees in no group; a number = that group.
+  TB.groups = () => TB.api('/api/groups', { quiet: true });
+  TB.groupSelect = async (parent, value, onChange) => {
+    const { groups } = await TB.groups();
+    const l = document.createElement('label');
+    l.className = 'mut'; l.title = 'Show one group of employees. Groups marked "excluded" (for example PCs not handed out yet) stay out of the regular view and only show when picked here.';
+    l.innerHTML = `Group <select aria-label="Group"><option value="">All groups</option>${groups.length ? '<option value="none">No group</option>' : ''}${groups.map((g) => `<option value="${g.id}">${TB.esc(g.name)}${g.excluded ? ' (excluded)' : ''}</option>`).join('')}<option value="all">Everyone, incl. excluded groups</option></select>`;
+    const sel = l.querySelector('select');
+    sel.value = [...sel.options].some((o) => o.value === value) ? value : '';
+    sel.onchange = () => onChange(sel.value);
+    parent.append(l);
+    return sel.value;
+  };
+
   // Display names: an admin can tag a device login with the real person's name; ids stay the login everywhere in the API.
   let _users; const _names = {};
   TB.users = async () => {
     if (!_users) { _users = await TB.api('/api/users'); _users.forEach((u) => { _names[u.user] = u.name || ''; }); }
     return _users;
   };
+  TB.users.reset = () => { _users = null; };                         // names or groups changed: fetch the list again
   TB.dn = (u) => _names[u] || u;                                   // name to show
   TB.who = (u) => { const n = _names[u]; return n ? `${TB.esc(n)} <span class="mut sm">(${TB.esc(u)})</span>` : TB.esc(u); };
   TB.rename = async (user) => {
@@ -112,7 +171,7 @@
   // "Screenshot now": ask the employee's PC for a live capture and show it. Tells "the feature works" apart from
   // "they just switched apps": if the PC answers you get the picture within seconds.
   TB.screenshotNow = async (user, { onDone } = {}) => {
-    const devs = (await TB.api('/api/devices')).filter((d) => d.user === user);
+    const devs = (await TB.api('/api/devices', { quiet: true })).filter((d) => d.user === user);
     if (!devs.length) { alert('No PC has reported for this employee yet.'); return; }
     const now = Date.now() / 1000, live = devs.filter((d) => now - d.last_seen < 600);
     const targets = live.length ? live : [devs[0]];
@@ -140,12 +199,12 @@
         for (let i = 0; open && i < 50; i++) {
           await new Promise((r) => setTimeout(r, i ? 2000 : 1000));
           if (!open) return;
-          const r = await TB.api('/api/screenshot-now/' + id);
+          const r = await TB.api('/api/screenshot-now/' + id, { quiet: true });
           if (r.status === 'pending') st.textContent = `Waiting for the PC to pick it up… ${Math.round(r.waited)}s (PCs check every ~10 s)`;
           else if (r.status === 'delivered') st.textContent = 'The PC is capturing…';
           else if (r.status === 'done') {
             st.innerHTML = `<b style="color:var(--c-p)">✓ Captured ${new Date().toLocaleTimeString()}</b> · the PC is alive and the screenshot feature works.`;
-            const url = await TB.blobUrl(`/api/screenshots/${r.screenshot_id}/image`);
+            const url = TB.shotUrl(r.screenshot_id, true);
             img.innerHTML = `<a href="${url}" target="_blank" rel="noopener"><img alt="Live screenshot" src="${url}"></a>`;
             if (onDone) onDone(r.screenshot_id);
             return;
@@ -185,13 +244,13 @@
   };
 
   // Presets + start/end date inputs (+ optional employee picker). State lives in the URL so views are shareable.
-  TB.rangeBar = (el, { user = false, userAll = 'All employees', defDays = 7, slot = false, onChange }) => {
+  TB.rangeBar = (el, { user = false, userAll = 'All employees', defDays = 7, slot = false, group = false, onChange }) => {
     const p = TB.params();
     const today = new Date();
     const back = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return TB.ymd(d); };
     const PRE = [['Today', () => [back(0), back(0)]], ['Yesterday', () => [back(1), back(1)]], ['Last 7 days', () => [back(6), back(0)]],
       ['Last 30 days', () => [back(29), back(0)]], ['This month', () => [TB.ymd(new Date(today.getFullYear(), today.getMonth(), 1)), back(0)]]];
-    const st = { start: p.start || back(defDays - 1), end: p.end || back(0), user: p.user || '' };
+    const st = { start: p.start || back(defDays - 1), end: p.end || back(0), user: p.user || '', group: group ? (p.group || '') : '' };
     el.classList.add('bar-controls');
     el.innerHTML = `${user ? '<select id="rbUser" aria-label="Employee"></select>' : ''}
       ${PRE.map(([t], i) => `<button class="chip" data-i="${i}">${t}</button>`).join('')}
@@ -205,7 +264,8 @@
     el.querySelectorAll('.chip').forEach((b) => (b.onclick = () => { [st.start, st.end] = PRE[+b.dataset.i][1](); fire(); }));
     $('#rbS', el).onchange = (e) => { if (e.target.value) { st.start = e.target.value; fire(); } };
     $('#rbE', el).onchange = (e) => { if (e.target.value) { st.end = e.target.value; fire(); } };
-    const start = () => {
+    const start = async () => {
+      if (group) { try { st.group = await TB.groupSelect(el, st.group, (v) => { st.group = v; fire(); }); } catch (e) { TB.error(e); } }
       if (user) {
         TB.users().then((u) => {
           const s = $('#rbUser', el);
@@ -220,6 +280,10 @@
     if (slot) TB.slotSelect(el, () => fire()).then(start).catch((e) => { TB.error(e); start(); }); else start();
     return { get: () => ({ ...st }), set: (o) => { Object.assign(st, o); fire(); } };
   };
+  // "Mon 4" for a short range, "Mon 4 Mar" for a long one: the weekday matters (weekends look different).
+  TB.dayLabel = (day, n) => new Date(day + 'T00:00').toLocaleDateString([], n > 31 ? { weekday: 'short', day: 'numeric', month: 'short' } : { weekday: 'short', day: 'numeric' });
+  TB.dayTitle = (day) => new Date(day + 'T00:00').toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
+  TB.dayEvery = (n) => Math.ceil(n / (n > 31 ? 8 : 12));
   TB.rangeLabel = (s, e) => (s === e ? new Date(s + 'T00:00').toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
     : new Date(s + 'T00:00').toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' – ' + new Date(e + 'T00:00').toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }));
 

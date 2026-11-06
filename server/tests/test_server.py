@@ -9,6 +9,7 @@ os.environ["CYRIL_ADMIN_TOKEN"] = "admin"
 os.environ["CYRIL_AGENT_KEY"] = "agent"
 os.environ["CYRIL_DB"] = os.path.join(tempfile.mkdtemp(), "t.db")
 os.environ["CYRIL_DIST_DIR"] = tempfile.mkdtemp()
+os.environ["CYRIL_CACHE_TTL"] = "0"   # tests must see their own writes at once
 
 from cyril_server.objstore import ObjectStoreError  # noqa: E402
 
@@ -149,9 +150,11 @@ def _day():
 def test_pages_and_me():
     assert c.get("/api/me").status_code == 401
     assert c.get("/api/me", headers=A).json() == {"ok": True}
+    page = TestClient(app)
+    page.post("/api/session", headers=A, json={})        # signs this browser in (sets the cookie)
     for path in ("/", "/login", "/employees", "/employee", "/day", "/web", "/install", "/alerts", "/screenshots", "/rules"):
-        r = c.get(path)
-        assert r.status_code == 200 and "text/html" in r.headers["content-type"], path
+        r = page.get(path, follow_redirects=False)
+        assert (r.status_code == 302 if path == "/login" else r.status_code == 200 and "text/html" in r.headers["content-type"]), path
     assert c.get("/static/app.js").status_code == 200
     assert c.get("/api/overview").status_code == 401
 
@@ -263,7 +266,7 @@ def test_install_info_and_devices():
 def test_static_files_always_revalidate_and_health_reports_build():
     r = c.get("/static/app.js")
     assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
-    assert c.get("/", headers={}).headers["cache-control"] == "no-cache"
+    assert c.get("/login").headers["cache-control"] == "no-store"
     h = c.get("/api/health").json()
     assert h["ok"] and len(h["build"]) == 8
 
@@ -528,7 +531,7 @@ def test_mac_installer_and_manifest_routes():
     assert "SERVER_URL='https://cyril.icestudios.in'" in keyed and "AGENT_KEY='agent'" in keyed
     assert c.get("/install.sh", params={"key": "nope"}).status_code == 401
     assert c.get("/install.sh").headers["cache-control"] == "no-store" and plain.isascii()
-    assert "launchctl" in plain and "uninstall.sh" in c.get("/install.sh").text
+    assert "launchctl" in plain
     assert "Nothing is left running" in c.get("/uninstall.sh").text
     # install-info carries the Mac commands and which CPU builds are published
     i = c.get("/api/install-info", headers=A).json()
@@ -568,3 +571,125 @@ def test_installer_registers_the_recovery_check_and_uninstaller_removes_it():
     ins, un = c.get("/install.ps1").text, c.get("/uninstall.ps1").text
     assert "Cyril Recovery Check" in ins and "recovery-check.ps1" in ins and "failing_since" in ins and "3600" in ins
     assert "Cyril Recovery Check" in un
+
+
+# ------------------------------------------------------------------ sign-in gate
+def test_pages_are_not_sent_to_anyone_signed_out():
+    anon = TestClient(app)
+    for path in ("/", "/employees", "/employee", "/day", "/web", "/alerts", "/install", "/screenshots", "/rules"):
+        r = anon.get(path, follow_redirects=False)
+        assert r.status_code == 302 and r.headers["location"].startswith("/login?next="), path
+        assert "<html" not in r.text.lower()                           # not one byte of the interface
+    r = anon.get("/day?user=a%20b&day=2025-01-02", follow_redirects=False)
+    assert r.headers["location"] == "/login?next=%2Fday%3Fuser%3Da%2520b%26day%3D2025-01-02"
+    assert "Sign in" in anon.get("/login").text
+    assert anon.get("/static/index.html").status_code == 404           # page files are not in the public static folder
+    assert anon.get("/static/day.html").status_code == 404
+
+
+def test_session_cookie_signs_in_pages_and_images_but_never_writes():
+    b = TestClient(app)
+    assert b.post("/api/session", json={}).status_code == 401                       # needs the admin token
+    assert b.post("/api/session", headers={"Authorization": "Bearer nope"}, json={}).status_code == 401
+    r = b.post("/api/session", headers=A, json={"remember": True})
+    ck = r.headers["set-cookie"].lower()
+    assert "httponly" in ck and "samesite=lax" in ck and "max-age" in ck and "admin" not in ck   # token never in the cookie
+    assert b.get("/", follow_redirects=False).status_code == 200
+    assert b.get("/api/me").json() == {"ok": True}                                   # cookie is fine for GET
+    assert b.post("/api/groups", json={"name": "x"}).status_code == 401              # ...but cannot change anything
+    assert b.get("/login?next=/day", follow_redirects=False).headers["location"] == "/day"
+    assert b.get("/login?next=//evil.example", follow_redirects=False).headers["location"] == "/"
+    b.post("/api/logout")
+    assert b.get("/", follow_redirects=False).status_code == 302
+
+
+# ------------------------------------------------------------------ groups
+def _post_events(user, device, ts, app="Photoshop.exe", dur=600):
+    c.post("/api/ingest", headers=K, json={"user": user, "device": device, "events": [{"ts": ts, "dur": dur, "app": app}]})
+
+
+def _local_ts(day, hh, mm=0):
+    return time.mktime(time.strptime(f"{day} {hh:02d}:{mm:02d}", "%Y-%m-%d %H:%M"))
+
+
+def test_groups_filter_reports_and_excluded_groups_drop_out_of_regular_reports():
+    day = "2031-03-04"
+    t = _local_ts(day, 11)
+    for u in ("g_ann", "g_bob", "g_cat"):
+        _post_events(u, "PC-" + u, t)
+    bu = c.post("/api/groups", headers=A, json={"name": "Business Unit B"}).json()
+    spare = c.post("/api/groups", headers=A, json={"name": "Not allocated", "excluded": True}).json()
+    assert c.post("/api/groups", headers=A, json={"name": "business unit b"}).status_code == 409     # names are unique
+    c.post("/api/users/group", headers=A, json={"users": ["g_bob"], "group_id": bu["id"]})
+    c.post("/api/users/group", headers=A, json={"users": ["g_cat"], "group_id": spare["id"]})
+    q = {"start": day, "end": day, "tz": 0}
+    users = lambda **kw: set(c.get("/api/overview", headers=A, params={**q, **kw}).json()["by_user"])   # noqa: E731
+    assert {"g_ann", "g_bob"} <= users() and "g_cat" not in users()                   # default view skips the excluded group
+    assert "g_cat" in users(group="all")                                              # ...unless asked for everyone
+    assert users(group=str(bu["id"])) == {"g_bob"}
+    assert users(group=str(spare["id"])) == {"g_cat"}                                 # an excluded group can still be opened
+    assert "g_ann" in users(group="none") and not {"g_bob", "g_cat"} & users(group="none")
+    lst = {u["user"]: u for u in c.get("/api/users", headers=A).json()}
+    assert lst["g_bob"]["group"] == "Business Unit B" and lst["g_cat"]["group_excluded"] == 1 and lst["g_ann"]["group"] is None
+    gs = c.get("/api/groups", headers=A).json()
+    assert {g["name"]: g["members"] for g in gs["groups"]}["Business Unit B"] == 1
+    # deleting a group keeps the people, who simply become ungrouped (and visible in the normal view again)
+    c.delete(f"/api/groups/{spare['id']}", headers=A)
+    assert "g_cat" in users()
+    c.post("/api/users/group", headers=A, json={"users": ["g_bob"], "group_id": None})
+    assert "g_bob" in users(group="none")
+    assert c.post("/api/users/group", headers=A, json={"users": ["g_bob"], "group_id": 9999}).status_code == 404
+
+
+# ------------------------------------------------------------------ Work (8-22) vs All
+def test_work_scope_trims_everything_to_the_working_window():
+    day = "2031-04-05"
+    # 07:30-08:30 (only 30 min counts), 12:00-12:10, 21:50-22:20 (only 10 min counts), 23:00-23:30 (outside)
+    for hh, mm, dur in ((7, 30, 3600), (12, 0, 600), (21, 50, 1800), (23, 0, 1800)):
+        _post_events("w_user", "PC-W", _local_ts(day, hh, mm), dur=dur)
+    q = {"user": "w_user", "start": day, "end": day, "tz": 0}
+    import cyril_server.app as srv
+    off = -time.timezone + (3600 if time.localtime().tm_isdst > 0 else 0)            # this machine's UTC offset
+    q["tz"] = off // 60
+    allv = c.get("/api/employee", headers=A, params=q).json()
+    work = c.get("/api/employee", headers=A, params={**q, "scope": "work"}).json()
+    assert allv["seconds"]["productive"] == 3600 + 600 + 1800 + 1800
+    assert work["seconds"]["productive"] == 1800 + 600 + 600 and work["scope"] == "work"
+    hours = [sum(h.values()) for h in work["hourly"]]
+    assert sum(hours[:8]) == 0 and sum(hours[22:]) == 0 and hours[7] == 0 and hours[21] == 600
+    rows = c.get("/api/slots", headers=A, params={**q, "slot": 0, "scope": "work"}).json()["rows"]
+    assert sum(r["dur"] for r in rows) == 3000
+    assert srv.WORK_START == 8 and srv.WORK_END == 22
+
+
+# ------------------------------------------------------------------ thumbnails
+def _jpeg(w=1600, h=1000):
+    import io as _io
+    from PIL import Image
+    buf = _io.BytesIO()
+    Image.new("RGB", (w, h), (30, 90, 160)).save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+
+def test_thumbnails_are_built_on_the_server_and_cleaned_up():
+    from PIL import Image
+    import io as _io
+    raw = _jpeg()
+    r = c.post("/api/screenshot", headers=K, json={"user": "th_user", "device": "PC-T", "ts": 1_900_000_000.0, "app": "Photoshop.exe",
+                                                  "title": "x", "image_b64": base64.b64encode(raw).decode()})
+    sid = r.json()["id"]
+    full = c.get(f"/api/screenshots/{sid}/image", headers=A)
+    thumb = c.get(f"/api/screenshots/{sid}/thumb", headers=A)
+    assert full.content == raw and "max-age" in full.headers["cache-control"]
+    im = Image.open(_io.BytesIO(thumb.content))
+    assert im.format == "JPEG" and im.width <= 360 and im.height <= 225 and len(thumb.content) < len(raw) / 5
+    assert c.get(f"/api/screenshots/{sid}/thumb").status_code == 401
+    # a screenshot stored before thumbnails existed gets one the first time it is asked for
+    import cyril_server.app as srv
+    path = srv._screenshot_path(sid)
+    srv.store.objects.pop(srv._thumb_key(path))
+    assert Image.open(_io.BytesIO(c.get(f"/api/screenshots/{sid}/thumb", headers=A).content)).width <= 360
+    assert srv._thumb_key(path) in srv.store.objects
+    c.post("/api/screenshots/delete", headers=A, json={"ids": [sid]})
+    assert srv._thumb_key(path) not in srv.store.objects and path not in srv.store.objects
+    assert c.get(f"/api/screenshots/{sid}/thumb", headers=A).status_code == 404

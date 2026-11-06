@@ -24,19 +24,18 @@
   <div class="card"><h2>Team</h2><div class="sub">Click an employee for their full report</div><div class="scroll"><table id="team"></table></div></div>
   <div class="card"><h2>Categories</h2><div class="sub">Active time by category</div><div id="cats"></div></div>
 </div>
-<div class="card"><h2>When the studio is busiest</h2><div class="sub">Active time by weekday and hour</div><div id="heat"></div></div>
 </main>
 <script src="/static/app.js"></script>
 <script>
 const {$,fmt,esc}=TB;let seq=0;
-const rb=TB.rangeBar($('#range'),{defDays:7,slot:true,onChange:load});
+const rb=TB.rangeBar($('#range'),{defDays:7,slot:true,group:true,onChange:load});
 async function load(r){
   const me=++seq;TB.error();
   try{
-    const [o]=await Promise.all([TB.api('/api/overview?'+TB.qs({start:r.start,end:r.end,tz:TB.tz})),TB.users()]);
+    const [o]=await Promise.all([TB.api('/api/overview?'+TB.qs({start:r.start,end:r.end,tz:TB.tz,group:r.group})),TB.users()]);
     if(me!==seq)return;
     const n=o.days.length,single=n===1;
-    $('#sub').textContent=TB.rangeLabel(r.start,r.end)+TB.slotNote(o.slot);
+    $('#sub').textContent=TB.rangeLabel(r.start,r.end)+TB.slotNote(o.slot)+(TB.scope()==='work'?' · work hours only (8 AM–10 PM)':'');
     const s=o.seconds,users=Object.keys(o.by_user).length,tracked=TB.sum(s);
     const cshare=o.active_seconds?Math.round(100*o.creative_seconds/o.active_seconds):0;
     $('#kpis').innerHTML=
@@ -47,15 +46,15 @@ async function load(r){
       TB.kpi('Flagged alerts',`<a href="/alerts" style="color:inherit">${o.alerts.total}</a>`,`<span class="dl ${o.alerts.open?'down':'flat'}">${o.alerts.open} unacknowledged</span>`);
     // daily stacked
     const keys=TB.LABELS.map(([k,,c])=>[k,c,k[0].toUpperCase()+k.slice(1)]);
-    const every=Math.ceil(n/12);
-    TB.stacked($('#daily'),o.daily.map(d=>({label:n<=10?new Date(d.day+'T00:00').toLocaleDateString([],{weekday:'short',day:'numeric'}):d.day.slice(5),title:new Date(d.day+'T00:00').toLocaleDateString([],{weekday:'long',month:'short',day:'numeric'}),vals:d})),keys,{every,height:240});
+    const every=TB.dayEvery(n);
+    TB.stacked($('#daily'),o.daily.map(d=>({label:TB.dayLabel(d.day,n),title:TB.dayTitle(d.day),vals:d})),keys,{every,height:240});
     $('#dailyLegend').innerHTML=TB.LABELS.map(([,t,c])=>`<span><span class="dot" style="background:${c}"></span>${t}</span>`).join('');
     TB.donut($('#mix'),TB.LABELS.map(([k,t,c])=>({name:t,v:s[k],color:c})),TB.pct(o.productivity_pct),'productive');
     // hours: average per day
     $('#hourSub').textContent=(single?'Tracked time in each hour of the day':'Average tracked time per hour of the day')+' (your local time)';
     TB.stacked($('#hours'),o.hourly.map((h,i)=>({label:String(i),title:`${String(i).padStart(2,'0')}:00 – ${String(i).padStart(2,'0')}:59`,vals:Object.fromEntries(Object.entries(h).map(([k,v])=>[k,v/n]))})),keys,{every:3,height:220});
     $('#hoursLegend').innerHTML=$('#dailyLegend').innerHTML;
-    TB.line($('#pctline'),o.daily.map(d=>({label:n<=10?d.day.slice(5):d.day.slice(5),title:d.day,v:d.pct})),{every,height:220});
+    TB.line($('#pctline'),o.daily.map(d=>({label:TB.dayLabel(d.day,n),title:TB.dayTitle(d.day),v:d.pct})),{every,height:220});
     TB.hbars($('#creative'),o.creative_apps,{color:()=>'var(--accent)'});
     TB.hbars($('#apps'),o.apps,{sub:TB.labelLegend});
     TB.hbars($('#sites'),o.sites,{sub:TB.labelLegend});
@@ -63,7 +62,6 @@ async function load(r){
     const rows=Object.entries(o.by_user).map(([u,m])=>({u,a:m.productive+m.unproductive+m.neutral,m})).sort((x,y)=>y.a-x.a);
     $('#team').innerHTML=rows.length?`<thead><tr><th>Employee</th><th class="right">Active</th><th style="width:30%">Productivity</th><th>Top app</th><th>Last seen</th></tr></thead><tbody>`+rows.map(({u,a,m})=>`<tr class="link" data-u="${esc(u)}"><td><a href="/employee?${TB.qs({user:u,start:r.start,end:r.end})}">${esc(TB.dn(u))}</a></td><td class="right num">${fmt(a)}</td><td><div class="stackbar" data-tip="${esc(`${TB.pct(a?100*m.productive/a:null)} productive`)}">${['productive','neutral','unproductive'].map(k=>`<i style="width:${a?100*m[k]/a:0}%;background:${TB.labelColor(k)}"></i>`).join('')}</div><span class="sm mut">${TB.pct(a?100*m.productive/a:null)}</span></td><td>${esc(m.top_app||'–')}</td><td class="mut nowrap">${TB.when(m.last_seen)}</td></tr>`).join('')+'</tbody>':'<tbody><tr><td class="empty">No employees reported activity in this range.</td></tr></tbody>';
     $('#team').querySelectorAll('tr.link').forEach(tr=>tr.onclick=e=>{if(e.target.tagName!=='A')location.href=tr.querySelector('a').href});
-    TB.heatmap($('#heat'),o.heatmap);
   }catch(e){if(me===seq)TB.error(e)}
 }
 </script></body></html>

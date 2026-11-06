@@ -27,7 +27,6 @@
 <script>
 const {$,fmt,esc}=TB;
 let wantId=0,events=[],shots=[],sel=-1,colorBy='app',keyOf,colorOf,t0=0,t1=0,seq=0;
-const urls={};
 const nameOf=e=>e.name||(e.idle?'Idle / away':(e.domain||e.app||'unknown'));
 const p0=TB.params();
 $('#d').value=p0.day||TB.ymd(new Date());
@@ -133,17 +132,15 @@ function mark(){
   $('#log').querySelectorAll('tr[data-s]').forEach(tr=>tr.classList.toggle('cur',!!cur&&+tr.dataset.s===cur.ts));
 }
 
-let io;
 function film(){
   const f=$('#film');
   if(!shots.length){f.innerHTML='<span class="mut">No screenshots were captured on this day.</span>';return}
-  f.innerHTML=shots.map((s,i)=>`<button data-i="${i}" title="${esc(s.title||s.app)}"><img alt=""><span>${TB.clock(s.ts)} · ${esc(s.name||s.app)}</span></button>`).join('');
+  // Small server-made thumbnails (~15 KB each), loaded only as they scroll into view: the full-size picture is
+  // fetched only for the one selected below.
+  f.innerHTML=shots.map((s,i)=>`<button data-i="${i}" title="${esc(s.title||s.app)}"><img alt="" loading="lazy" decoding="async" src="${TB.shotUrl(s.id)}"><span>${TB.clock(s.ts)} · ${esc(s.name||s.app)}</span></button>`).join('');
   f.onclick=e=>{const b=e.target.closest('button[data-i]');if(b)select(+b.dataset.i)};
-  io&&io.disconnect();
-  io=new IntersectionObserver(es=>es.forEach(en=>{if(en.isIntersecting){io.unobserve(en.target);img(shots[+en.target.parentElement.dataset.i]).then(u=>{en.target.src=u}).catch(()=>{})}}),{root:f,rootMargin:'400px'});
-  f.querySelectorAll('img').forEach(i=>io.observe(i));
 }
-function img(s){return urls[s.id]?Promise.resolve(urls[s.id]):TB.blobUrl(`/api/screenshots/${s.id}/image`).then(u=>(urls[s.id]=u))}
+const fullUrl=s=>TB.shotUrl(s.id,true);
 
 async function select(i,{scroll=true}={}){
   sel=i;timeline();mark();
@@ -156,11 +153,11 @@ async function select(i,{scroll=true}={}){
   const b=document.querySelector(`#film button[data-i="${i}"]`);
   if(b&&scroll){const f=$('#film');f.scrollTo({left:b.offsetLeft-f.clientWidth/2+b.clientWidth/2})}
   big.innerHTML='<span>Loading…</span>';
-  try{
-    const u=await img(s);if(sel!==i)return;
-    big.innerHTML=`<img alt="Screenshot at ${TB.clock(s.ts)}">`;const im=big.firstChild;im.src=u;im.onclick=()=>window.open(u);
-    if(shots[i+1])img(shots[i+1]).catch(()=>{});
-  }catch(x){if(sel===i)big.innerHTML='<span>Image unavailable</span>'}
+  const u=fullUrl(s),im=new Image();
+  im.alt='Screenshot at '+TB.clock(s.ts);im.onclick=()=>window.open(u);
+  im.onload=()=>{if(sel!==i)return;big.innerHTML='';big.append(im);if(shots[i+1])new Image().src=fullUrl(shots[i+1])};   // warm the next one
+  im.onerror=()=>{if(sel===i)big.innerHTML='<span>Image unavailable</span>'};
+  im.src=u;
 }
 $('#sp').onclick=()=>sel>0&&select(sel-1);$('#sn').onclick=()=>sel<shots.length-1&&select(sel+1);
 document.addEventListener('keydown',e=>{if(/INPUT|SELECT|TEXTAREA/.test(e.target.tagName))return;if(e.key==='ArrowLeft'&&sel>0)select(sel-1);if(e.key==='ArrowRight'&&sel<shots.length-1)select(sel+1)});

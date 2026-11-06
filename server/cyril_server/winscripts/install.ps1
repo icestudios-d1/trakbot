@@ -10,7 +10,10 @@ address, and the agent key travels in the URL):
 
 Optional switches:
   -User "Priya"     report under this name instead of the Windows login
-  -Unattended       no questions, no first-report wait (used by the daily updater task)
+  -Silent           quiet install for roll-outs (GPO, Intune, RMM, a USB stick): no step list, no first-report
+                    wait, one line at the end. Everything is still installed and started before it returns;
+                    a failure still stops with an error (non-zero exit code when run with powershell -Command).
+  -Unattended       the same, with no final line at all (used by the daily updater task)
 Remove it again with the uninstall one-liner on the same page.
 
 How it runs: the agent has to live inside the logged-in user's desktop session (a service or
@@ -22,8 +25,10 @@ param(
     [string]$ServerUrl = '{{SERVER_URL}}',
     [string]$AgentKey = '{{AGENT_KEY}}',
     [string]$User = $null,
-    [switch]$Unattended
+    [switch]$Unattended,
+    [switch]$Silent
 )
+if ($Silent) { $Unattended = $true }
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest is ~10x faster without the progress bar
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
@@ -216,7 +221,10 @@ if (Test-Path $regKey) {
 # 7. Start it now, then confirm the server really receives reports -------------------------------------
 $since = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 5
 if (-not (Get-Process -Name "cyril" -ErrorAction SilentlyContinue)) { Start-ScheduledTask -TaskName $taskName }
-if ($Unattended) { return }
+if ($Unattended) {
+    if ($Silent) { Write-Host "Cyril installed$(if ($buildInfo) { " ($buildInfo)" }). The agent is running; it appears on the dashboard's Install agents page within a minute or two." }
+    return
+}
 
 Step "Waiting for Server Confirmation"
 $device = $null

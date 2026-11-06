@@ -9,6 +9,7 @@ reachability; agents spool locally and catch up whenever this server is back.
 import base64
 import hashlib
 import hmac
+import io
 import math
 import os
 import re
@@ -19,20 +20,23 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .classify import LABELS, classify, matching_rule
+from .classify import LABELS, make_classifier, matching_rule
 from .db import DB
 from .default_rules import STUDIO_RULES
-from .reports import SLOT_CHOICES, aggregate, previous_span, slotize, span
+from .reports import SLOT_CHOICES, aggregate, clip_hours, in_work_hours, previous_span, slotize, span, totals
 from .names import display_name, site_name
 from .objstore import ObjectStoreError, S3Store
 
 ADMIN_TOKEN = os.environ.get("CYRIL_ADMIN_TOKEN", "")
 AGENT_KEY = os.environ.get("CYRIL_AGENT_KEY", "")
 DB_PATH = os.environ.get("CYRIL_DB", "data/cyril.db")
+WORK_START = int(os.environ.get("CYRIL_WORK_START", "8"))    # the dashboard's "Work" view: local hours [start, end)
+WORK_END = int(os.environ.get("CYRIL_WORK_END", "22"))
+SESSION_COOKIE = "cyril_session"
 MAX_EVENT_SECONDS = 3600
 MAX_SHOT_B64 = 3_000_000  # ~2.2MB decoded; agent targets far smaller JPEGs
 
@@ -80,8 +84,26 @@ def _check(given: str | None, expected: str):
         raise HTTPException(401, "unauthorized")
 
 
-def admin(authorization: str | None = Header(None)):
-    _check((authorization or "").removeprefix("Bearer "), ADMIN_TOKEN)
+def _session_value() -> str:
+    """What the sign-in cookie holds: a keyed hash of the admin token, never the token itself."""
+    return hmac.new(ADMIN_TOKEN.encode(), b"cyril-session-v1", hashlib.sha256).hexdigest() if ADMIN_TOKEN else ""
+
+
+def _signed_in(request: Request) -> bool:
+    given, want = request.cookies.get(SESSION_COOKIE), _session_value()
+    return bool(given and want and hmac.compare_digest(given, want))
+
+
+def admin(request: Request, authorization: str | None = Header(None)):
+    """The admin token as a Bearer header (every API call the dashboard makes). The sign-in cookie is accepted for
+    plain GETs only, which is what lets <img> tags load screenshots (browsers cache them, and thumbnails can be lazy
+    loaded) without ever allowing a cookie to change anything (no CSRF)."""
+    tok = (authorization or "").removeprefix("Bearer ")
+    if tok:
+        return _check(tok, ADMIN_TOKEN)
+    if request.method in ("GET", "HEAD") and _signed_in(request):
+        return
+    raise HTTPException(401, "unauthorized")
 
 
 def agent(x_api_key: str | None = Header(None)):
@@ -163,13 +185,82 @@ def _range(day: str | None, days: int):
     return start, (d + timedelta(days=days)).timestamp()
 
 
-def _events(user: str | None, start: float, end: float):
-    q, args = "SELECT * FROM events WHERE ts>=? AND ts<?", [start, end]
+# A report is cached for a short while: the Overview and the Employees page ask for the very same numbers, and people
+# flip between pages. Editing rules, groups or settings clears it at once, so those changes are never shown stale.
+CACHE_TTL = float(os.environ.get("CYRIL_CACHE_TTL", "30"))
+_CACHE: dict = {}
+
+
+def _cached(key: tuple, fn):
+    if CACHE_TTL <= 0:
+        return fn()
+    now = time.time()
+    hit = _CACHE.get(key)
+    if hit and now - hit[0] < CACHE_TTL:
+        return hit[1]
+    val = fn()
+    if len(_CACHE) >= 48:
+        _CACHE.pop(min(_CACHE, key=lambda k: _CACHE[k][0]), None)
+    _CACHE[key] = (now, val)
+    return val
+
+
+def _bust() -> None:
+    _CACHE.clear()
+
+
+_LIGHT = "user,device,ts,dur,app,title,domain,idle"     # what a headline report needs (no URL: it is long and unused)
+_FULL = "id,user,device,ts,dur,app,title,url,domain,idle"
+
+
+def _group_filter(group: str | None):
+    """Which employees a report covers, from the dashboard's group picker:
+    ''/None -> everyone except groups marked "exclude from reports" (the normal view);  'all' -> truly everyone;
+    'none' -> employees in no group;  '<id>' -> that group (even an excluded one, so it can still be looked at).
+    Returns None (no filter), ("in", users) or ("out", users)."""
+    if group == "all":
+        return None
+    with db.conn() as c:
+        if group == "none":
+            return ("out", [r[0] for r in c.execute("SELECT user FROM user_groups")])
+        if group and group.isdigit():
+            return ("in", [r[0] for r in c.execute("SELECT user FROM user_groups WHERE group_id=?", (int(group),))])
+        out = [r[0] for r in c.execute("SELECT user FROM user_groups WHERE group_id IN (SELECT id FROM groups WHERE excluded=1)")]
+    return ("out", out) if out else None
+
+
+def _is_work(scope: str | None) -> bool:
+    return scope == "work"
+
+
+def _events(user: str | None, start: float, end: float, *, group: str | None = None, scope: str | None = None,
+            tz: int | None = None, cols: str = _LIGHT):
+    """Events in [start, end) for one person, or for the team narrowed by group. scope='work' trims everything to the
+    working window (WORK_START-WORK_END, the viewer's local time)."""
+    q, args = f"SELECT {cols} FROM events WHERE ts>=? AND ts<?", [start, end]
+    post = None
     if user:
         q += " AND user=?"
         args.append(user)
+    else:
+        f = _group_filter(group)
+        if f is not None:
+            mode, users = f
+            if mode == "in" and not users:
+                return []
+            if users and len(users) <= 800:
+                q += f" AND user {'NOT ' if mode == 'out' else ''}IN ({','.join('?' * len(users))})"
+                args += users
+            elif users:
+                keep = set(users)
+                post = (lambda e: e["user"] in keep) if mode == "in" else (lambda e: e["user"] not in keep)
     with db.conn() as c:
-        return [dict(r) for r in c.execute(q + " ORDER BY ts", args)]
+        rows = [dict(r) for r in c.execute(q + " ORDER BY ts", args)]
+    if post:
+        rows = [e for e in rows if post(e)]
+    if _is_work(scope):
+        rows = clip_hours(rows, tz, WORK_START, WORK_END)
+    return rows
 
 
 def _top(d: dict, n=10):
@@ -181,8 +272,10 @@ def users():
     """Accounts that have reported, with the display name an admin gave them (`name`, None if not renamed)."""
     with db.conn() as c:
         rows = c.execute(
-            "SELECT e.user, n.name, MAX(e.ts+e.dur) last_seen, COUNT(DISTINCT e.device) devices FROM events e "
-            "LEFT JOIN user_names n ON n.user=e.user GROUP BY e.user ORDER BY COALESCE(n.name, e.user) COLLATE NOCASE").fetchall()
+            "SELECT e.user, n.name, MAX(e.ts+e.dur) last_seen, COUNT(DISTINCT e.device) devices, g.id group_id, g.name \"group\", "
+            "COALESCE(g.excluded,0) group_excluded FROM events e "
+            "LEFT JOIN user_names n ON n.user=e.user LEFT JOIN user_groups ug ON ug.user=e.user LEFT JOIN groups g ON g.id=ug.group_id "
+            "GROUP BY e.user ORDER BY COALESCE(n.name, e.user) COLLATE NOCASE").fetchall()
     return [dict(r) for r in rows]
 
 
@@ -214,6 +307,7 @@ def delete_user(b: UserDeleteIn):
     too), alerts, their display name, and the status/commands of devices nobody else uses. Typical use: a rented
     PC is returned, the agent is uninstalled, and the data is wiped. If a screenshot file can't be removed its row is
     kept (so nothing is orphaned) and the count is returned so the delete can simply be run again."""
+    _bust()
     with db.conn() as c:
         f = _user_footprint(c, b.user)
         shots = [dict(r) for r in c.execute("SELECT id, path FROM screenshots WHERE user=?", (b.user,))]
@@ -223,6 +317,7 @@ def delete_user(b: UserDeleteIn):
     for r in shots:                       # image files first, outside the DB lock (thousands of HTTP calls)
         try:
             store.delete(r["path"])
+            _drop_thumb(r["path"])
             removed.append(r["id"])
         except ObjectStoreError as e:
             failed += 1
@@ -235,6 +330,7 @@ def delete_user(b: UserDeleteIn):
         c.execute("DELETE FROM alerts WHERE user=?", (b.user,))
         if not failed:
             c.execute("DELETE FROM user_names WHERE user=?", (b.user,))
+            c.execute("DELETE FROM user_groups WHERE user=?", (b.user,))
         for d in f["devices"]:            # a device other logins still use keeps its status
             if not c.execute("SELECT 1 FROM events WHERE device=? LIMIT 1", (d,)).fetchone():
                 c.execute("DELETE FROM agent_status WHERE device=?", (d,))
@@ -262,15 +358,16 @@ def rename_user(r: RenameIn):
 
 
 @app.get("/api/summary", dependencies=[Depends(admin)])
-def summary(user: str | None = None, day: str | None = None, days: int = Query(1, ge=1, le=92)):
+def summary(user: str | None = None, day: str | None = None, days: int = Query(1, ge=1, le=92),
+            group: str | None = None, scope: str | None = None, tz: int | None = Query(None, ge=-840, le=840)):
     start, end = _range(day, days)
-    rules = db.rules()
+    clf = make_classifier(db.rules())
     labels, cats = defaultdict(float), defaultdict(float)
     apps, sites = defaultdict(float), defaultdict(float)
     per_user = defaultdict(lambda: defaultdict(float))
     hourly = [defaultdict(float) for _ in range(24)]
-    for e in _events(user, start, end):
-        cat, lab = classify(e, rules)
+    for e in _events(user, start, end, group=group, scope=scope, tz=tz):
+        cat, lab = clf(e)
         labels[lab] += e["dur"]
         cats[cat] += e["dur"]
         per_user[e["user"]][lab] += e["dur"]
@@ -293,8 +390,9 @@ def summary(user: str | None = None, day: str | None = None, days: int = Query(1
 
 def _rows(events: list[dict], rules: list[dict]) -> list[dict]:
     out = []
+    clf = make_classifier(rules)
     for e in events:
-        cat, lab = classify(e, rules)
+        cat, lab = clf(e)
         row = {"ts": e["ts"], "dur": e["dur"], "app": e["app"], "title": e["title"], "url": e["url"],
                "domain": e["domain"], "idle": bool(e["idle"]), "category": cat, "label": lab,
                "name": "Idle / away" if e["idle"] else display_name(e["app"], e["domain"])}
@@ -305,27 +403,29 @@ def _rows(events: list[dict], rules: list[dict]) -> list[dict]:
 
 
 @app.get("/api/timeline", dependencies=[Depends(admin)])
-def timeline(user: str, day: str | None = None, tz: int | None = Query(None, ge=-840, le=840), slot: int | None = None):
+def timeline(user: str, day: str | None = None, tz: int | None = Query(None, ge=-840, le=840), slot: int | None = None,
+             scope: str | None = None):
     """One person's day. With a reporting interval set, each block shows the app used most in that block."""
     start, end, _ = _span_or_400(day, day, tz)
-    return _rows(slotize(_events(user, start, end), _slot(slot), tz), db.rules())
+    return _rows(slotize(_events(user, start, end, scope=scope, tz=tz, cols=_FULL), _slot(slot), tz), db.rules())
 
 
 @app.get("/api/web", dependencies=[Depends(admin)])
 def web_report(user: str | None = None, start: str | None = None, end: str | None = None,
-               tz: int | None = Query(None, ge=-840, le=840), limit: int = Query(5000, le=20000)):
+               tz: int | None = Query(None, ge=-840, le=840), limit: int = Query(20000, le=50000),
+               group: str | None = None, scope: str | None = None):
     """Detailed web report: every page visited with its FULL URL, plus per-site totals. Always exact (never
     grouped into blocks). Private/incognito windows are not in here: their address is not recorded."""
     s, e, days = _span_or_400(start, end, tz)
     if len(days) > 31:
         raise HTTPException(400, "the web report covers at most 31 days")
-    rules = db.rules()
+    clf = make_classifier(db.rules())
     pages, sites = [], {}
     last = {}  # (user, url) -> page row, to merge back-to-back stretches on the same page
-    for ev in _events(user, s, e):
+    for ev in _events(user, s, e, group=group, scope=scope, tz=tz, cols=_FULL):
         if ev["idle"] or not ev["url"]:
             continue
-        cat, lab = classify(ev, rules)
+        cat, lab = clf(ev)
         prev = last.get((ev["user"], ev["url"]))
         if prev and ev["ts"] - (prev["ts"] + prev["dur"]) <= 60:
             prev["dur"] = ev["ts"] + ev["dur"] - prev["ts"]
@@ -346,17 +446,41 @@ def web_report(user: str | None = None, start: str | None = None, end: str | Non
 
 @app.get("/api/slots", dependencies=[Depends(admin)])
 def slot_report(user: str, start: str | None = None, end: str | None = None,
-                tz: int | None = Query(None, ge=-840, le=840), slot: int | None = None):
+                tz: int | None = Query(None, ge=-840, le=840), slot: int | None = None, scope: str | None = None):
     """The time-slot report for a date range: one row per block (or per raw event when the interval is Exact)."""
     s, e, days = _span_or_400(start, end, tz)
     if len(days) > 31:
         raise HTTPException(400, "the time-slot report covers at most 31 days")
     slot = _slot(slot)
-    return {"slot": slot, "rows": _rows(slotize(_events(user, s, e), slot, tz), db.rules())}
+    return {"slot": slot, "rows": _rows(slotize(_events(user, s, e, scope=scope, tz=tz, cols=_FULL), slot, tz), db.rules())}
 
 
 @app.get("/api/me", dependencies=[Depends(admin)])
 def me():
+    return {"ok": True}
+
+
+def _https(request: Request) -> bool:
+    return (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip() == "https"
+
+
+class SessionIn(BaseModel):
+    remember: bool = False
+
+
+@app.post("/api/session", dependencies=[Depends(admin)])
+def start_session(b: SessionIn, request: Request, response: Response):
+    """Called right after the admin token is accepted: sets an HttpOnly cookie so the SERVER can tell a signed-in
+    browser before it sends any page (the dashboard HTML is not served to anyone else), and so <img> tags can load
+    screenshots. The cookie holds a keyed hash, never the token, and is only honoured for GET requests."""
+    response.set_cookie(SESSION_COOKIE, _session_value(), httponly=True, samesite="lax", secure=_https(request),
+                        max_age=30 * 86400 if b.remember else None, path="/")
+    return {"ok": True}
+
+
+@app.post("/api/logout")
+def end_session(response: Response):
+    response.delete_cookie(SESSION_COOKIE, path="/")
     return {"ok": True}
 
 
@@ -421,6 +545,7 @@ def get_settings():
 @app.put("/api/settings", dependencies=[Depends(admin)])
 def put_settings(s: SettingsIn):
     """Change any subset of the settings. Screenshot intervals reach every agent within about a minute."""
+    _bust()
     changes = {}
     for key, value, allowed in (("report_interval", s.report_interval, SLOT_CHOICES),
                                 ("screenshot_every", s.screenshot_every, SHOT_EVERY),
@@ -441,42 +566,138 @@ def _delta(cur: dict, prev: dict):
     return {"productivity_pct": prev["productivity_pct"], "active_seconds": prev["active_seconds"]}
 
 
+def _alert_counts(s: float, e: float, group: str | None, scope: str | None, tz: int | None) -> dict:
+    with db.conn() as c:
+        rows = c.execute("SELECT ts, user, acked FROM alerts WHERE ts>=? AND ts<?", (s, e)).fetchall()
+    f = _group_filter(group)
+    if f is not None:
+        users = set(f[1])
+        rows = [r for r in rows if (r["user"] in users) == (f[0] == "in")]
+    if _is_work(scope):
+        rows = [r for r in rows if in_work_hours(r["ts"], tz, WORK_START, WORK_END)]
+    return {"total": len(rows), "open": sum(1 for r in rows if not r["acked"])}
+
+
 @app.get("/api/overview", dependencies=[Depends(admin)])
 def overview(start: str | None = None, end: str | None = None, tz: int | None = Query(None, ge=-840, le=840),
-             slot: int | None = None):
+             slot: int | None = None, group: str | None = None, scope: str | None = None):
     """Team-wide dashboard numbers for an inclusive local-date range, plus the previous equal-length range."""
     s, e, days = _span_or_400(start, end, tz)
     slot = _slot(slot)
-    rules = db.rules()
-    cur = aggregate(slotize(_events(None, s, e), slot, tz), rules, tz, days, s)
+    return _cached(("overview", s, e, tz, slot, group or "", scope or ""), lambda: _overview(s, e, days, tz, slot, group, scope))
+
+
+def _overview(s, e, days, tz, slot, group, scope):
+    clf = make_classifier(db.rules())
+    cur = aggregate(slotize(_events(None, s, e, group=group, scope=scope, tz=tz), slot, tz), clf, tz, days, s)
     ps, pe = previous_span(days)
     ps_ts, pe_ts, pdays = span(ps, pe, tz)
-    prev = aggregate(slotize(_events(None, ps_ts, pe_ts), slot, tz), rules, tz, pdays, ps_ts)
-    with db.conn() as c:
-        alerts = c.execute("SELECT COUNT(*) n, SUM(acked=0) open FROM alerts WHERE ts>=? AND ts<?", (s, e)).fetchone()
+    prev = totals(slotize(_events(None, ps_ts, pe_ts, group=group, scope=scope, tz=tz), slot, tz), clf)
     return {**cur, "start": s, "end": e, "days": days, "previous": _delta(cur, prev), "slot": slot,
-            "alerts": {"total": alerts["n"], "open": alerts["open"] or 0}}
+            "alerts": _alert_counts(s, e, group, scope, tz), "scope": scope or "all"}
 
 
 @app.get("/api/employee", dependencies=[Depends(admin)])
 def employee(user: str, start: str | None = None, end: str | None = None,
-             tz: int | None = Query(None, ge=-840, le=840), slot: int | None = None):
+             tz: int | None = Query(None, ge=-840, le=840), slot: int | None = None, scope: str | None = None):
     """Everything for one person over a date range (the per-employee report page)."""
     s, e, days = _span_or_400(start, end, tz)
     slot = _slot(slot)
-    rules = db.rules()
-    events = slotize(_events(user, s, e), slot, tz)
-    cur = aggregate(events, rules, tz, days, s, top_n=15)
+    return _cached(("employee", user, s, e, tz, slot, scope or ""), lambda: _employee(user, s, e, days, tz, slot, scope))
+
+
+def _employee(user, s, e, days, tz, slot, scope):
+    clf = make_classifier(db.rules())
+    events = slotize(_events(user, s, e, scope=scope, tz=tz), slot, tz)
+    cur = aggregate(events, clf, tz, days, s, top_n=15)
     ps, pe = previous_span(days)
     ps_ts, pe_ts, pdays = span(ps, pe, tz)
-    prev = aggregate(slotize(_events(user, ps_ts, pe_ts), slot, tz), rules, tz, pdays, ps_ts)
+    prev = totals(slotize(_events(user, ps_ts, pe_ts, scope=scope, tz=tz), slot, tz), clf)
     with db.conn() as c:
         devices = [r[0] for r in c.execute("SELECT DISTINCT device FROM events WHERE user=? AND ts>=? AND ts<?", (user, s, e))]
-        shots = c.execute("SELECT COUNT(*) FROM screenshots WHERE user=? AND ts>=? AND ts<?", (user, s, e)).fetchone()[0]
+        shot_ts = [r[0] for r in c.execute("SELECT ts FROM screenshots WHERE user=? AND ts>=? AND ts<?", (user, s, e))]
+    shots = sum(1 for t in shot_ts if not _is_work(scope) or in_work_hours(t, tz, WORK_START, WORK_END))
     worked = [d for d in cur["daily"] if d["first"] is not None]
     return {**cur, "user": user, "start": s, "end": e, "days": days, "previous": _delta(cur, prev), "slot": slot,
-            "devices": devices, "screenshots": shots, "days_active": len(worked),
+            "scope": scope or "all", "devices": devices, "screenshots": shots, "days_active": len(worked),
             "avg_active_per_day": round(cur["active_seconds"] / len(worked)) if worked else 0}
+
+
+# ---------------------------------------------------------------- groups
+class GroupIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    excluded: bool = False
+
+
+def _group_name(name: str) -> str:
+    return " ".join(name.split())
+
+
+@app.get("/api/groups", dependencies=[Depends(admin)])
+def list_groups():
+    """Groups with how many employees each holds, plus the count of employees in no group."""
+    with db.conn() as c:
+        rows = c.execute("SELECT g.id, g.name, g.excluded, COUNT(ug.user) members FROM groups g "
+                         "LEFT JOIN user_groups ug ON ug.group_id=g.id GROUP BY g.id ORDER BY g.name COLLATE NOCASE").fetchall()
+        total = c.execute("SELECT COUNT(DISTINCT user) FROM events").fetchone()[0]
+        grouped = c.execute("SELECT COUNT(*) FROM user_groups").fetchone()[0]
+    return {"groups": [{**dict(r), "excluded": bool(r["excluded"])} for r in rows], "ungrouped": max(0, total - grouped)}
+
+
+@app.post("/api/groups", dependencies=[Depends(admin)])
+def add_group(g: GroupIn):
+    _bust()
+    name = _group_name(g.name)
+    if not name:
+        raise HTTPException(400, "give the group a name")
+    with db.conn() as c:
+        if c.execute("SELECT 1 FROM groups WHERE name=?", (name,)).fetchone():
+            raise HTTPException(409, f'there is already a group called "{name}"')
+        cur = c.execute("INSERT INTO groups(name, excluded) VALUES(?,?)", (name, int(g.excluded)))
+    return {"id": cur.lastrowid, "name": name, "excluded": g.excluded}
+
+
+@app.put("/api/groups/{gid}", dependencies=[Depends(admin)])
+def edit_group(gid: int, g: GroupIn):
+    _bust()
+    name = _group_name(g.name)
+    with db.conn() as c:
+        if c.execute("SELECT 1 FROM groups WHERE name=? AND id<>?", (name, gid)).fetchone():
+            raise HTTPException(409, f'there is already a group called "{name}"')
+        cur = c.execute("UPDATE groups SET name=?, excluded=? WHERE id=?", (name, int(g.excluded), gid))
+    if not cur.rowcount:
+        raise HTTPException(404)
+    return {"ok": True}
+
+
+@app.delete("/api/groups/{gid}", dependencies=[Depends(admin)])
+def del_group(gid: int):
+    """Deleting a group never deletes people: its members simply become ungrouped."""
+    _bust()
+    with db.conn() as c:
+        c.execute("DELETE FROM user_groups WHERE group_id=?", (gid,))
+        c.execute("DELETE FROM groups WHERE id=?", (gid,))
+    return {"ok": True}
+
+
+class AssignIn(BaseModel):
+    users: list[str] = Field(min_length=1, max_length=2000)
+    group_id: int | None = None      # None = take them out of any group
+
+
+@app.post("/api/users/group", dependencies=[Depends(admin)])
+def assign_group(a: AssignIn):
+    _bust()
+    with db.conn() as c:
+        if a.group_id is not None and not c.execute("SELECT 1 FROM groups WHERE id=?", (a.group_id,)).fetchone():
+            raise HTTPException(404, "no such group")
+        for u in a.users:
+            if a.group_id is None:
+                c.execute("DELETE FROM user_groups WHERE user=?", (u,))
+            else:
+                c.execute("INSERT INTO user_groups(user, group_id) VALUES(?,?) ON CONFLICT(user) DO UPDATE SET group_id=excluded.group_id",
+                          (u, a.group_id))
+    return {"updated": len(a.users)}
 
 
 # ----------------------------------------------------------------- rules
@@ -496,6 +717,7 @@ def list_rules():
 
 @app.post("/api/rules", dependencies=[Depends(admin)])
 def add_rule(r: RuleIn):
+    _bust()
     with db.conn() as c:
         cur = c.execute("INSERT INTO rules(kind,pattern,category,label,alert,priority) VALUES(?,?,?,?,?,?)",
                         (r.kind, r.pattern, r.category, r.label, int(r.alert), r.priority))
@@ -504,6 +726,7 @@ def add_rule(r: RuleIn):
 
 @app.put("/api/rules/{rid}", dependencies=[Depends(admin)])
 def edit_rule(rid: int, r: RuleIn):
+    _bust()
     with db.conn() as c:
         cur = c.execute("UPDATE rules SET kind=?,pattern=?,category=?,label=?,alert=?,priority=? WHERE id=?",
                         (r.kind, r.pattern, r.category, r.label, int(r.alert), r.priority, rid))
@@ -528,6 +751,7 @@ def test_rule(t: RuleTest):
 @app.post("/api/rules/seed-studio", dependencies=[Depends(admin)])
 def seed_studio_rules():
     """Add the design-studio starter rules that aren't already present (never overwrites existing rules)."""
+    _bust()
     with db.conn() as c:
         have = {(r["kind"], r["pattern"].lower()) for r in c.execute("SELECT kind, pattern FROM rules")}
         new = [r for r in STUDIO_RULES if (r[0], r[1].lower()) not in have]
@@ -542,11 +766,12 @@ def uncategorized(days: int = Query(30, ge=1, le=92), limit: int = Query(30, le=
     start, end, _ = span(None, None, None)
     start -= (days - 1) * 86400
     rules = db.rules()
+    clf = make_classifier(rules)
     apps, sites = defaultdict(float), defaultdict(float)
-    for e in _events(None, start, end):
+    for e in _events(None, start, end, group="all"):
         if e["idle"]:
             continue
-        if matching_rule({**e, "domain": e["domain"]}, rules) is None:
+        if clf.rule_for(e) is None:
             if e["domain"]:
                 sites[e["domain"]] += e["dur"]
             elif e["app"]:
@@ -556,6 +781,7 @@ def uncategorized(days: int = Query(30, ge=1, le=92), limit: int = Query(30, le=
 
 @app.delete("/api/rules/{rid}", dependencies=[Depends(admin)])
 def del_rule(rid: int):
+    _bust()
     with db.conn() as c:
         c.execute("DELETE FROM rules WHERE id=?", (rid,))
     return {"ok": True}
@@ -585,6 +811,7 @@ def list_alerts(unacked: bool = False, user: str | None = None, start: float | N
 
 @app.post("/api/alerts/{aid}/ack", dependencies=[Depends(admin)])
 def ack_alert(aid: int):
+    _bust()
     with db.conn() as c:
         c.execute("UPDATE alerts SET acked=1 WHERE id=?", (aid,))
     return {"ok": True}
@@ -592,15 +819,16 @@ def ack_alert(aid: int):
 
 # ----------------------------------------------------------- trend (charts)
 @app.get("/api/trend", dependencies=[Depends(admin)])
-def trend(user: str | None = None, days: int = Query(14, ge=1, le=92)):
-    rules = db.rules()
+def trend(user: str | None = None, days: int = Query(14, ge=1, le=92), group: str | None = None,
+          scope: str | None = None, tz: int | None = Query(None, ge=-840, le=840)):
+    clf = make_classifier(db.rules())
     end = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     start = end - timedelta(days=days)
     buckets = [defaultdict(float) for _ in range(days)]
-    for e in _events(user, start.timestamp(), end.timestamp()):
+    for e in _events(user, start.timestamp(), end.timestamp(), group=group, scope=scope, tz=tz):
         idx = int((e["ts"] - start.timestamp()) // 86400)
         if 0 <= idx < days:
-            _, lab = classify(e, rules)
+            _, lab = clf(e)
             buckets[idx][lab] += e["dur"]
     out = []
     for i in range(days):
@@ -641,6 +869,7 @@ def upload_screenshot(s: ScreenshotIn):
         print(f"screenshot upload failed, image store error: {e!r}")
         # The reason travels back to the agent (and from there to Install agents), so "502" is never a mystery.
         raise HTTPException(502, f"image store error: {str(e)[:240]}")
+    _store_thumb(key, data)
     with db.conn() as c:
         cur = c.execute(
             "INSERT INTO screenshots(user,device,ts,app,title,path,bytes) VALUES(?,?,?,?,?,?,?)",
@@ -652,27 +881,90 @@ def upload_screenshot(s: ScreenshotIn):
 
 
 @app.get("/api/screenshots", dependencies=[Depends(admin)])
-def list_screenshots(user: str, start: float, end: float, limit: int = Query(500, le=2000)):
+def list_screenshots(user: str, start: float, end: float, limit: int = Query(500, le=2000),
+                     scope: str | None = None, tz: int | None = Query(None, ge=-840, le=840)):
     with db.conn() as c:
         rows = c.execute(
             "SELECT id,user,device,ts,app,title,bytes FROM screenshots "
             "WHERE user=? AND ts>=? AND ts<? ORDER BY ts LIMIT ?",
             (user, start, end, limit)).fetchall()
+    if _is_work(scope):
+        rows = [r for r in rows if in_work_hours(r["ts"], tz, WORK_START, WORK_END)]
     return [{**dict(r), "name": display_name(r["app"] or "")} for r in rows]
 
 
-@app.get("/api/screenshots/{sid}/image", dependencies=[Depends(admin)])
-def get_screenshot(sid: int):
+# Thumbnails are made on the server, once, and stored next to the original: a gallery of 500 screenshots then moves
+# ~500 x 15 KB instead of 500 x 400 KB. Older screenshots get theirs the first time they are looked at.
+THUMB_SIZE = (360, 225)
+IMAGE_CACHE = "private, max-age=604800, immutable"   # a screenshot never changes (it can only be deleted)
+
+
+def _thumb_key(path: str) -> str:
+    return "thumbs/" + path
+
+
+def _make_thumb(data: bytes) -> bytes:
+    from PIL import Image
+    im = Image.open(io.BytesIO(data))
+    im.draft("RGB", (THUMB_SIZE[0] * 2, THUMB_SIZE[1] * 2))   # JPEG: decode at reduced size (much faster)
+    im = im.convert("RGB")
+    im.thumbnail(THUMB_SIZE)
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=62, optimize=True)
+    return buf.getvalue()
+
+
+def _store_thumb(path: str, data: bytes) -> bytes | None:
+    """Best effort: a missing thumbnail must never fail an upload (it is rebuilt on demand)."""
+    try:
+        t = _make_thumb(data)
+        store.put(_thumb_key(path), t)
+        return t
+    except Exception as e:
+        print(f"thumbnail for {path} not stored: {e!r}")
+        return None
+
+
+def _drop_thumb(path: str) -> None:
+    try:
+        store.delete(_thumb_key(path))
+    except ObjectStoreError as e:
+        print(f"could not remove thumbnail of {path}: {e!r}")
+
+
+def _screenshot_path(sid: int) -> str:
     with db.conn() as c:
         row = c.execute("SELECT path FROM screenshots WHERE id=?", (sid,)).fetchone()
     if not row:
         raise HTTPException(404)
+    return row["path"]
+
+
+@app.get("/api/screenshots/{sid}/image", dependencies=[Depends(admin)])
+def get_screenshot(sid: int):
+    path = _screenshot_path(sid)
     try:
-        data = store.get(row["path"])
+        data = store.get(path)
     except ObjectStoreError as e:
         print(f"screenshot fetch failed, image store error: {e!r}")
         raise HTTPException(404)
-    return Response(content=data, media_type="image/jpeg")
+    return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": IMAGE_CACHE})
+
+
+@app.get("/api/screenshots/{sid}/thumb", dependencies=[Depends(admin)])
+def get_screenshot_thumb(sid: int):
+    """The small version used by galleries and the filmstrip. Falls back to building it from the original."""
+    path = _screenshot_path(sid)
+    try:
+        data = store.get(_thumb_key(path))
+    except ObjectStoreError:
+        try:
+            full = store.get(path)
+        except ObjectStoreError as e:
+            print(f"screenshot fetch failed, image store error: {e!r}")
+            raise HTTPException(404)
+        data = _store_thumb(path, full) or full   # cannot resize (corrupt image?): the original is better than nothing
+    return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": IMAGE_CACHE})
 
 
 class ScreenshotDelete(BaseModel):
@@ -681,6 +973,7 @@ class ScreenshotDelete(BaseModel):
 
 @app.post("/api/screenshots/delete", dependencies=[Depends(admin)])
 def delete_screenshots(d: ScreenshotDelete):
+    _bust()
     if not d.ids:
         return {"deleted": 0}
     marks = ",".join("?" * len(d.ids))
@@ -688,6 +981,7 @@ def delete_screenshots(d: ScreenshotDelete):
         rows = c.execute(f"SELECT id, path FROM screenshots WHERE id IN ({marks})", d.ids).fetchall()
         for r in rows:
             store.delete(r["path"])
+            _drop_thumb(r["path"])
         c.execute(f"DELETE FROM screenshots WHERE id IN ({marks})", d.ids)
     return {"deleted": len(rows)}
 
@@ -769,6 +1063,11 @@ def _agent_one_liners(base: str, key: str) -> dict:
     return {
         "install": f"& ([scriptblock]::Create((irm '{base}/install.ps1?key={quote(key, safe='')}')))",
         "uninstall": f"& ([scriptblock]::Create((irm '{base}/uninstall.ps1')))",
+        # Silent roll-out variants: no step list, no first-report wait, one line out (see install.ps1 -Silent).
+        "install_silent": f"& ([scriptblock]::Create((irm '{base}/install.ps1?key={quote(key, safe='')}'))) -Silent",
+        "install_silent_cmd": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& ([scriptblock]::Create((irm '"
+                              + f"{base}/install.ps1?key={quote(key, safe='')}'))) -Silent\"",
+        "mac_install_silent": f"curl -fsSL '{base}/install.sh?key={quote(key, safe='')}' | sudo bash -s -- --silent",
         "mac_install": f"curl -fsSL '{base}/install.sh?key={quote(key, safe='')}' | sudo bash",
         "mac_uninstall": f"curl -fsSL '{base}/uninstall.sh' | sudo bash",
     }
@@ -1022,18 +1321,36 @@ def health():
 
 app.mount("/static", _Static(directory=str(STATIC)), name="static")
 
-# Pages are static HTML; each one checks the admin token client-side and bounces to /login. All data
-# comes from the token-protected /api/* endpoints, so serving the shells unauthenticated leaks nothing.
-PAGES = {"/": "index.html", "/login": "login.html", "/employees": "employees.html", "/employee": "employee.html",
+# The dashboard pages are NOT served to anyone who is not signed in: the server answers with a redirect to /login
+# before a single byte of the interface is sent (the old behaviour sent the whole page and let JavaScript bounce the
+# visitor, so the interface flashed up first). Only /login, and the generic /static/app.js + app.css it needs, are
+# public. Everything private (all data) was always behind the token-protected /api/* endpoints.
+PAGES_DIR = Path(__file__).parent / "pages"
+PAGES = {"/": "index.html", "/employees": "employees.html", "/employee": "employee.html",
          "/day": "day.html", "/web": "web.html", "/alerts": "alerts.html", "/install": "install.html", "/screenshots": "screenshots.html",
          "/rules": "rules.html"}
+_NO_STORE = {"Cache-Control": "no-store"}   # never let a shared/proxy cache keep a signed-in page
+
+
+def _safe_next(n: str | None) -> str:
+    return n if n and re.match(r"^/(?!/)[^\\\s]*$", n) else "/"
 
 
 def _page(name: str):
-    def handler():
-        return FileResponse(STATIC / name, headers={"Cache-Control": "no-cache"})
+    def handler(request: Request):
+        if not _signed_in(request):
+            nxt = request.url.path + (("?" + request.url.query) if request.url.query else "")
+            return RedirectResponse("/login?next=" + quote(nxt, safe=""), status_code=302, headers=_NO_STORE)
+        return FileResponse(PAGES_DIR / name, headers=_NO_STORE)
     return handler
 
 
 for _path, _file in PAGES.items():
     app.get(_path, include_in_schema=False)(_page(_file))
+
+
+@app.get("/login", include_in_schema=False)
+def login_page(request: Request, next: str | None = None):
+    if _signed_in(request):
+        return RedirectResponse(_safe_next(next), status_code=302, headers=_NO_STORE)
+    return FileResponse(PAGES_DIR / "login.html", headers=_NO_STORE)

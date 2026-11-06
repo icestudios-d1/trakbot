@@ -2,6 +2,7 @@
 "youtube.com", "claude.ai", "powershell.exe", "Photoshop.exe", and browser time shown under the
 *website* rather than the browser. Rules still match on the raw app/domain; this is display only."""
 import re
+from functools import lru_cache
 
 BROWSERS = ("msedge", "edge", "chrome", "chromium", "firefox", "brave", "opera", "vivaldi", "safari", "arc")
 
@@ -64,6 +65,7 @@ APPS = {
 _SECOND_LEVEL = {"co", "com", "org", "net", "gov", "edu", "ac"}
 
 
+@lru_cache(maxsize=20000)
 def is_browser(app: str) -> bool:
     a = (app or "").lower()
     return any(b in a for b in BROWSERS)
@@ -74,6 +76,7 @@ def _words(label: str) -> str:
     return label.title() if label.islower() or label.isupper() else label
 
 
+@lru_cache(maxsize=20000)
 def site_name(domain: str) -> str:
     """'www.claude.ai' -> 'Claude', 'app.freepik.com' -> 'Freepik', 'mail.google.com' -> 'Gmail'."""
     host = (domain or "").lower().strip().removeprefix("www.")
@@ -90,6 +93,7 @@ def site_name(domain: str) -> str:
     return _words(label)
 
 
+@lru_cache(maxsize=20000)
 def app_name(app: str) -> str:
     """'powershell.exe' -> 'PowerShell', 'Photoshop.exe' -> 'Photoshop', 'OUTLOOK.EXE' -> 'Outlook'."""
     a = (app or "").strip()
@@ -103,6 +107,7 @@ def app_name(app: str) -> str:
     return _words(re.sub(r"^adobe[ _-]+", "", stem, flags=re.I)) or "Unknown"
 
 
+@lru_cache(maxsize=20000)
 def display_name(app: str, domain: str = "") -> str:
     """What a report should call this activity: the website if there is one, else the program."""
     return site_name(domain) or app_name(app)

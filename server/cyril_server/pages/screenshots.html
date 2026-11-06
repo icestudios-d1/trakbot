@@ -8,7 +8,8 @@
 <label class="mut">While the same app stays in front, every <select id="evSt"></select></label><button id="evSave">Save</button><span id="evMsg" class="mut sm"></span></div></div>
 <div class="bar-controls"><select id="u" aria-label="Employee"><option value="">Pick an employee…</option></select>
 <label>From <input id="from" type="datetime-local"></label><label>To <input id="to" type="datetime-local"></label>
-<button class="primary" id="load">Load</button><button id="all">Select all</button><button class="danger" id="del">Delete selected</button><span id="count" class="mut"></span></div>
+<button class="primary" id="load">Load</button><button id="all">Select all</button><button id="none">Clear</button><button class="danger" id="del">Delete selected</button><span id="count" class="mut"></span></div>
+<div class="mut sm" style="margin:-8px 0 12px">Tip: click one picture's box, then <b>hold Shift</b> and click another to select everything in between (Shift-click again on a selected range to un-select it). Click a picture to open it full size.</div>
 <div id="err" class="callout" style="display:none"></div>
 <div class="shots" id="shots"><span class="mut">Pick an employee and a range, then Load.</span></div>
 </main>
@@ -26,11 +27,37 @@ async function load(){
   TB.error();if(!$('#u').value){$('#shots').innerHTML='<span class="mut">Pick an employee first.</span>';return}
   try{
     const rows=await TB.api('/api/screenshots?'+TB.qs({user:$('#u').value,start:new Date($('#from').value)/1000,end:new Date($('#to').value)/1000}));
-    $('#count').textContent=rows.length+' screenshot(s)';
-    $('#shots').innerHTML=rows.map(r=>`<div class="shot" data-id="${r.id}"><label><input type="checkbox" class="pick" aria-label="Select"><img alt="Screenshot of ${esc(r.name||r.app)}"></label><div class="meta">${TB.when(r.ts)} · ${esc(r.name||r.app)}<br>${esc((r.title||'').slice(0,60))}</div></div>`).join('')||'<span class="mut">No screenshots in this range.</span>';
-    for(const d of $('#shots').querySelectorAll('.shot')){TB.blobUrl(`/api/screenshots/${d.dataset.id}/image`).then(u=>{const i=d.querySelector('img');i.src=u;i.style.cursor='zoom-in';i.onclick=e=>{e.preventDefault();window.open(u)}}).catch(()=>{})}
+    total=rows.length;last=-1;
+    // Thumbnails only (made on the server, ~15 KB), loaded as they scroll into view. Full size opens on click.
+    $('#shots').innerHTML=rows.map(r=>`<div class="shot" data-id="${r.id}"><label><input type="checkbox" class="pick" aria-label="Select this screenshot"><img alt="Screenshot of ${esc(r.name||r.app)}" loading="lazy" decoding="async" src="${TB.shotUrl(r.id)}"></label><a class="zoom chip" href="${TB.shotUrl(r.id,true)}" target="_blank" rel="noopener" title="Open full size">⤢</a><div class="meta">${TB.when(r.ts)} · ${esc(r.name||r.app)}<br>${esc((r.title||'').slice(0,60))}</div></div>`).join('')||'<span class="mut">No screenshots in this range.</span>';
+    count();
   }catch(e){TB.error(e)}
 }
+// ---- selection: click = toggle one; Shift+click = everything between the last click and this one
+let total=0,last=-1;
+const tiles=()=>[...document.querySelectorAll('#shots .shot')];
+const picks=()=>tiles().filter(d=>d.querySelector('.pick').checked);
+function count(){
+  const n=picks().length;tiles().forEach(d=>d.classList.toggle('sel',d.querySelector('.pick').checked));
+  $('#count').textContent=total?`${n} of ${total} selected`:'';
+  $('#del').disabled=!n;
+}
+function setRange(a,b,on){const t=tiles();for(let i=Math.min(a,b);i<=Math.max(a,b);i++)t[i].querySelector('.pick').checked=on}
+function clickTile(i,shift,box){
+  const t=tiles(),on=box?box.checked:!t[i].querySelector('.pick').checked;
+  if(shift&&last>=0){setRange(last,i,on)}else if(!box){t[i].querySelector('.pick').checked=on}
+  last=i;count();
+}
+$('#shots').addEventListener('click',e=>{
+  const d=e.target.closest('.shot');if(!d)return;const i=tiles().indexOf(d);
+  if(e.target.classList.contains('pick')){clickTile(i,e.shiftKey,e.target);return}     // the checkbox (Shift-aware)
+  if(e.target.closest('.zoom'))return;
+  if(e.target.tagName==='IMG'){                                                       // the picture itself
+    e.preventDefault();
+    if(e.shiftKey||e.ctrlKey||e.metaKey){clickTile(i,e.shiftKey,null)}else window.open(TB.shotUrl(d.dataset.id,true),'_blank','noopener');
+  }
+});
+$('#shots').addEventListener('mousedown',e=>{if(e.shiftKey)e.preventDefault()});       // no text selection while Shift-clicking
 const fmtS=n=>n<60?n+' seconds':n%60?(n/60)+' minutes':(n/60)+(n===60?' minute':' minutes');
 TB.api('/api/settings').then(c=>{
   $('#evSw').innerHTML=c.screenshot_every_choices.map(v=>`<option value="${v}">${fmtS(v)}</option>`).join('');$('#evSw').value=c.screenshot_every;
@@ -38,10 +65,12 @@ TB.api('/api/settings').then(c=>{
 }).catch(TB.error);
 $('#evSave').onclick=async()=>{try{await TB.api('/api/settings',{method:'PUT',body:JSON.stringify({screenshot_every:+$('#evSw').value,screenshot_stable_every:+$('#evSt').value})});$('#evMsg').textContent='Saved. PCs pick it up within a minute.'}catch(e){TB.error(e)}};
 $('#load').onclick=load;
-$('#all').onclick=()=>document.querySelectorAll('.pick').forEach(c=>c.checked=true);
+$('#all').onclick=()=>{setRange(0,Math.max(0,tiles().length-1),true);count()};
+$('#none').onclick=()=>{tiles().forEach(d=>d.querySelector('.pick').checked=false);last=-1;count()};
 $('#del').onclick=async()=>{
-  const ids=[...document.querySelectorAll('.shot')].filter(d=>d.querySelector('.pick').checked).map(d=>+d.dataset.id);
+  const ids=picks().map(d=>+d.dataset.id);
   if(!ids.length||!confirm(`Permanently delete ${ids.length} screenshot(s)? This cannot be undone.`))return;
-  await TB.api('/api/screenshots/delete',{method:'POST',body:JSON.stringify({ids})});load();
+  try{await TB.api('/api/screenshots/delete',{method:'POST',body:JSON.stringify({ids})});load()}catch(e){TB.error(e)}
 };
+$('#del').disabled=true;
 </script></body></html>

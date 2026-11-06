@@ -40,3 +40,21 @@ def test_incognito_stays_flagged_even_though_the_browser_has_a_higher_priority_r
 def test_rules_for_other_programs_are_unaffected():
     assert classify(ev("Photoshop.exe"), R) == ("Design", "productive")
     assert classify(ev("Photoshop.exe", "", "", True), R) == ("Idle", "idle")
+
+
+def test_fast_classifier_agrees_with_classify():
+    """make_classifier is an optimisation of classify(): over every combination it must give identical answers."""
+    import itertools
+    from cyril_server.classify import classify, make_classifier
+    from cyril_server.default_rules import DEFAULT_RULES, STUDIO_RULES
+    rules = [dict(id=i, kind=k, pattern=p, category=c, label=l, alert=a, priority=0)
+             for i, (k, p, c, l, a) in enumerate(list(DEFAULT_RULES) + [(*r, 0) if len(r) == 4 else r for r in STUDIO_RULES])]
+    rules += [dict(id=999, kind="app", pattern="msedge.exe", category="Browser", label="neutral", alert=0, priority=0),
+              dict(id=1000, kind="title", pattern="(", category="Broken", label="neutral", alert=0, priority=0)]
+    apps = ["", "Photoshop.exe", "msedge.exe", "chrome.exe", "explorer.exe", "Figma.exe", "unknown.exe"]
+    domains = ["", "youtube.com", "m.youtube.com", "facebook.com", "claude.ai", "unknown.org"]
+    titles = ["", "InPrivate - Microsoft Edge", "Incognito", "Netflix", "doc.psd @ 50%", "x"]
+    clf = make_classifier(rules)
+    for app, dom, title, idle in itertools.product(apps, domains, titles, (False, True)):
+        ev = {"app": app, "domain": dom, "title": title, "idle": idle}
+        assert clf(ev) == classify(ev, rules), ev
