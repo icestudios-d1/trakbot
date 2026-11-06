@@ -32,6 +32,15 @@ CREATE TABLE IF NOT EXISTS update_log(
   id INTEGER PRIMARY KEY, ts REAL NOT NULL, user TEXT NOT NULL, device TEXT NOT NULL,
   from_version TEXT, to_version TEXT, ok INTEGER NOT NULL, detail TEXT);
 CREATE INDEX IF NOT EXISTS ul_ts ON update_log(ts);
+-- Team-wide reports filter on time alone; (user, ts) cannot serve that, so every overview used to scan the table.
+CREATE INDEX IF NOT EXISTS ev_ts ON events(ts);
+CREATE INDEX IF NOT EXISTS ss_ts ON screenshots(ts);
+CREATE INDEX IF NOT EXISTS al_ts ON alerts(ts);
+-- Employee groups (business units, "not allocated yet" machines...). An employee is in at most one group; a group
+-- marked `excluded` is left out of the regular (unfiltered) reports and only shows when picked explicitly.
+CREATE TABLE IF NOT EXISTS groups(
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, excluded INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS user_groups(user TEXT PRIMARY KEY, group_id INTEGER NOT NULL);
 """
 
 

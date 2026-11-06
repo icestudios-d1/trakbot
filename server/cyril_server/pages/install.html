@@ -13,7 +13,14 @@
   <li><h2>Paste and run this</h2>
    <div class="cmd"><code id="inst">Loading…</code><button class="primary" data-copy="inst">Copy</button></div>
    <div class="mut sm">It downloads the agent from this server, checks it, installs it to start whenever someone logs on, then waits for the PC's first report and tells you whether it arrived (and, if not, why). Safe to run again: it updates in place.
-   To report under a name instead of the Windows login, add <code>-User "Priya"</code> after the closing bracket. The command contains the agent key, so share it only with whoever sets up PCs.</div></li>
+   To report under a name instead of the Windows login, add <code>-User "Priya"</code> after the closing bracket. The command contains the agent key, so share it only with whoever sets up PCs.</div>
+   <details style="margin-top:10px"><summary><b>Silent install</b> (for rolling out to many PCs, or when nobody should watch a long checklist)</summary>
+    <div class="mut sm" style="margin-top:6px">Same install, same checks, but it prints no step list and does <b>not</b> wait for the first report: the agent is installed, registered and started before the command returns, then it prints one line. A failure still stops with an error and a non-zero exit code. Run it in an elevated PowerShell:</div>
+    <div class="cmd"><code id="instS">Loading…</code><button data-copy="instS">Copy</button></div>
+    <div class="mut sm">From a deployment tool (Intune, GPO startup script, RMM, a <code>.bat</code> file) that runs as SYSTEM or an administrator but is not PowerShell:</div>
+    <div class="cmd"><code id="instC">Loading…</code><button data-copy="instC">Copy</button></div>
+    <div class="mut sm">Closing the normal installer's window early is safe too: by the time it says <i>Waiting for Server Confirmation</i> the agent is already installed and running (it is started by Windows Task Scheduler, not by your window); you only miss the success message. The machine still appears below.</div>
+   </details></li>
   <li><h2>Watch it appear</h2><div class="mut">The machine shows up in the list below within a minute or two, with a check for whether it can read web addresses and whether its screenshots are getting through.</div></li>
  </ol>
  <hr style="border:0;border-top:1px solid var(--bd);margin:6px 0 16px">
@@ -27,6 +34,7 @@
   <li><h2>Open Terminal on the Mac</h2><div class="mut">Applications, Utilities, <b>Terminal</b> (or press Cmd+Space and type Terminal). Use an account that is an administrator.</div></li>
   <li><h2>Paste and run this</h2>
    <div class="cmd"><code id="minst">Loading…</code><button class="primary" data-copy="minst">Copy</button></div>
+   <details style="margin-top:6px"><summary><b>Silent install</b> (MDM / Jamf / scripts)</summary><div class="mut sm" style="margin-top:6px">No step list, no waiting for the first report, one line at the end. The person at the Mac still has to allow Screen Recording once.</div><div class="cmd"><code id="minstS">Loading…</code><button data-copy="minstS">Copy</button></div></details>
    <div class="mut sm">It asks for the Mac's password (that is <code>sudo</code>), downloads the agent from this server, checks it, installs it to start whenever someone logs in, then waits for the Mac's first report and tells you whether it arrived. Safe to run again. To report under a name instead of the Mac login, change the end to <code>sudo bash -s -- --user "Priya"</code>. The command contains the agent key, so share it only with whoever sets up Macs.</div></li>
   <li><h2>Allow the two permissions, once</h2><div class="mut">macOS asks the person, and no installer can answer for them: <b>Screen Recording</b> (screenshots and window titles; System Settings, Privacy &amp; Security, Screen Recording, switch <b>cyril</b> on, then it restarts itself) and, for each browser, <b>Automation</b> (click OK on "cyril wants to control Google Chrome"; this is how page addresses are read). The installer opens the Screen Recording pane for you. The machine list below shows when a permission is still missing.</div></li>
   <li><h2>Watch it appear</h2><div class="mut">The Mac shows up in the list below within a minute or two.</div></li>
@@ -51,10 +59,10 @@ const {$,esc}=TB;let known=null,nowTick,published=null;
 const chk=(ok,t,d)=>`<div class="chk"><span class="ic ${ok?'y':'n'}">${ok?'✓':'✕'}</span><div><b>${t}</b><div class="mut sm">${d}</div></div></div>`;
 async function info(){
   try{
-    const i=await TB.api('/api/install-info');
+    const i=await TB.api('/api/install-info',{quiet:true});
     published=i.build;
-    $('#inst').textContent=i.install;$('#uninst').textContent=i.uninstall;$('#minst').textContent=i.mac_install;$('#muninst').textContent=i.mac_uninstall;
-    const sh=await TB.api('/api/storage-health').catch(e=>({ok:false,error:e.message}));
+    $('#inst').textContent=i.install;$('#uninst').textContent=i.uninstall;$('#minst').textContent=i.mac_install;$('#instS').textContent=i.install_silent;$('#instC').textContent=i.install_silent_cmd;$('#minstS').textContent=i.mac_install_silent;$('#muninst').textContent=i.mac_uninstall;
+    const sh=await TB.api('/api/storage-health',{quiet:true}).catch(e=>({ok:false,error:e.message}));
     $('#checks').innerHTML=
       chk(true,'Server address',`Agents will use <code>${esc(i.server_url)}</code>${i.server_url.startsWith('http://')?' <b>(not HTTPS)</b>':''}`)+
       chk(i.exe_published,'Agent program (cyril.exe)',i.exe_published?`Published${i.version?' · version '+esc(i.version):''}${i.build?' · build '+esc(i.build):''}`:'Not on the server yet. Run <code>windows\\build.ps1</code> in the repo on the server machine: it writes into <code>server\\dist</code>, which the server serves (if you built on another PC, copy the files there). Installs will fail until then.')+
@@ -66,7 +74,7 @@ async function info(){
 async function devices(){
   try{
     await TB.users();
-    const d=await TB.api('/api/devices'),now=Date.now()/1000;
+    const d=await TB.api('/api/devices',{quiet:true}),now=Date.now()/1000;
     const fresh=known!==null?d.filter(x=>!known.has(x.device+'|'+x.user)):[];
     if(known===null)known=new Set(d.map(x=>x.device+'|'+x.user));
     // What each agent says about itself: can it read web addresses, are screenshots getting through?
@@ -104,7 +112,7 @@ async function devices(){
     };
     $('#dev').innerHTML=d.length?`<thead><tr><th>Machine</th><th>Login / name</th><th>Last report</th><th>Agent build</th><th>Websites</th><th>Screenshots</th></tr></thead><tbody>`+d.map(x=>{
       const ago=now-x.last_seen,on=ago<180,isNew=fresh.some(f=>f.device===x.device&&f.user===x.user);
-      return `<tr><td title="${esc(x.device)}" style="max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.device)}${x.status&&x.status.platform?`<div class="mut sm">${esc(x.status.platform)}</div>`:''}</td><td>${TB.who(x.user)}${isNew?' <span class="tag productive">new</span>':''}</td><td class="nowrap"><span class="live ${on?'on':''}"></span>${on?'online':ago<3600?Math.round(ago/60)+' min ago':TB.when(x.last_seen)}${events(x,now)}</td><td>${build(x.status)}</td><td>${web(x.status)}</td><td>${shots(x.status)}</td></tr>`}).join('')+'</tbody>':'<tbody><tr><td class="empty">No machines have reported yet.</td></tr></tbody>';
+      return `<tr><td title="${esc(x.device)}" style="max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.device)}${x.status&&x.status.platform?`<div class="mut sm">${esc(x.status.platform)}</div>`:''}${!x.status?'':x.status.sealed?'<div class="sm" style="color:var(--c-p)" title="Everything this PC queues or sends is encrypted to the server\'s public key; the PC itself cannot read it back">🔒 sealed</div>':'<div class="sm" style="color:var(--c-b)" title="This PC still sends and queues readable data. It gets the server key at the next update (daily ~03:00, or run the Cyril Updater task)">⚠ not sealed yet</div>'}</td><td>${TB.who(x.user)}${isNew?' <span class="tag productive">new</span>':''}</td><td class="nowrap"><span class="live ${on?'on':''}"></span>${on?'online':ago<3600?Math.round(ago/60)+' min ago':TB.when(x.last_seen)}${events(x,now)}</td><td>${build(x.status)}</td><td>${web(x.status)}</td><td>${shots(x.status)}</td></tr>`}).join('')+'</tbody>':'<tbody><tr><td class="empty">No machines have reported yet.</td></tr></tbody>';
     $('#devSub').textContent=`${d.filter(x=>now-x.last_seen<180).length} online of ${d.length} · updates every few seconds`;
   }catch(e){TB.error(e)}
 }

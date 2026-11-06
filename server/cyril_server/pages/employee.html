@@ -38,6 +38,8 @@ async function load(r){
   if(!r.user)return;
   const me=++seq;TB.error();$('#name').textContent=r.user;
   try{
+    // all four requests at once (the activity log used to wait for the other three to finish first)
+    const slotsReq=TB.api('/api/slots?'+TB.qs({user:r.user,start:r.start,end:r.end,tz:TB.tz}));slotsReq.catch(()=>{});
     const [o,al]=await Promise.all([TB.users(),
       TB.api('/api/employee?'+TB.qs({user:r.user,start:r.start,end:r.end,tz:TB.tz})),
       TB.api('/api/alerts?'+TB.qs({user:r.user,limit:50}))]).then(([,a,b])=>[a,b]);
@@ -54,11 +56,11 @@ async function load(r){
       TB.kpi('Avg active / working day',fmt(o.avg_active_per_day),`<span class="dl mut">${o.days_active} working day${o.days_active===1?'':'s'}</span>`)+
       TB.kpi('In creative tools',fmt(o.creative_seconds),`<span class="dl mut">${cshare}% of active time</span>`);
     const keys=TB.LABELS.map(([k,,c])=>[k,c,k[0].toUpperCase()+k.slice(1)]);
-    const every=Math.ceil(n/12);
-    TB.stacked($('#daily'),o.daily.map(d=>({label:n<=10?new Date(d.day+'T00:00').toLocaleDateString([],{weekday:'short',day:'numeric'}):d.day.slice(5),title:new Date(d.day+'T00:00').toLocaleDateString([],{weekday:'long',month:'short',day:'numeric'}),vals:d})),keys,{every,height:240});
+    const every=TB.dayEvery(n);
+    TB.stacked($('#daily'),o.daily.map(d=>({label:TB.dayLabel(d.day,n),title:TB.dayTitle(d.day),vals:d})),keys,{every,height:240});
     $('#lg').innerHTML=$('#lg2').innerHTML=TB.LABELS.map(([,t,c])=>`<span><span class="dot" style="background:${c}"></span>${t}</span>`).join('');
     TB.donut($('#mix'),TB.LABELS.map(([k,t,c])=>({name:t,v:s[k],color:c})),TB.pct(o.productivity_pct),'productive');
-    TB.line($('#pctline'),o.daily.map(d=>({label:d.day.slice(5),title:d.day,v:d.pct})),{every,height:220});
+    TB.line($('#pctline'),o.daily.map(d=>({label:TB.dayLabel(d.day,n),title:TB.dayTitle(d.day),v:d.pct})),{every,height:220});
     const days=Math.max(1,o.days_active);
     TB.stacked($('#hours'),o.hourly.map((h,i)=>({label:String(i),title:`${String(i).padStart(2,'0')}:00`,vals:Object.fromEntries(Object.entries(h).map(([k,v])=>[k,v/days]))})),keys,{every:3,height:220});
     $('#hourSub').textContent=(n===1?'Tracked time per hour':'Average tracked time per hour on days worked')+' (your local time)';
@@ -73,7 +75,7 @@ async function load(r){
     const inR=al.filter(a=>a.ts>=o.start&&a.ts<o.end);
     $('#alerts').innerHTML=inR.length?`<table><tbody>`+inR.map(a=>`<tr><td class="nowrap mut sm">${TB.when(a.ts)}</td><td><span class="tag alert">${esc(a.category)}</span></td><td>${esc(a.url||a.app)}<div class="mut sm">${esc(a.title)}</div></td></tr>`).join('')+'</tbody></table>':'<div class="empty">No flagged activity in this range.</div>';
     try {
-      const sr = await TB.api('/api/slots?'+TB.qs({user:r.user,start:r.start,end:r.end,tz:TB.tz}));
+      const sr = await slotsReq;
       if(me!==seq)return;
       slotRows=sr.rows;page=0;renderSlots(sr.slot);
     } catch(x) { slotRows=[];$('#slots').innerHTML='';$('#slotSub').textContent=x.message; }

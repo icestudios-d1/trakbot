@@ -14,7 +14,8 @@
 <script>
 const $=TB.$;
 // If a saved token is still valid, skip straight in.
-if(TB.token())TB.api('/api/me').then(()=>go()).catch(()=>{});
+// (Opening any other page while signed out never reaches this far: the server redirects to /login before sending it.)
+if(TB.token())TB.api('/api/me',{quiet:true}).then(()=>TB.startSession(TB.token(),true)).then(go).catch(()=>{});
 function go(){const n=new URLSearchParams(location.search).get('next');location.replace(n&&/^\/(?!\/)/.test(n)?n:'/')}
 $('#f').onsubmit=async e=>{
   e.preventDefault();$('#err').textContent='';$('#go').disabled=true;
@@ -23,7 +24,7 @@ $('#f').onsubmit=async e=>{
     const r=await fetch('/api/me',{headers:{Authorization:'Bearer '+t}});
     if(r.status===401)throw new Error('That token is not valid.');
     if(!r.ok)throw new Error('Server error ('+r.status+').');
-    TB.setToken(t,$('#r').checked);go();
+    TB.setToken(t,$('#r').checked);await TB.startSession(t,$('#r').checked);go();
   }catch(x){$('#err').textContent=x.message}
   $('#go').disabled=false;
 };

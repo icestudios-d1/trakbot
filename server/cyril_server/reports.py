@@ -3,7 +3,7 @@ import math
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from .classify import LABELS, classify
+from .classify import LABELS, make_classifier
 from .names import display_name, site_name
 
 ALL_LABELS = (*LABELS, "idle")
@@ -55,6 +55,32 @@ def previous_span(days: list[str]):
     return (s - timedelta(days=n)).strftime("%Y-%m-%d"), (s - timedelta(days=1)).strftime("%Y-%m-%d")
 
 
+# ---------------------------------------------------------------- work hours
+def clip_hours(events: list[dict], tz: int | None, start_h: int, end_h: int) -> list[dict]:
+    """Keep only the part of each event that falls between start_h:00 and end_h:00 of the viewer's LOCAL day
+    (the "Work" view of the dashboard). An event that straddles an edge is trimmed, not dropped, so 07:50-08:10
+    still contributes its 10 minutes after 08:00. Events are at most an hour long, so at most two windows apply."""
+    zi = tzinfo_for(tz)
+    out = []
+    for e in events:
+        s, d = e["ts"], e["dur"]
+        if d <= 0:
+            continue
+        off = _utc_offset(s, zi)
+        day = math.floor((s + off) / 86400)
+        for k in (day - 1, day, day + 1):
+            ws, we = k * 86400 + start_h * 3600 - off, k * 86400 + end_h * 3600 - off
+            a, b = max(s, ws), min(s + d, we)
+            if b - a > 1e-6:
+                out.append(e if (a == s and b == s + d) else {**e, "ts": a, "dur": b - a})
+    return out
+
+
+def in_work_hours(ts: float, tz: int | None, start_h: int, end_h: int) -> bool:
+    local = (ts + _utc_offset(ts, tzinfo_for(tz))) % 86400
+    return start_h * 3600 <= local < end_h * 3600
+
+
 def _top(d: dict, n: int, meta: dict | None = None):
     out = []
     for k, v in sorted(d.items(), key=lambda kv: -kv[1])[:n]:
@@ -65,32 +91,60 @@ def _top(d: dict, n: int, meta: dict | None = None):
     return out
 
 
-def aggregate(events: list[dict], rules: list[dict], tz: int | None, days: list[str], start_ts: float,
+def totals(events: list[dict], rules) -> dict:
+    """Just the two headline numbers (used for the "previous period" comparison, which needs nothing else)."""
+    clf = rules if callable(rules) else make_classifier(rules)
+    active = prod = 0.0
+    for e in events:
+        _, lab = clf(e)
+        if lab == "idle":
+            continue
+        active += e["dur"]
+        if lab == "productive":
+            prod += e["dur"]
+    return {"active_seconds": round(active), "productivity_pct": round(100 * prod / active, 1) if active else None}
+
+
+def aggregate(events: list[dict], rules, tz: int | None, days: list[str], start_ts: float,
               top_n: int = 12):
+    """`rules` is the rule list, or an already-built classifier (make_classifier) to share between calls."""
+    clf = rules if callable(rules) else make_classifier(rules)
     zi = tzinfo_for(tz)
     labels, cats = defaultdict(float), defaultdict(float)
     apps, sites, creative = defaultdict(float), defaultdict(float), defaultdict(float)
     meta_app, meta_site = {}, {}
     hourly = [defaultdict(float) for _ in range(24)]
     heat = [[0.0] * 24 for _ in range(7)]
-    idx = {d: i for i, d in enumerate(days)}
+    fixed = zi is not None
+    fixed_off = tz * 60 if fixed else 0
+    base_dnum = int(datetime.strptime(days[0], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() // 86400)
+    idx = {(d if not fixed else int(datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() // 86400) - base_dnum): i
+           for i, d in enumerate(days)}
     daily = [{"day": d, **{k: 0.0 for k in ALL_LABELS}, "first": None, "last": None} for d in days]
     per_user = defaultdict(lambda: {"seconds": defaultdict(float), "apps": defaultdict(float), "last": 0})
     for e in events:
-        cat, lab = classify(e, rules)
+        cat, lab = clf(e)
         dur = e["dur"]
-        dt = datetime.fromtimestamp(e["ts"], zi)
+        if fixed:   # a fixed UTC offset (the browser's): plain arithmetic, no datetime object per event
+            local = e["ts"] + fixed_off
+            dnum = int(local // 86400)
+            hour = int(local % 86400 // 3600)
+            wday = (dnum + 3) % 7                      # 1970-01-01 was a Thursday
+            i = idx.get(dnum - base_dnum)
+        else:
+            dt = datetime.fromtimestamp(e["ts"], zi)
+            hour, wday = dt.hour, dt.weekday()
+            i = idx.get(dt.strftime("%Y-%m-%d"))
         labels[lab] += dur
         cats[cat] += dur
-        hourly[dt.hour][lab] += dur
+        hourly[hour][lab] += dur
         pu = per_user[e["user"]]
         pu["seconds"][lab] += dur
         pu["last"] = max(pu["last"], e["ts"] + dur)
-        i = idx.get(dt.strftime("%Y-%m-%d"))
         if i is not None:
             daily[i][lab] += dur
         if lab != "idle":
-            heat[dt.weekday()][dt.hour] += dur
+            heat[wday][hour] += dur
             name = display_name(e["app"], e["domain"])   # the website if there is one, else the program
             apps[name] += dur
             meta_app.setdefault(name, (cat, lab))

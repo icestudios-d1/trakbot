@@ -22,7 +22,9 @@ charts. No keystroke logging.
 | Screenshots | ✅ adaptive: once a minute while the app in front keeps changing, once every 3 minutes while it stays the same (both set in the dashboard); **Screenshot now** on demand; gallery with range-select + delete |
 | Windows rollout | ✅ one PowerShell command, no Python/git/npm needed on the target machine |
 | Reports | ✅ in-app only, no email reports (by request) |
-| Keystroke logging, workload/utilisation, teams/groups, SSO | ❌ not built (keylogging intentionally omitted) |
+| Teams / groups | ✅ **Employees -> Manage groups**: business units, or a group (marked *excluded*) for PCs not handed out yet that must stay out of regular reports; filter Overview, Employees and Web activity by group |
+| Work hours vs everything | ✅ **Work / All** switch in the top bar: *Work* trims every number, chart and list to 8 AM-10 PM (your local time; `CYRIL_WORK_START` / `CYRIL_WORK_END` change it) |
+| Keystroke logging, workload/utilisation, SSO | ❌ not built (keylogging intentionally omitted) |
 
 ## Architecture
 
@@ -182,6 +184,38 @@ publishes them to the rolling `agent-latest` release; `update.ps1` downloads tha
 (`gh auth login` once). Without `gh`, or with `-LocalBuild`, it builds the Windows agent locally instead (only when
 the agent's code changed). PCs and Macs then update themselves from the server. Other switches: `-ForceAgent`,
 `-SkipPull`, `-DryRun`.
+
+### Sign-in, speed and screenshots (dashboard internals)
+
+- **Nothing is sent before sign-in.** Dashboard pages live in `server/cyril_server/pages/` and are only served to a browser that
+  holds the sign-in cookie; anyone else gets a `302` to `/login` before a single byte of the interface. Signing in (admin
+  token) sets an **HttpOnly, SameSite=Lax** cookie holding a keyed hash (never the token); it is accepted for `GET` only
+  (pages and `<img>` tags), so it can never change data. Every API call still needs the `Authorization: Bearer` token.
+  Only `/login` and the generic `app.js`/`app.css` are public: they contain no data and no secrets.
+- **Loading feedback and speed.** Any request that takes more than a moment shows a progress bar and a *Loading* note.
+  Reports are computed once per distinct program/site/title instead of once per event, the previous-period comparison
+  only computes its two headline numbers, a `ts` index serves team-wide queries, and the Overview/Employees report is
+  cached for 30 s (`CYRIL_CACHE_TTL`; editing rules, groups or settings clears it immediately).
+- **Thumbnails.** The server makes a small JPEG (about 360 px wide) for every screenshot when it is uploaded and stores it
+  beside the original (`thumbs/...`); galleries and the filmstrip load only those, lazily. Older screenshots get theirs
+  the first time they are looked at. Full-size loads only for the one you open.
+
+### Sealed uploads and OMS Ping
+
+- Agents encrypt every event and every screenshot's image/title/app to the server's **public** key before queueing or sending
+  (`agent/cyril_agent/seal.py`), so the on-disk queue and the network traffic are unreadable on the PC. Only the server opens
+  them (`payload.key` next to the database, back it up). Old agents keep working until updated; *Install agents* shows
+  🔒 sealed per PC, and `CYRIL_REQUIRE_SEALED=1` then refuses unsealed uploads.
+- `GET http://127.0.0.1:7077/oms/ping` lets the sign-in site check that Cyril is installed. Only origins listed in
+  `CYRIL_OMS_ORIGINS` can read the answer. The same local port no longer accepts URL reports from web pages (extension only).
+  Details: `docs/PRODUCTION_NOTE.md` §6 and §7.
+
+### Silent install
+
+Windows: add `-Silent` after the one-liner (`... ))) -Silent`); Mac: `... | sudo bash -s -- --silent`. No step list and no
+wait for the first report; the agent is installed, registered and started before the command returns, then one line is
+printed. Closing the normal installer while it says *Waiting for Server Confirmation* is also harmless: the agent is
+already running by then. The Install agents page shows both forms.
 
 ### Updating the server
 

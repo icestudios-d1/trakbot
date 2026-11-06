@@ -8,7 +8,9 @@
 #   curl -fsSL 'https://cyril.example.com/install.sh?key=AGENT_KEY' | sudo bash
 #
 # Options (after "bash -s --"):  --user "Priya"   report under this name instead of the Mac login
-#                                --unattended     no questions, no first-report wait (used by the daily updater)
+#                                --silent         quiet install for roll-outs (MDM, Jamf, a script): no step list, no first-report
+#                                                 wait, one line at the end; failures still exit non-zero
+#                                --unattended     the same with no final line at all (used by the daily updater)
 #
 # How it runs: the agent must live inside the logged-in user's session (that is where the windows and the screen
 # are), so it is a LaunchAgent that starts at login and is restarted by launchd if it is closed. A second job, a
@@ -18,12 +20,15 @@ set -euo pipefail
 
 SERVER_URL='{{SERVER_URL}}'
 AGENT_KEY='{{AGENT_KEY}}'
+PAYLOAD_KEY='{{PAYLOAD_KEY}}'   # the server's PUBLIC key: the agent seals everything to it and cannot read it back
 USER_NAME=""
 UNATTENDED=0
+SILENT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --user) USER_NAME="${2:-}"; shift 2 ;;
     --unattended) UNATTENDED=1; shift ;;
+    --silent) UNATTENDED=1; SILENT=1; shift ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -113,6 +118,7 @@ esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 {
   printf '{\n  "server": "%s",\n  "key": "%s"' "$(esc "$SERVER_URL")" "$(esc "$AGENT_KEY")"
   if [ -n "$USER_NAME" ]; then printf ',\n  "user": "%s"' "$(esc "$USER_NAME")"; fi
+  case "$PAYLOAD_KEY" in ""|*[{]*) ;; *) printf ',\n  "payload_key": "%s"' "$(esc "$PAYLOAD_KEY")" ;; esac
   printf '\n}\n'
 } > "$CFG"
 if [ -n "$NEW_BUILD_STAMP" ]; then printf '%s' "$NEW_BUILD_STAMP" > "$APPDIR/build.txt"; fi
@@ -193,7 +199,10 @@ if [ -z "$R" ]; then
     warn "Nobody is logged in at the Mac right now; the agent will start at the next login."
   fi
 fi
-if [ "$UNATTENDED" -eq 1 ]; then exit 0; fi
+if [ "$UNATTENDED" -eq 1 ]; then
+  [ "$SILENT" -eq 0 ] || echo "Cyril installed. The agent is running; it appears on the dashboard's Install agents page within a minute or two. (The person at the Mac still has to allow Screen Recording once.)"
+  exit 0
+fi
 
 # 6. Permissions: macOS asks the person, an installer cannot grant them -------------------------------------------------
 echo

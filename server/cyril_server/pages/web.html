@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Web activity · Cyril</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main>
+<div class="pagehead"><div><h1>Web activity</h1><p id="sub">Every page visited, with its full address. The other reports show just the site name.</p></div>
+<div class="noprint formrow"><input id="q" type="search" placeholder="Search address or page title" aria-label="Search" style="min-width:240px"><button id="csv">Download CSV</button></div></div>
+<div id="range"></div>
+<div id="err" class="callout" style="display:none"></div>
+<div class="grid g-main">
+ <div class="card"><h2>Pages</h2><div class="sub" id="pgSub"></div><div class="scroll"><table id="pages"></table></div><div class="pager noprint" id="pager"></div></div>
+ <div class="card"><h2>Sites</h2><div class="sub">Click a site to filter the pages</div><div id="sites"></div></div>
+</div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+const {$,fmt,esc}=TB;let seq=0,data=null,site='',page=0,PAGE=+(()=>{try{return localStorage.getItem('tb_webpage')}catch(e){return 0}})()||50;
+const rb=TB.rangeBar($('#range'),{user:true,userAll:'All employees',defDays:7,group:true,onChange:load});
+async function load(r){
+  const me=++seq;TB.error();
+  try{
+    const [d]=await Promise.all([TB.api('/api/web?'+TB.qs({user:r.user,start:r.start,end:r.end,tz:TB.tz,group:r.group})),TB.users()]);
+    if(me!==seq)return;data=d;site='';page=0;
+    $('#sub').textContent=TB.rangeLabel(r.start,r.end)+' · full addresses; private/incognito windows are not recorded here';
+    render();
+  }catch(e){if(me===seq)TB.error(e)}
+}
+const match=p=>{const q=$('#q').value.trim().toLowerCase();return (!site||p.name===site)&&(!q||(p.url+' '+p.title).toLowerCase().includes(q))};
+function render(keepPage){
+  if(!data)return;
+  if(keepPage!==true)page=0;
+  const rows=data.pages.filter(match),multi=!rb.get().user;
+  const pages=Math.max(1,Math.ceil(rows.length/PAGE));page=Math.min(page,pages-1);
+  $('#pgSub').textContent=`${rows.length} page${rows.length===1?'':'s'}${site?' on '+site:''}`+(data.total_pages>data.pages.length?` (showing the newest ${data.pages.length} of ${data.total_pages}; narrow the dates)`:'');
+  $('#pages').innerHTML=rows.length?`<thead><tr><th>When</th>${multi?'<th>Employee</th>':''}<th class="right">For</th><th>Site</th><th>Page</th></tr></thead><tbody>`+rows.slice(page*PAGE,(page+1)*PAGE).map(p=>`<tr><td class="nowrap">${TB.when(p.ts)}</td>${multi?`<td class="nowrap">${esc(TB.dn(p.user))}</td>`:''}<td class="right num nowrap">${fmt(p.dur)}</td><td class="nowrap"><span class="dot" style="background:${TB.labelColor(p.label)}"></span>${esc(p.name)}</td><td style="min-width:260px;max-width:520px"><div>${esc(p.title||'')}</div><div class="mut sm" style="word-break:break-all;font-family:ui-monospace,Consolas,monospace">${esc(p.url)}</div></td></tr>`).join('')+'</tbody>':'<tbody><tr><td class="empty">No web activity matches. (Websites are read from the browser address bar; if this stays empty the agent may not be able to read it. See Install agents.)</td></tr></tbody>';
+  const mx=Math.max(1,...data.sites.map(s=>s.seconds));
+  $('#sites').innerHTML=data.sites.length?data.sites.map(s=>`<div class="hb" style="cursor:pointer;${site===s.name?'font-weight:600':''}" data-s="${esc(s.name)}" data-tip="${esc(`<b>${s.name}</b><br>${s.domain}<br>${fmt(s.seconds)} · ${s.visits} page${s.visits===1?'':'s'}<br>${s.category}`)}"><span class="nm"><span class="dot" style="background:${TB.labelColor(s.label)}"></span>${esc(s.name)}</span><span class="tr"><i style="width:${100*s.seconds/mx}%;background:${TB.labelColor(s.label)}"></i></span><span class="mut num right">${fmt(s.seconds)}</span></div>`).join('')+`<div class="legend">${TB.labelLegend}</div>`:'<div class="empty">No sites.</div>';
+  $('#sites').querySelectorAll('[data-s]').forEach(el=>el.onclick=()=>{site=site===el.dataset.s?'':el.dataset.s;render()});
+  // pager: first / prev / next / last, jump to a page, and how many rows per page (remembered)
+  $('#pager').innerHTML=rows.length>Math.min(25,PAGE)||page?`<span class="mut sm">${rows.length?page*PAGE+1:0}–${Math.min(rows.length,(page+1)*PAGE)} of ${rows.length}</span><label class="mut sm">Rows <select id="pgSize" aria-label="Rows per page">${[25,50,100,200].map(n=>`<option ${n===PAGE?'selected':''}>${n}</option>`).join('')}</select></label><button id="pf" ${page?'':'disabled'} aria-label="First page">«</button><button id="pp" ${page?'':'disabled'}>◀ Prev</button><span class="mut num">Page <input id="pgNo" type="number" min="1" max="${pages}" value="${page+1}" aria-label="Page number" style="width:64px;min-height:28px;padding:2px 6px"> / ${pages}</span><button id="pn" ${page<pages-1?'':'disabled'}>Next ▶</button><button id="pl" ${page<pages-1?'':'disabled'} aria-label="Last page">»</button>`:'';
+  if($('#pgSize')){
+    const go=p=>{page=Math.max(0,Math.min(pages-1,p));render(true);$('#pgSub').scrollIntoView({block:'nearest'})};
+    $('#pf').onclick=()=>go(0);$('#pp').onclick=()=>go(page-1);$('#pn').onclick=()=>go(page+1);$('#pl').onclick=()=>go(pages-1);
+    $('#pgNo').onchange=e=>go((+e.target.value||1)-1);
+    $('#pgSize').onchange=e=>{PAGE=+e.target.value;try{localStorage.setItem('tb_webpage',PAGE)}catch(x){}render()};
+  }
+}
+$('#q').oninput=render;
+$('#csv').onclick=()=>{
+  if(!data)return;const r=rb.get(),rows=data.pages.filter(match);
+  TB.csv(`cyril-web-${r.user?r.user+'-':''}${r.start}_to_${r.end}.csv`,[['Date','Time','Employee','Duration (min)','Site','Page title','Full URL','Category','Productivity'],
+    ...rows.map(p=>{const d=new Date(p.ts*1000);return [d.toLocaleDateString('en-CA'),d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),TB.dn(p.user),(p.dur/60).toFixed(1),p.name,p.title,p.url,p.category,p.label]})]);
+};
+</script></body></html>
