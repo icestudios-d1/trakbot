@@ -55,12 +55,12 @@
 </main>
 <script src="/static/app.js"></script>
 <script>
-const {$,esc}=TB;let known=null,nowTick,published=null;
+const {$,esc}=TB;let known=null,nowTick,published=null,macBuilds=[];
 const chk=(ok,t,d)=>`<div class="chk"><span class="ic ${ok?'y':'n'}">${ok?'✓':'✕'}</span><div><b>${t}</b><div class="mut sm">${d}</div></div></div>`;
 async function info(){
   try{
     const i=await TB.api('/api/install-info',{quiet:true});
-    published=i.build;
+    published=i.build;macBuilds=i.mac_builds||[];
     $('#inst').textContent=i.install;$('#uninst').textContent=i.uninstall;$('#minst').textContent=i.mac_install;$('#instS').textContent=i.install_silent;$('#instC').textContent=i.install_silent_cmd;$('#minstS').textContent=i.mac_install_silent;$('#muninst').textContent=i.mac_uninstall;
     const sh=await TB.api('/api/storage-health',{quiet:true}).catch(e=>({ok:false,error:e.message}));
     $('#checks').innerHTML=
@@ -88,7 +88,7 @@ async function devices(){
     };
     const shots=st=>{
       if(!st)return '<span class="mut">–</span>';
-      if(st.permissions&&st.permissions.screen_recording===false)return '<span style="color:var(--c-u)">✕ Screen Recording not allowed</span><div class="mut sm">System Settings, Privacy &amp; Security, Screen Recording: switch cyril on</div>';
+      if(st.permissions&&st.permissions.screen_recording===false)return '<span style="color:var(--c-u)">✕ Screen Recording not allowed</span><div class="mut sm">System Settings, Privacy &amp; Security, Screen Recording: switch cyril on. Already on? Remove it with − and switch it on again (macOS can drop the permission when the agent is updated)</div>';
       const ok=st.shots_ok||0,bad=st.shots_failed||0;
       if(bad&&!ok)return `<span style="color:var(--c-u)" title="${esc(st.last_error||'')}">✕ ${bad} failed</span><div class="mut sm">${esc((st.last_error||'').slice(0,80))}</div>`;
       if(bad)return `<span title="${esc(st.last_error||'')}">${ok} sent · <span style="color:var(--c-u)">${bad} failed</span></span>`;
@@ -105,10 +105,13 @@ async function devices(){
       if(alive&&stale&&st.events_queued===undefined)return `<div class="sm" style="color:var(--c-b)" title="This agent is running but its activity has not arrived. It is an older build that cannot say why; it will take the update and then report.">⚠ running, no activity received</div>`;
       return '';
     };
+    // Macs are compared with the published Mac builds (they are built separately from the Windows one)
     const build=st=>{
-      if(!published)return '<span class="mut">–</span>';
-      if(!st||!st.build)return '<span style="color:var(--c-b)" title="This agent is older than build tracking, so it also cannot take Screenshot now requests or queue screenshots.">⟳ old agent</span><div class="mut sm">on that PC (admin): Start-ScheduledTask \'Cyril Updater\'</div>';
-      return st.build===published?`<span title="build ${esc(st.build)}">✓ current</span>`:`<span style="color:var(--c-b)" title="${esc(`has ${st.build}, published ${published}`)}">⟳ update pending</span><div class="mut sm">gets it ~03:00, or run: Start-ScheduledTask 'Cyril Updater'</div>`;
+      const mac=st&&st.platform==='Mac',pub=mac?macBuilds:(published?[published]:[]);
+      const how=mac?'sudo launchctl kickstart -k system/in.icestudios.cyril.updater':"Start-ScheduledTask 'Cyril Updater'";
+      if(!pub.length)return '<span class="mut">–</span>';
+      if(!st||!st.build)return `<span style="color:var(--c-b)" title="This agent is older than build tracking, so it also cannot take Screenshot now requests or queue screenshots.">⟳ old agent</span><div class="mut sm">on that ${mac?'Mac':'PC'} (admin): ${esc(how)}</div>`;
+      return pub.includes(st.build)?`<span title="build ${esc(st.build)}">✓ current</span>`:`<span style="color:var(--c-b)" title="${esc(`has ${st.build}, published ${pub.join(' / ')}`)}">⟳ update pending</span><div class="mut sm">gets it ~03:00, or run: ${esc(how)}</div>`;
     };
     $('#dev').innerHTML=d.length?`<thead><tr><th>Machine</th><th>Login / name</th><th>Last report</th><th>Agent build</th><th>Websites</th><th>Screenshots</th></tr></thead><tbody>`+d.map(x=>{
       const ago=now-x.last_seen,on=ago<180,isNew=fresh.some(f=>f.device===x.device&&f.user===x.user);

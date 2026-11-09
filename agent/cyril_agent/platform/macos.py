@@ -8,6 +8,7 @@ Permissions (macOS asks the person, an installer cannot grant them without an MD
 Nothing here needs Accessibility.
 """
 import ctypes
+import re
 import subprocess
 
 # Scriptable browsers. Chromium-based ones expose the window mode ("normal"/"incognito"); Safari does not script
@@ -46,11 +47,46 @@ def browser_address(app: str) -> tuple[str, bool]:
     return parse_browser_reply(r.stdout) if r.returncode == 0 else ("", False)
 
 
+def parse_lsappinfo_pid(text: str) -> int | None:
+    """'"pid"=1234' (lsappinfo info -only pid ...) -> 1234; None if there is no pid in it."""
+    m = re.search(r'"?pid"?\s*=\s*(\d+)', text or "")
+    return int(m.group(1)) if m and int(m.group(1)) > 0 else None
+
+
+def front_pid_lsappinfo() -> int | None:
+    """Process id of the app in front, asked fresh from the system every time (`lsappinfo`). Unlike NSWorkspace,
+    this cannot go stale in a background process."""
+    try:
+        asn = subprocess.run(["lsappinfo", "front"], capture_output=True, text=True, timeout=3).stdout.strip()
+        if not asn or "ASN" not in asn:
+            return None
+        out = subprocess.run(["lsappinfo", "info", "-only", "pid", asn], capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return parse_lsappinfo_pid(out)
+
+
+def _pump_run_loop() -> None:
+    """NSWorkspace only learns that another app came to the front through notifications delivered by the run loop.
+    The agent has no run loop of its own, so without this frontmostApplication() keeps returning whatever was in
+    front when the agent started (after a fresh install that is System Settings, which the installer opens)."""
+    try:
+        from Foundation import NSDate, NSRunLoop
+        NSRunLoop.currentRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.01))
+    except Exception:
+        pass
+
+
 def frontmost_window() -> dict | None:
     """{'app','title'} of the foreground window via Cocoa/Quartz (needs Screen Recording for the title)."""
-    from AppKit import NSWorkspace
+    from AppKit import NSRunningApplication, NSWorkspace
     from Quartz import CGWindowListCopyWindowInfo, kCGNullWindowID, kCGWindowListOptionOnScreenOnly
-    front = NSWorkspace.sharedWorkspace().frontmostApplication()
+    front, pid = None, front_pid_lsappinfo()
+    if pid is not None:
+        front = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+    if front is None:
+        _pump_run_loop()
+        front = NSWorkspace.sharedWorkspace().frontmostApplication()
     if front is None:
         return None
     pid, title = front.processIdentifier(), ""

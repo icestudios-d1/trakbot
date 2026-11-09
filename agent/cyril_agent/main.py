@@ -20,7 +20,7 @@ from .core import (Aggregator, ShotSpool, Spool, browser_url, classify_status, d
                    is_private, load_config, normalize_url, read_build, sanitize_event, setup_logging, write_health)
 from .platform.active_window import get_active_window, idle_seconds
 from .seal import make_sealer
-from .shots import ScreenshotThrottle, capture_jpeg_b64
+from .shots import ScreenshotThrottle, capture
 from .update import VERSION, check_and_apply
 
 SEAL = lambda obj: obj   # noqa: E731  set in main(): seals everything that is queued or sent (see seal.py)
@@ -238,7 +238,7 @@ def flush_events(server: str, key: str, user: str, device: str, agg: Aggregator,
 def send_screenshot(server: str, key: str, user: str, device: str, ts: float, app: str, title: str,
                     command_id: int | None = None) -> None:
     try:
-        img = capture_jpeg_b64()
+        img, blank = capture()
     except Exception as e:
         STATUS["shots_failed"] += 1
         STATUS["last_error"] = f"screenshot capture: {e!r}"[:300]
@@ -247,6 +247,20 @@ def send_screenshot(server: str, key: str, user: str, device: str, ts: float, ap
             _post(server, "/api/agent/command-result", key,
                   {"device": device, "id": command_id, "ok": False, "error": f"capture failed: {e!r}"[:400]})
         return
+    if sys.platform == "darwin":
+        if not blank:
+            SCREEN["content_seen"] = True   # a real picture: Screen Recording works, whatever the preflight call says
+            refresh_permissions()
+        elif STATUS.get("permissions", {}).get("screen_recording") is not True:
+            # macOS hands back a flat frame while Screen Recording is off: an empty picture is not worth storing
+            err = "Screen Recording not allowed: macOS returned a blank screen"
+            STATUS["shots_failed"] += 1
+            if STATUS["last_error"] != err:
+                log.warning("%s (System Settings > Privacy & Security > Screen Recording > cyril)", err)
+            STATUS["last_error"] = err
+            if command_id is not None:
+                _post(server, "/api/agent/command-result", key, {"device": device, "id": command_id, "ok": False, "error": err})
+            return
     # who/when stay readable; the picture, the window title and the app are sealed (ciphertext in the queue and on the wire)
     payload = {"user": user, "device": device, "ts": ts, **SEAL({"app": app, "title": title, "image_b64": img})}
     if command_id is not None:
@@ -343,12 +357,31 @@ def is_url_browser(app: str) -> bool:
     return is_chromium_browser(app)
 
 
+SCREEN = {"content_seen": False}   # macOS: has a screenshot ever shown real screen content in this run?
+MAC_INSTALL_DIR = "/Library/Application Support/Cyril/"
+RESTART_FOR_PERMISSION_AFTER = 600.0   # seconds
+
+
 def refresh_permissions() -> None:
-    """macOS: report which permissions are granted, so the dashboard can say what to enable."""
+    """macOS: report which permissions are granted, so the dashboard can say what to enable.
+
+    CGPreflightScreenCaptureAccess answers for the moment the process started: switching Screen Recording on later
+    does not change its answer (nor, usually, what capture returns) until the agent restarts. A screenshot with real
+    content is proof the permission works, so that wins."""
     if sys.platform != "darwin":
         return
     from .platform import macos
-    STATUS["permissions"] = {"screen_recording": macos.screen_recording_granted()}
+    granted = macos.screen_recording_granted()
+    STATUS["permissions"] = {"screen_recording": True if SCREEN["content_seen"] else granted}
+
+
+def should_restart_for_permission(config_path: str | None, started: float, now: float) -> bool:
+    """macOS only applies a newly allowed Screen Recording to a fresh process. While it is still off, the installed
+    agent restarts itself every few minutes (launchd starts it again right away), so allowing it takes effect without
+    anyone having to log out. Never when run by hand."""
+    return (sys.platform == "darwin" and bool(config_path) and os.path.abspath(config_path).startswith(MAC_INSTALL_DIR)
+            and now - started >= RESTART_FOR_PERMISSION_AFTER and not SCREEN["content_seen"]
+            and STATUS.get("permissions", {}).get("screen_recording") is False)
 
 
 def windows_session_id() -> int | None:
@@ -450,7 +483,7 @@ def main():
     STATUS["events_queued"] = spool.count()
     shot_throttle = ScreenshotThrottle(a.screenshot_every, a.screenshot_stable_every)
     threading.Thread(target=command_loop, args=(server, key, user, device, shot_throttle, not a.no_screenshots), daemon=True).start()
-    last_update_check = time.time()
+    last_update_check = started = time.time()
     while True:
         now = time.time()
 
@@ -520,6 +553,9 @@ def main():
                 pass
             _post(server, "/api/agent/status", key, {"user": user, "device": device, "info": dict(STATUS)})
             last_flush = now
+            if should_restart_for_permission(a.config, started, now):
+                log.info("Screen Recording still not allowed: restarting so a permission switched on meanwhile takes effect")
+                sys.exit(75)   # launchd (KeepAlive) starts the agent again within seconds
         time.sleep(a.interval)
 
 

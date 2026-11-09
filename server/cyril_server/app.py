@@ -1175,7 +1175,18 @@ def install_info(request: Request):
             "mac_published": {a: (DIST_DIR / f"manifest-mac-{a}.json").is_file() and (DIST_DIR / f"cyril-mac-{a}").is_file()
                               for a in MAC_ARCHES},
             "extension_published": (DIST_DIR / "cyril-extension.zip").is_file(),
-            "version": (manifest or {}).get("version"), "build": _published_build(manifest)}
+            "version": (manifest or {}).get("version"), "build": _published_build(manifest),
+            "mac_builds": [b for b in (_mac_published_build(a) for a in MAC_ARCHES) if b]}
+
+
+def _mac_published_build(arch: str) -> str | None:
+    """Build id the Mac installer stamps for this CPU type (build.txt): the manifest's build, else the start of its sha256."""
+    import json
+    try:
+        m = json.loads((DIST_DIR / f"manifest-mac-{arch}.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    return m.get("build") or (m.get("sha256") or "")[:12] or None
 
 
 class AgentStatusIn(BaseModel):
