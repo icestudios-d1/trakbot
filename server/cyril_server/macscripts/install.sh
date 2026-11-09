@@ -181,8 +181,13 @@ cat > "$UPDATER_PLIST" <<PLIST
 PLIST
 if [ -z "$R" ]; then
   chown root:wheel "$AGENT_PLIST" "$UPDATER_PLIST"; chmod 644 "$AGENT_PLIST" "$UPDATER_PLIST"
-  launchctl bootout system "$UPDATER_PLIST" 2>/dev/null || true
-  launchctl bootstrap system "$UPDATER_PLIST" 2>/dev/null || true
+  # Never unload the updater job when it is already loaded: this installer is usually running INSIDE that job
+  # (update.sh), and unloading it kills this very script before it can load it again, leaving the Mac with no
+  # updater at all. Its plist never changes between builds, so loading it once is enough.
+  if ! launchctl print "system/$UPDATER_LABEL" >/dev/null 2>&1; then
+    launchctl bootstrap system "$UPDATER_PLIST" 2>/dev/null \
+      || warn "Could not load the updater job; run: sudo launchctl bootstrap system $UPDATER_PLIST"
+  fi
 fi
 ok "Updater job installed (daily ~03:00 and at every start; picks up new builds)"
 
