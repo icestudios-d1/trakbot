@@ -50,3 +50,12 @@ def test_settings_can_be_changed_live():
     t.tick(0, "ps", False)
     t.stable_every = 90      # the server can tell agents to use different intervals
     assert t.tick(90, "ps", False)
+
+
+def test_flat_frame_is_blank_and_real_content_is_not():
+    from PIL import Image, ImageDraw
+    from cyril_agent.shots import looks_blank
+    assert looks_blank(Image.new("RGB", (1440, 900), (40, 40, 44)))      # what macOS returns without Screen Recording
+    img = Image.new("RGB", (1440, 900), (255, 255, 255))
+    ImageDraw.Draw(img).rectangle((100, 100, 700, 500), fill=(20, 60, 200))
+    assert not looks_blank(img)

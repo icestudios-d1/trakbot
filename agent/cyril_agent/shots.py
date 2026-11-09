@@ -15,16 +15,30 @@ MAX_WIDTH = 1280
 JPEG_QUALITY = 60
 
 
-def capture_jpeg_b64() -> str:
+def looks_blank(img: Image.Image) -> bool:
+    """True if the picture is one flat colour. That is what macOS hands back while Screen Recording is not allowed
+    (or not yet in effect for the running agent): a uniform dark frame instead of the screen."""
+    small = img.convert("L").resize((64, 40))
+    lo, hi = small.getextrema()
+    return hi - lo <= 6
+
+
+def capture() -> tuple[str, bool]:
+    """(JPEG as base64, picture is blank)."""
     with mss.mss() as sct:
         raw = sct.grab(sct.monitors[0])  # index 0 = all monitors combined
     img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+    blank = looks_blank(img)
     if img.width > MAX_WIDTH:
         h = int(img.height * MAX_WIDTH / img.width)
         img = img.resize((MAX_WIDTH, h))
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=JPEG_QUALITY)
-    return base64.b64encode(buf.getvalue()).decode()
+    return base64.b64encode(buf.getvalue()).decode(), blank
+
+
+def capture_jpeg_b64() -> str:
+    return capture()[0]
 
 
 class ScreenshotThrottle:

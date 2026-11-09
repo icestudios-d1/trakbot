@@ -21,3 +21,10 @@ def test_which_browsers_are_scriptable_and_how():
 
 def test_mac_browser_names_are_recognised_for_url_reading():
     assert is_chromium_browser("Microsoft Edge") and is_chromium_browser("Google Chrome") and is_chromium_browser("Brave Browser")
+
+
+def test_lsappinfo_pid_parsing():
+    assert macos.parse_lsappinfo_pid('"pid"=1234\n') == 1234
+    assert macos.parse_lsappinfo_pid('pid = 77') == 77
+    assert macos.parse_lsappinfo_pid("") is None and macos.parse_lsappinfo_pid(None) is None
+    assert macos.parse_lsappinfo_pid('"pid"=0') is None

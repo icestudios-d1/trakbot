@@ -537,7 +537,7 @@ def test_mac_installer_and_manifest_routes():
     i = c.get("/api/install-info", headers=A).json()
     assert i["mac_install"] == "curl -fsSL 'http://testserver/install.sh?key=agent' | sudo bash"
     assert i["mac_uninstall"] == "curl -fsSL 'http://testserver/uninstall.sh' | sudo bash"
-    assert i["mac_published"] == {"arm64": False, "x86_64": False}
+    assert i["mac_published"] == {"arm64": False, "x86_64": False} and i["mac_builds"] == []
     # plain key=value manifest for the shell installer (no JSON parser on a fresh Mac)
     assert c.get("/api/agent/mac-manifest", params={"arch": "arm64"}).status_code == 404
     assert c.get("/api/agent/mac-manifest", params={"arch": "ppc"}).status_code == 400
@@ -547,7 +547,9 @@ def test_mac_installer_and_manifest_routes():
     open(os.path.join(d, "cyril-mac-arm64"), "wb").write(b"x")
     m = c.get("/api/agent/mac-manifest", params={"arch": "arm64"})
     assert m.text == "version=0.3.0\nbuild=abc1234\nurl=/dist/cyril-mac-arm64\nsha256=ff00\nselftest=1\n"
-    assert c.get("/api/install-info", headers=A).json()["mac_published"] == {"arm64": True, "x86_64": False}
+    i = c.get("/api/install-info", headers=A).json()
+    assert i["mac_published"] == {"arm64": True, "x86_64": False}
+    assert i["mac_builds"] == ["abc1234"]   # Macs are compared with this, not with the Windows build
     os.remove(os.path.join(d, "manifest-mac-arm64.json")); os.remove(os.path.join(d, "cyril-mac-arm64"))
 
 
