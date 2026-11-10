@@ -1,0 +1,22 @@
+# GitHub's Mac machines are scarce: a Mac build job is sometimes cancelled without ever getting one. The release then
+# keeps the previous Mac binary, and Macs "update" to the same old agent. So when an "agents" run fails, re-run its
+# failed jobs (twice at most) instead of waiting for someone to notice.
+name: agents-retry
+on:
+  workflow_run:
+    workflows: [agents]
+    types: [completed]
+permissions:
+  actions: write
+jobs:
+  rerun:
+    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt < 3
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-run the jobs that failed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          sleep 60   # give GitHub's Mac queue a moment
+          gh run rerun "$RUN_ID" --failed --repo "$GITHUB_REPOSITORY"

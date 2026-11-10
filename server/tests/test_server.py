@@ -550,6 +550,7 @@ def test_mac_installer_and_manifest_routes():
     i = c.get("/api/install-info", headers=A).json()
     assert i["mac_published"] == {"arm64": True, "x86_64": False}
     assert i["mac_builds"] == ["abc1234"]   # Macs are compared with this, not with the Windows build
+    assert i["mac_build_by_arch"] == {"arm64": "abc1234", "x86_64": None}   # lets the page flag a build that lags
     os.remove(os.path.join(d, "manifest-mac-arm64.json")); os.remove(os.path.join(d, "cyril-mac-arm64"))
 
 

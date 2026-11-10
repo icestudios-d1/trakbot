@@ -75,7 +75,23 @@ if (-not $LocalBuild -and (Get-Command gh -ErrorAction SilentlyContinue)) {
         Step "download the CI-built agents (Windows + Mac)"
         $dist = Join-Path $server "dist"; New-Item -ItemType Directory -Force -Path $dist | Out-Null
         gh release download agent-latest --dir $dist --clobber --repo icestudios-d1/trakbot
-        if ($LASTEXITCODE -eq 0) { $fetched = $true } else { Write-Host "    No CI build available yet (still running, or gh not signed in: gh auth login). Falling back to a local Windows build." -ForegroundColor Yellow }
+        if ($LASTEXITCODE -eq 0) {
+            $fetched = $true
+            # A Mac build can lag: when GitHub has no Mac machine free, the previous binary is carried over. Say so,
+            # because Macs of that kind then "update" to the same old agent.
+            try {
+                $winBuild = (Get-Content (Join-Path $dist "manifest.json") -Raw | ConvertFrom-Json).build
+                foreach ($arch in @("arm64", "x86_64")) {
+                    $mf = Join-Path $dist "manifest-mac-$arch.json"
+                    if (-not (Test-Path $mf)) { continue }
+                    $macBuild = (Get-Content $mf -Raw | ConvertFrom-Json).build
+                    if ($winBuild -and $macBuild -and $macBuild -ne $winBuild) {
+                        Write-Host "    WARNING: the Mac ($arch) agent is build $macBuild, older than the rest of the release ($winBuild)." -ForegroundColor Yellow
+                        Write-Host "    Its build did not run on GitHub. Open Actions > agents > Re-run failed jobs, then run update.ps1 again." -ForegroundColor Yellow
+                    }
+                }
+            } catch { }
+        } else { Write-Host "    No CI build available yet (still running, or gh not signed in: gh auth login). Falling back to a local Windows build." -ForegroundColor Yellow }
     }
 }
 if (-not $fetched) {

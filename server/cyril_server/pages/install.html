@@ -57,6 +57,16 @@
 <script>
 const {$,esc}=TB;let known=null,nowTick,published=null,macBuilds=[];
 const chk=(ok,t,d)=>`<div class="chk"><span class="ic ${ok?'y':'n'}">${ok?'✓':'✕'}</span><div><b>${t}</b><div class="mut sm">${d}</div></div></div>`;
+// A Mac build older than the rest of the release: GitHub never gave that build a machine, so the previous binary was
+// carried over and Macs of that kind "update" to the same old agent.
+function macLag(i){
+  const by=i.mac_build_by_arch||{},name=a=>a==='arm64'?'Apple Silicon':'Intel',all=['arm64','x86_64'].filter(a=>by[a]);
+  const ref=i.build&&all.some(a=>by[a]===i.build)?i.build:null;
+  const late=ref?all.filter(a=>by[a]!==ref):[];
+  const list=all.map(a=>`${name(a)} build ${esc(by[a])}`).join(' · ');
+  if(!late.length)return list?' · '+list:'';
+  return ` · ${list}<div style="color:var(--c-u)"><b>⚠ The ${late.map(name).join(' and ')} agent is an older build than the rest (${esc(ref)}).</b> Its build did not run on GitHub, so those Macs keep the old agent however often they update. On GitHub: Actions, <i>agents</i>, <b>Re-run failed jobs</b> (or Run workflow), then run <code>update.ps1</code> on the server again.</div>`;
+}
 async function info(){
   try{
     const i=await TB.api('/api/install-info',{quiet:true});
@@ -66,7 +76,7 @@ async function info(){
     $('#checks').innerHTML=
       chk(true,'Server address',`Agents will use <code>${esc(i.server_url)}</code>${i.server_url.startsWith('http://')?' <b>(not HTTPS)</b>':''}`)+
       chk(i.exe_published,'Agent program (cyril.exe)',i.exe_published?`Published${i.version?' · version '+esc(i.version):''}${i.build?' · build '+esc(i.build):''}`:'Not on the server yet. Run <code>windows\\build.ps1</code> in the repo on the server machine: it writes into <code>server\\dist</code>, which the server serves (if you built on another PC, copy the files there). Installs will fail until then.')+
-      chk(i.mac_published.arm64||i.mac_published.x86_64,'Mac agent',(i.mac_published.arm64||i.mac_published.x86_64)?`Published for ${['arm64','x86_64'].filter(a=>i.mac_published[a]).map(a=>a==='arm64'?'Apple Silicon':'Intel').join(' and ')}${(i.mac_published.arm64&&i.mac_published.x86_64)?'':'. Macs with the other CPU need their own build'}`:'Not published yet. On a Mac, in the repo, run <code>./mac/build.sh</code> (once on an Apple Silicon Mac and once on an Intel Mac for both). It writes into <code>server/dist</code>.')+
+      chk(i.mac_published.arm64||i.mac_published.x86_64,'Mac agent',(i.mac_published.arm64||i.mac_published.x86_64)?`Published for ${['arm64','x86_64'].filter(a=>i.mac_published[a]).map(a=>a==='arm64'?'Apple Silicon':'Intel').join(' and ')}${(i.mac_published.arm64&&i.mac_published.x86_64)?'':'. Macs with the other CPU need their own build'}${macLag(i)}`:'Not published yet. On a Mac, in the repo, run <code>./mac/build.sh</code> (once on an Apple Silicon Mac and once on an Intel Mac for both). It writes into <code>server/dist</code>.')+
       chk(i.extension_published,'Browser extension (optional)',i.extension_published?'Published':'Not published; installs still work without it, but website addresses will not be captured.')+
       chk(sh.ok,'Screenshot storage',sh.ok?'Saving and reading back a test image works.':`<b>Screenshots cannot be saved.</b> ${esc(sh.hint||'')}<br><span class="mut">Technical detail: <code>${esc(sh.error)}</code></span>`);
   }catch(e){TB.error(e)}
