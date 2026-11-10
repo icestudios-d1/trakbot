@@ -1176,7 +1176,10 @@ def install_info(request: Request):
                               for a in MAC_ARCHES},
             "extension_published": (DIST_DIR / "cyril-extension.zip").is_file(),
             "version": (manifest or {}).get("version"), "build": _published_build(manifest),
-            "mac_builds": [b for b in (_mac_published_build(a) for a in MAC_ARCHES) if b]}
+            "mac_builds": [b for b in (_mac_published_build(a) for a in MAC_ARCHES) if b],
+            # per CPU type, so the page can say when one Mac build is older than the rest of the release (its build
+            # machine never turned up and the previous binary was carried over: "updating" then changes nothing)
+            "mac_build_by_arch": {a: _mac_published_build(a) for a in MAC_ARCHES}}
 
 
 def _mac_published_build(arch: str) -> str | None:
