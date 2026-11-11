@@ -19,7 +19,12 @@ if __name__ == "__main__":
     except BaseException:
         # The Windows build has no console; leave the traceback where the installer's diagnostics look for it.
         try:
-            d = os.path.join(os.environ.get("ProgramData", os.path.expanduser("~")), "Cyril", "data")
+            if sys.platform == "darwin":   # where the Mac installer's diagnostics look
+                d = "/Library/Application Support/Cyril/data"
+                if not os.path.isdir(d):
+                    d = os.path.join(os.path.expanduser("~"), "Cyril", "data")
+            else:
+                d = os.path.join(os.environ.get("ProgramData", os.path.expanduser("~")), "Cyril", "data")
             os.makedirs(d, exist_ok=True)
             with open(os.path.join(d, "crash.log"), "a", encoding="utf-8") as f:
                 f.write(traceback.format_exc() + "\n")

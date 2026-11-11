@@ -533,6 +533,8 @@ def test_mac_installer_and_manifest_routes():
     assert c.get("/install.sh").headers["cache-control"] == "no-store" and plain.isascii()
     assert "launchctl" in plain
     assert "Nothing is left running" in c.get("/uninstall.sh").text
+    # the agent runs as the logged-in user: the installer must never take its data folder (log, upload queue) away
+    assert "chown -R" not in plain and '-user 0 ! -name updater.log -exec chown "$OWNER_UID"' in plain
     # install-info carries the Mac commands and which CPU builds are published
     i = c.get("/api/install-info", headers=A).json()
     assert i["mac_install"] == "curl -fsSL 'http://testserver/install.sh?key=agent' | sudo bash"

@@ -124,8 +124,21 @@ esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 if [ -n "$NEW_BUILD_STAMP" ]; then printf '%s' "$NEW_BUILD_STAMP" > "$APPDIR/build.txt"; fi
 mkdir -p "$DATA"
 if [ -z "$R" ]; then
-  chown -R root:wheel "$APPDIR"; chmod 755 "$APPDIR"; chmod 644 "$CFG" "$APPDIR/build.txt" 2>/dev/null || true
-  chmod 1777 "$DATA"                       # the agent's log and queued data; written by whoever is logged in
+  # Only the program and its config belong to root. NEVER chown what is inside data/: the agent runs as the logged-in
+  # user and must keep writing its log and its upload queue there. (An earlier installer chowned the whole
+  # folder recursively: from then on the agent could neither queue an event nor write a log line, so the Mac went quiet.)
+  chown root:wheel "$APPDIR" "$BIN" "$CFG"; chmod 755 "$APPDIR"; chmod 644 "$CFG"
+  if [ -f "$APPDIR/build.txt" ]; then chown root:wheel "$APPDIR/build.txt"; chmod 644 "$APPDIR/build.txt"; fi
+  chown root:wheel "$DATA"; chmod 1777 "$DATA"   # the agent's log and queued data; written by whoever is logged in
+  # Repair a data folder that earlier installer took over: give root-owned files back to the person who uses this Mac.
+  OWNER_UID="$CONSOLE_UID"
+  if [ "$OWNER_UID" -eq 0 ]; then   # nobody at the Mac (the updater at start-up): the last person who logged in
+    LAST_USER="$(defaults read /Library/Preferences/com.apple.loginwindow lastUserName 2>/dev/null || true)"
+    if [ -n "$LAST_USER" ]; then OWNER_UID="$(id -u "$LAST_USER" 2>/dev/null || echo 0)"; fi
+  fi
+  if [ "$OWNER_UID" -ne 0 ]; then
+    find "$DATA" -mindepth 1 -user 0 ! -name updater.log -exec chown "$OWNER_UID" {} + 2>/dev/null || true
+  fi
 fi
 ok "Config written"
 
