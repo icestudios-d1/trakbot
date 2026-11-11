@@ -68,3 +68,13 @@ def test_websites_cannot_feed_the_agent_a_fake_url(door):
     # preflight from a website is not granted either
     st, h, _ = call(door, "OPTIONS", "/", {"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"})
     assert "access-control-allow-origin" not in h
+
+
+def test_company_oms_can_read_the_ping_with_no_setting(door):
+    m.OMS_ORIGINS.clear()
+    m.OMS_ORIGINS.update(m.DEFAULT_OMS_ORIGINS)          # what the agent starts with, and keeps after every poll
+    o = "https://office.icestudios.in"
+    st, h, _ = call(door, "OPTIONS", "/oms/ping", {"Origin": o, "Access-Control-Request-Private-Network": "true"})
+    assert st == 204 and h["access-control-allow-origin"] == o and h["access-control-allow-private-network"] == "true"
+    st, h, body = call(door, "GET", "/oms/ping", {"Origin": o})
+    assert h["access-control-allow-origin"] == o and body["ping"] == "pong"

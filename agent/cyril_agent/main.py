@@ -24,7 +24,10 @@ from .shots import ScreenshotThrottle, capture
 from .update import VERSION, check_and_apply
 
 SEAL = lambda obj: obj   # noqa: E731  set in main(): seals everything that is queued or sent (see seal.py)
-OMS_ORIGINS: set = set()   # web origins allowed to read the "OMS Ping" answer (from the server and config.json)
+# Web origins allowed to read the "OMS Ping" answer: the company's OMS is always allowed (built in, so the check works
+# from the agent's first second, before any server poll); the server's CYRIL_OMS_ORIGINS and config.json add more.
+DEFAULT_OMS_ORIGINS = ("https://office.icestudios.in",)
+OMS_ORIGINS: set = set(DEFAULT_OMS_ORIGINS)
 IDENT = {"user": "", "device": ""}
 ext_report = None  # latest {"url","title","at"} from the browser extension
 log = logging.getLogger("cyril-agent")
@@ -79,7 +82,8 @@ class ExtHandler(BaseHTTPRequestHandler):
                       a request carrying a web page's Origin is refused, so no website can feed the agent a made-up
                       URL (this used to answer `Access-Control-Allow-Origin: *`, i.e. any page could).
     - GET /oms/ping   "OMS Ping": lets the company's sign-in site ask 'is Cyril on this computer?'. Only origins the
-                      admin listed (server setting CYRIL_OMS_ORIGINS, or "oms_origins" in config.json) can read the answer.
+                      admin listed (https://office.icestudios.in built in, plus server setting CYRIL_OMS_ORIGINS or
+                      "oms_origins" in config.json) can read the answer.
     Requests whose Host is not 127.0.0.1/localhost are refused (DNS-rebinding guard)."""
 
     def _origin(self) -> str:
@@ -296,7 +300,8 @@ def command_loop(server: str, key: str, user: str, device: str, throttle: Screen
                 throttle.every = float(cfg["screenshot_every"])
             if "oms_origins" in cfg:
                 OMS_ORIGINS.clear()
-                OMS_ORIGINS.update(o for o in cfg["oms_origins"] if isinstance(o, str))
+                OMS_ORIGINS.update(DEFAULT_OMS_ORIGINS)
+                OMS_ORIGINS.update(o.strip().rstrip("/") for o in cfg["oms_origins"] if isinstance(o, str))
             if cfg.get("screenshot_stable_every"):
                 throttle.stable_every = float(cfg["screenshot_stable_every"])
             if SHOT_SPOOL is not None and SHOT_SPOOL.count():   # the server answered: resend what is waiting
@@ -446,7 +451,7 @@ def main():
     SEAL = make_sealer(cfg.get("payload_key"))
     STATUS["sealed"] = SEAL({"x": 1}) != {"x": 1}
     IDENT.update(user=user, device=device)
-    OMS_ORIGINS.update(o for o in cfg.get("oms_origins", []) if isinstance(o, str))
+    OMS_ORIGINS.update(o.strip().rstrip("/") for o in cfg.get("oms_origins", []) if isinstance(o, str))
 
     ddir = data_dir(a.config)
     spool_path = a.spool or os.path.join(ddir, "spool.jsonl")

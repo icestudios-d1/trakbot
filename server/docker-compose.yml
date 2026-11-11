@@ -15,6 +15,7 @@ services:
       # Address agents are told to use in the install one-liner (e.g. https://cyril.icestudios.in).
       # Leave empty to use whatever address the browser used to open the dashboard.
       CYRIL_PUBLIC_URL: ${CYRIL_PUBLIC_URL:-}
+      CYRIL_OMS_ORIGINS: ${CYRIL_OMS_ORIGINS:-https://office.icestudios.in}
       CYRIL_DB: /data/cyril.db
       CYRIL_DIST_DIR: /dist
       CYRIL_S3_ENDPOINT: seaweedfs:8333
