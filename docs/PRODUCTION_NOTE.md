@@ -90,7 +90,7 @@ curl http://localhost:8000/api/health      # {"ok":true,...,"build":"xxxxxxxx"}
 | `CYRIL_WORK_START` / `CYRIL_WORK_END` | no | Hours of the dashboard's **Work** view (default `8` and `22`, viewer's local time). |
 | `CYRIL_REQUIRE_SEALED` | no | `1` = refuse uploads that are not sealed (old agents). Turn on once *Install agents* shows 🔒 sealed on every PC. |
 | `CYRIL_PAYLOAD_KEY` | no | Base64 of the server's 32-byte private payload key. Normally leave empty: the server creates `payload.key` next to the database on first start. |
-| `CYRIL_OMS_ORIGINS` | no | Comma-separated web origins allowed to read the agent's **OMS Ping** (§7), e.g. `https://oms.icestudios.in`. Reaches agents through their 10-second poll. |
+| `CYRIL_OMS_ORIGINS` | no | Comma-separated web origins allowed to read the agent's **OMS Ping** (§7), default `https://office.icestudios.in`, which agents also have built in. Reaches agents through their 10-second poll. |
 | `CYRIL_CACHE_TTL` | no | Seconds the Overview/Employee report is cached (default `30`; `0` disables). |
 
 Inside the container, compose also sets `CYRIL_DB=/data/cyril.db`, `CYRIL_DIST_DIR=/dist`, `CYRIL_S3_ENDPOINT=seaweedfs:8333`, `CYRIL_S3_BUCKET=cyril-screenshots`.
@@ -291,12 +291,12 @@ const p = await r.json();     // {ok:true, app:"cyril", ping:"pong", version, bu
 ```
 If the fetch throws (connection refused) Cyril is not running on that computer.
 
-- **Who can read it:** only origins listed in the server setting `CYRIL_OMS_ORIGINS` (comma separated, e.g. `https://oms.icestudios.in`). Agents pick the list up from their 10-second poll (or `"oms_origins": [...]` in `config.json`). Any other website gets a minimal `{ok:true}` with no CORS header, so the browser hides it. A request with no `Origin` (a local tool such as `curl`) gets the full answer.
+- **Who can read it:** only origins listed in the server setting `CYRIL_OMS_ORIGINS` (comma separated, default `https://office.icestudios.in`, which agents also have built in). Agents pick the list up from their 10-second poll (or `"oms_origins": [...]` in `config.json`). Any other website gets a minimal `{ok:true}` with no CORS header, so the browser hides it. A request with no `Origin` (a local tool such as `curl`) gets the full answer.
 - **Private Network Access:** Chrome/Edge first send an `OPTIONS` preflight when a public HTTPS page calls a loopback address; the agent answers it with `Access-Control-Allow-Origin: <that origin>` and `Access-Control-Allow-Private-Network: true` for allowed origins only.
 - **Safety checks:** Host must be `127.0.0.1`/`localhost` (DNS-rebinding guard); responses are `no-store`; the optional `nonce` is echoed (max 64 chars) so the page can tell a fresh answer from a cached one.
 - **Browsers:** Chrome, Edge and Firefox allow an HTTPS page to call loopback; **Safari blocks it** (mixed content), so Safari users need the browser-extension route (a content script on the OMS origin that reports `{cyril:true}` to the page) if you must support them.
 - **It is a convenience check, not proof.** A page can only trust what the browser tells it; a user could run a fake listener on port 7077. If OMS must *enforce* it, add a server-checked handshake: OMS gives the page a one-time nonce → page calls `/oms/ping?nonce=…` → OMS's back end asks the Cyril server (new endpoint) whether that device reported that nonce recently. Not built; say if you want it.
-- **Rollout:** needs the new agent build (GitHub Actions on merge to `main`, then `update.ps1`, PCs update ~03:00) and the server setting `CYRIL_OMS_ORIGINS`. Tests: `agent/tests/test_local_door.py`.
+- **Rollout:** needs the new agent build (GitHub Actions on merge to `main`, then `update.ps1`, PCs update ~03:00) (`https://office.icestudios.in` works with no setting; set `CYRIL_OMS_ORIGINS` only for other origins). Tests: `agent/tests/test_local_door.py`.
 
 ---
 
@@ -308,6 +308,6 @@ If the fetch throws (connection refused) Cyril is not running on that computer.
 - [ ] Code signing for `cyril.exe` / Mac binaries; SmartScreen/Gatekeeper/AV exclusions.
 - [ ] Pin the SeaweedFS image tag.
 - [ ] Individual admin accounts and an access log if policy needs one.
-- [ ] Set `CYRIL_OMS_ORIGINS`, then `CYRIL_REQUIRE_SEALED=1` once every PC shows 🔒 sealed.
+- [ ] Set `CYRIL_OMS_ORIGINS` if OMS lives anywhere besides `https://office.icestudios.in`, then `CYRIL_REQUIRE_SEALED=1` once every PC shows 🔒 sealed.
 - [ ] An MDM profile to pre-approve Screen Recording/Automation on Macs.
 - [ ] Decide on the remaining hardening steps in §6 (no local admin for staff; SYSTEM-service split).

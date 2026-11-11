@@ -206,7 +206,7 @@ the agent's code changed). PCs and Macs then update themselves from the server. 
   (`agent/cyril_agent/seal.py`), so the on-disk queue and the network traffic are unreadable on the PC. Only the server opens
   them (`payload.key` next to the database, back it up). Old agents keep working until updated; *Install agents* shows
   🔒 sealed per PC, and `CYRIL_REQUIRE_SEALED=1` then refuses unsealed uploads.
-- `GET http://127.0.0.1:7077/oms/ping` lets the sign-in site check that Cyril is installed. Only origins listed in
+- `GET http://127.0.0.1:7077/oms/ping` lets the sign-in site check that Cyril is installed. Only `https://office.icestudios.in` (built in) and origins listed in
   `CYRIL_OMS_ORIGINS` can read the answer. The same local port no longer accepts URL reports from web pages (extension only).
   Details: `docs/PRODUCTION_NOTE.md` §6 and §7.
 

@@ -395,7 +395,7 @@ def test_screenshot_intervals_are_a_server_setting_agents_pick_up():
     assert r["report_interval"] == 0                                     # untouched settings stay put
     assert c.put("/api/settings", headers=A, json={"screenshot_every": 7}).status_code == 400
     assert c.get("/api/agent/poll", params={"device": "PC-X"}).status_code == 401
-    assert c.get("/api/agent/poll", params={"device": "PC-X"}, headers=K).json()["config"] == {"screenshot_every": 30, "screenshot_stable_every": 300, "oms_origins": []}
+    assert c.get("/api/agent/poll", params={"device": "PC-X"}, headers=K).json()["config"] == {"screenshot_every": 30, "screenshot_stable_every": 300, "oms_origins": ["https://office.icestudios.in"]}
     c.put("/api/settings", headers=A, json={"screenshot_every": 60, "screenshot_stable_every": 180})
 
 
@@ -744,8 +744,10 @@ def test_installers_carry_only_the_public_key_and_poll_lists_oms_origins():
     assert srv.opener.public_b64 in ps and srv.opener.public_b64 in sh and "{{" not in ps + sh
     key_file = open(os.path.join(os.path.dirname(os.environ["CYRIL_DB"]), "payload.key")).read().strip()
     assert key_file not in ps + sh                                    # the private key never leaves the server
+    assert srv.OMS_ORIGINS == ["https://office.icestudios.in"]         # the company OMS is allowed with no setting
+    saved = srv.OMS_ORIGINS[:]
     srv.OMS_ORIGINS[:] = ["https://oms.example.com"]
     try:
         assert c.get("/api/agent/poll", params={"device": "PC-OMS"}, headers=K).json()["config"]["oms_origins"] == ["https://oms.example.com"]
     finally:
-        srv.OMS_ORIGINS[:] = []
+        srv.OMS_ORIGINS[:] = saved

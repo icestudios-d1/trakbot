@@ -38,8 +38,10 @@ DB_PATH = os.environ.get("CYRIL_DB", "data/cyril.db")
 WORK_START = int(os.environ.get("CYRIL_WORK_START", "8"))    # the dashboard's "Work" view: local hours [start, end)
 WORK_END = int(os.environ.get("CYRIL_WORK_END", "22"))
 SESSION_COOKIE = "cyril_session"
-# Web origins (e.g. https://oms.icestudios.in) whose pages may read the agent's "OMS Ping" answer on 127.0.0.1:7077.
-OMS_ORIGINS = [o.strip().rstrip("/") for o in os.environ.get("CYRIL_OMS_ORIGINS", "").split(",") if o.strip()]
+# Web origins whose pages may read the agent's "OMS Ping" answer on 127.0.0.1:7077. Defaults to the company OMS;
+# agents also have it built in. Set CYRIL_OMS_ORIGINS (comma separated) to list others.
+OMS_ORIGINS = [o.strip().rstrip("/") for o in os.environ.get("CYRIL_OMS_ORIGINS", "https://office.icestudios.in").split(",")
+               if o.strip()]
 # Agents seal what they collect to this server's public key (agent/cyril_agent/seal.py): the queue on the PC and the
 # bytes on the wire are ciphertext that only this process can open. Set CYRIL_REQUIRE_SEALED=1 once every PC has
 # updated, to refuse unsealed (old-style) uploads.
