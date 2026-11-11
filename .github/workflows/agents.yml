@@ -34,6 +34,27 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
+      - name: Load the signing certificate
+        # One fixed self-signed certificate (repo secrets, made once with mac/make-signing-cert.sh) so macOS keeps the
+        # Screen Recording permission across agent updates. Without the secrets the build is published unsigned.
+        env:
+          MAC_SIGN_P12: ${{ secrets.MAC_SIGN_P12 }}
+          MAC_SIGN_P12_PASSWORD: ${{ secrets.MAC_SIGN_P12_PASSWORD }}
+        run: |
+          if [ -z "$MAC_SIGN_P12" ]; then echo "::warning::MAC_SIGN_P12 is not set: the Mac agent is published unsigned"; exit 0; fi
+          KC="$RUNNER_TEMP/cyril-sign.keychain-db"; KP="$(uuidgen)"
+          printf '%s' "$MAC_SIGN_P12" | base64 --decode > "$RUNNER_TEMP/sign.p12"
+          security create-keychain -p "$KP" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KP" "$KC"
+          security import "$RUNNER_TEMP/sign.p12" -k "$KC" -P "$MAC_SIGN_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KP" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/sign.p12"
+          ID="$(security find-identity -p codesigning "$KC" | awk '$2 ~ /^[0-9A-F]{40}$/ {print $2; exit}')"
+          [ -n "$ID" ] || { echo "::error::no code-signing identity found in MAC_SIGN_P12"; exit 1; }
+          echo "MAC_SIGN_IDENTITY=$ID" >> "$GITHUB_ENV"
+          echo "MAC_SIGN_KEYCHAIN=$KC" >> "$GITHUB_ENV"
       - run: OUT_DIR="$PWD/out" ./mac/build.sh
       - uses: actions/upload-artifact@v4
         with: { name: mac-arm64, path: out/* }
@@ -43,6 +64,27 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
+      - name: Load the signing certificate
+        # One fixed self-signed certificate (repo secrets, made once with mac/make-signing-cert.sh) so macOS keeps the
+        # Screen Recording permission across agent updates. Without the secrets the build is published unsigned.
+        env:
+          MAC_SIGN_P12: ${{ secrets.MAC_SIGN_P12 }}
+          MAC_SIGN_P12_PASSWORD: ${{ secrets.MAC_SIGN_P12_PASSWORD }}
+        run: |
+          if [ -z "$MAC_SIGN_P12" ]; then echo "::warning::MAC_SIGN_P12 is not set: the Mac agent is published unsigned"; exit 0; fi
+          KC="$RUNNER_TEMP/cyril-sign.keychain-db"; KP="$(uuidgen)"
+          printf '%s' "$MAC_SIGN_P12" | base64 --decode > "$RUNNER_TEMP/sign.p12"
+          security create-keychain -p "$KP" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KP" "$KC"
+          security import "$RUNNER_TEMP/sign.p12" -k "$KC" -P "$MAC_SIGN_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KP" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/sign.p12"
+          ID="$(security find-identity -p codesigning "$KC" | awk '$2 ~ /^[0-9A-F]{40}$/ {print $2; exit}')"
+          [ -n "$ID" ] || { echo "::error::no code-signing identity found in MAC_SIGN_P12"; exit 1; }
+          echo "MAC_SIGN_IDENTITY=$ID" >> "$GITHUB_ENV"
+          echo "MAC_SIGN_KEYCHAIN=$KC" >> "$GITHUB_ENV"
       - run: OUT_DIR="$PWD/out" ./mac/build.sh
       - uses: actions/upload-artifact@v4
         with: { name: mac-x86_64, path: out/* }

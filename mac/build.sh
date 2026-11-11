@@ -31,6 +31,23 @@ pyinstaller --onefile --name "cyril-mac-$ARCH" \
   --distpath "$OUT" --workpath "$ROOT/build/mac-$ARCH" --specpath "$ROOT/build/mac-$ARCH" \
   "$ROOT/agent/cyril_entry.py"
 
+# Sign with ONE fixed certificate, so macOS sees every build as the same program. Without this each build is a new
+# program to macOS: Screen Recording stays switched on in System Settings but silently stops applying after every
+# update, until someone removes cyril from the list and allows it again. The certificate is self-signed
+# (mac/make-signing-cert.sh makes it once); CI passes its identity in MAC_SIGN_IDENTITY (and its keychain).
+SIGNED=false
+if [ -n "${MAC_SIGN_IDENTITY:-}" ]; then
+  codesign --force --sign "$MAC_SIGN_IDENTITY" ${MAC_SIGN_KEYCHAIN:+--keychain "$MAC_SIGN_KEYCHAIN"} \
+    --identifier in.icestudios.cyril "$BIN" \
+    || { rm -f "$BIN" "$OUT/manifest-mac-$ARCH.json"; echo "Signing failed. Nothing was published." >&2; exit 1; }
+  echo "Signed. macOS will recognise the agent by:"
+  codesign -d -r- "$BIN" 2>&1 | sed 's/^/  /'
+  SIGNED=true
+else
+  echo "WARNING: not signed with the fixed certificate (MAC_SIGN_IDENTITY is not set)." >&2
+  echo "         Macs will have to allow Screen Recording again after installing this build." >&2
+fi
+
 # Never publish a build that cannot start: --selftest exits 0 once the program (and its Cocoa/Quartz pieces) loaded.
 if ! "$BIN" --selftest; then
   rm -f "$BIN" "$OUT/manifest-mac-$ARCH.json"
@@ -41,8 +58,8 @@ echo "Self-test passed."
 
 SHA="$(shasum -a 256 "$BIN" | cut -d' ' -f1)"
 BUILD="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || true)"
-printf '{"version":"%s","build":"%s","arch":"%s","url":"/dist/cyril-mac-%s","sha256":"%s","selftest":true}\n' \
-  "$VERSION" "$BUILD" "$ARCH" "$ARCH" "$SHA" > "$OUT/manifest-mac-$ARCH.json"
+printf '{"version":"%s","build":"%s","arch":"%s","url":"/dist/cyril-mac-%s","sha256":"%s","selftest":true,"signed":%s}\n' \
+  "$VERSION" "$BUILD" "$ARCH" "$ARCH" "$SHA" "$SIGNED" > "$OUT/manifest-mac-$ARCH.json"
 
 echo
 echo "Built (version $VERSION, build ${BUILD:-unknown}, $ARCH):"
