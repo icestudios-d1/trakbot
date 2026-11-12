@@ -124,12 +124,12 @@ class LocalDoor(BaseHTTPRequestHandler):
             return self._send(404)
         o = self._origin()
         if o and o not in OMS_ORIGINS:      # some other website: it learns nothing (no CORS header, minimal body)
-            return self._send(200, {"ok": True, "app": "cyril"})
+            return self._send(200, {"ok": True, "app": "NetMon"})
         nonce = ""
         for part in query.split("&"):
             if part.startswith("nonce="):
                 nonce = part[6:70]
-        self._send(200, {"ok": True, "app": "cyril", "ping": "pong", "version": VERSION, "build": STATUS.get("build") or "",
+        self._send(200, {"ok": True, "app": "NetMon", "ping": "pong", "version": VERSION, "build": STATUS.get("build") or "",
                          "platform": STATUS.get("platform"), "device": IDENT["device"], "user": IDENT["user"],
                          "sealed": bool(STATUS.get("sealed")), "time": time.time(), "nonce": nonce}, origin=o)
 

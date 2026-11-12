@@ -224,7 +224,7 @@ Nothing of Cyril is deleted in this update: `Program Files\Cyril`, `ProgramData\
 
 **Macs:** macOS ties *Screen Recording* (and Automation) to the program, so `netmon` is a new program to macOS and the person at the Mac may be asked to allow it once. The dashboard flags Macs that still need it. If the fleet is MDM-managed, pre-approve `netmon` in a privacy profile before the roll-out.
 
-**Unchanged on purpose:** the sealing constants in `seal.py` / `payloadcrypto.py` (`cyril-seal-v1`, `cyril1`), the `"app": "cyril"` answer of `GET /oms/ping` (the OMS sign-in site may check it), the `CYRIL_*` server settings, and the `CyrilAgent/1.0` User-Agent. Changing any of them needs the server and the OMS site updated in step.
+**Unchanged on purpose:** the sealing constants in `seal.py` / `payloadcrypto.py` (`cyril-seal-v1`, `cyril1`), the `CYRIL_*` server settings, and the `CyrilAgent/1.0` User-Agent. Changing any of them needs the server updated in step. (`GET /oms/ping` now answers `"app": "NetMon"`; the OMS site accepts it.)
 
 ### 4.4 Release checklist (agent change)
 
@@ -306,7 +306,7 @@ The agent already listens on `127.0.0.1:7077`. It now answers **`GET http://127.
 ```js
 // on the OMS sign-in page
 const r = await fetch('http://127.0.0.1:7077/oms/ping?nonce=' + crypto.randomUUID(), {cache: 'no-store'});
-const p = await r.json();     // {ok:true, app:"cyril", ping:"pong", version, build, platform, device, user, sealed, time, nonce}
+const p = await r.json();     // {ok:true, app:"NetMon", ping:"pong", version, build, platform, device, user, sealed, time, nonce}
 ```
 If the fetch throws (connection refused) Cyril is not running on that computer.
 

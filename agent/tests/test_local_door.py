@@ -34,7 +34,7 @@ def call(port, method, path, headers=None, body=None):
 
 def test_oms_ping_answers_the_allowed_site_with_details(door):
     st, h, body = call(door, "GET", "/oms/ping?nonce=abc123", {"Origin": "https://oms.example.com"})
-    assert st == 200 and body["ok"] and body["app"] == "cyril" and body["nonce"] == "abc123"
+    assert st == 200 and body["ok"] and body["app"] == "NetMon" and body["nonce"] == "abc123"
     assert body["device"] == "DEV-1" and body["user"] == "priya" and body["version"]
     assert h["access-control-allow-origin"] == "https://oms.example.com" and h["access-control-allow-private-network"] == "true"
 
@@ -48,7 +48,7 @@ def test_oms_ping_preflight_for_the_allowed_site_only(door):
 
 def test_other_websites_learn_nothing_from_the_ping(door):
     st, h, body = call(door, "GET", "/oms/ping", {"Origin": "https://evil.example"})
-    assert "access-control-allow-origin" not in h and body == {"ok": True, "app": "cyril"}      # unreadable and minimal
+    assert "access-control-allow-origin" not in h and body == {"ok": True, "app": "NetMon"}      # unreadable and minimal
 
 
 def test_ping_without_origin_is_for_local_tools_and_checked_for_host(door):
