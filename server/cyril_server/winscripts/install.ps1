@@ -6,7 +6,9 @@ A PC that still has the old Cyril agent is moved over by this same script, with 
 "Cyril Updater" task fetches this file like any other update). The hand-over is: download and self-test the new
 program FIRST; only then stop the Cyril agent, copy its config and unsent data into the NetMon folder, start
 NetMon and check that it is running. If anything fails, the Cyril agent is switched back on and nothing is lost.
-The old Cyril folders and tasks are only switched off here, not deleted: removing them is a separate, later update.
+The old Cyril folders and tasks are first only switched off. They are removed on a LATER run (the one after the
+hand-over, so it never happens inside a Cyril task), and only once NetMon has proved itself: its own health.json,
+which Cyril never wrote, must be recent and show uploads working. Until then Cyril's files stay as the fallback.
 
 The easiest way is the one-liner on your server's "Install agents" page in the dashboard.
 It looks like this (run in an ELEVATED PowerShell; the server fills in its own
@@ -83,6 +85,9 @@ $updating   = Test-Path $exe
 # Is the old Cyril agent still on this PC and not yet handed over?
 $oldPresent = (Test-Path $oldCfgDir) -or (Test-Path $oldExe) -or [bool](Get-ScheduledTask -TaskName $oldAgentTask -ErrorAction SilentlyContinue)
 $migrating  = $oldPresent -and -not (Test-Path $migratedMarker)
+# Already handed over on an earlier run, and Cyril's leftovers are still there: they can be removed (see 5e). Decided
+# here, before this run can write the marker, so the run that does the hand-over never also does the clean-up.
+$cleanupOld = $oldPresent -and (Test-Path $migratedMarker)
 
 function Quiet([scriptblock]$b) { try { & $b } catch { } }
 function Get-DeviceId {
@@ -170,12 +175,12 @@ Ok "Config written"
 # Old versions ran the agent as SYSTEM at boot. SYSTEM has no desktop, so any such copy is useless: stop it.
 Get-Process -Name $procName -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq 0 } | Stop-Process -Force -ErrorAction SilentlyContinue
 
-function Send-MigrationReport([bool]$ok, [string]$detail) {
+function Send-MigrationReport([bool]$ok, [string]$detail, [string]$from = "cyril", [string]$to = "") {
     # Visible in the dashboard's update log, so the roll-out can be checked machine by machine. Never blocks the install.
     try {
         $who = if ($cfg.user) { "$($cfg.user)" } elseif ($env:USERNAME) { $env:USERNAME } else { $env:COMPUTERNAME }
         $dev = Get-DeviceId; if (-not $dev) { $dev = $env:COMPUTERNAME }
-        $body = @{ user = $who; device = "$dev"; from_version = "cyril"; to_version = "netmon $($ver.version)"; ok = $ok; detail = $detail.Substring(0, [Math]::Min(1900, $detail.Length)) } | ConvertTo-Json
+        $body = @{ user = $who; device = "$dev"; from_version = $from; to_version = $(if ($to) { $to } else { "netmon $($ver.version)" }); ok = $ok; detail = $detail.Substring(0, [Math]::Min(1900, $detail.Length)) } | ConvertTo-Json
         Invoke-RestMethod -UseBasicParsing -Method Post -Uri "$ServerUrl/api/agent/update-log" -Headers @{ "X-Api-Key" = $AgentKey } `
             -ContentType "application/json" -Body $body -TimeoutSec 15 | Out-Null
     } catch { }
@@ -311,6 +316,44 @@ if (Test-Path $migratedMarker) {
     foreach ($t in $oldUpdaterTasks) {
         $old = Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue
         if ($old -and $old.State -ne "Disabled") { Quiet { Disable-ScheduledTask -TaskName $t -ErrorAction Stop | Out-Null }; Ok "Old task '$t' switched off" }
+    }
+}
+
+# 5e. Update 2: remove what the Cyril agent left behind. Only on a run AFTER the hand-over (so this is the NetMon updater
+#     running, never a Cyril task that is about to be deleted), and only when NetMon has proved itself on this PC: its
+#     own health.json (Cyril's was never copied) is under 3 days old and shows no upload failing. Otherwise Cyril's
+#     files stay as the fallback and the next update asks again. A task that is running right now is left for next time.
+function Test-NetMonHealthy {
+    try {
+        $h = Get-Content (Join-Path $dataDir "health.json") -Raw | ConvertFrom-Json
+        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        return ((([long]$h.failing_since) -eq 0) -and (($now - [long]$h.at) -lt 259200))
+    } catch { return $false }
+}
+if ($cleanupOld) {
+    if (-not (Test-NetMonHealthy)) {
+        Step "NetMon has not reported healthy on this PC yet; leaving the old Cyril files for the next update"
+    } else {
+        $left = 0
+        foreach ($t in (@($oldAgentTask) + $oldUpdaterTasks)) {
+            $x = Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue
+            if (-not $x) { continue }
+            if ($x.State -eq "Running") { $left++; continue }
+            try { Unregister-ScheduledTask -TaskName $t -Confirm:$false -ErrorAction Stop } catch { $left++ }
+        }
+        Get-Process -Name $oldProc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        if ($left -eq 0) {
+            foreach ($d in @($oldInstallDir, $oldCfgDir)) {
+                if (Test-Path $d) { try { Remove-Item -Recurse -Force $d -ErrorAction Stop } catch { $left++ } }
+            }
+        }
+        if ($left -eq 0) {
+            Ok "Old Cyril tasks and files removed"
+            Send-MigrationReport $true "old Cyril tasks, program folder and data folder removed" "cyril-leftovers" "removed"
+        } else {
+            Warn "Some old Cyril items could not be removed yet ($left); the next update will try again."
+            Send-MigrationReport $false "$left old Cyril item(s) could not be removed (running or locked); will retry" "cyril-leftovers" "removed"
+        }
     }
 }
 

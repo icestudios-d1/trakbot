@@ -34,13 +34,26 @@ def test_windows_installer_downloads_and_self_tests_before_it_touches_cyril():
     assert PS1.index("[IO.File]::WriteAllText($cfgFile") < first_touch          # config is in place before the hand-over
 
 
-def test_windows_installer_switches_cyril_off_but_never_deletes_it():
+def test_windows_installer_switches_cyril_off_during_the_hand_over_without_deleting_it():
     assert "Disable-ScheduledTask -TaskName $oldAgentTask" in PS1
-    # nothing named as an old thing is ever unregistered or deleted in this update (that is the later update)
-    for line in PS1.splitlines():
-        if re.search(r"Unregister-ScheduledTask|Remove-Item|Remove-ItemProperty", line):
-            assert not re.search(r"\$old|Cyril", line), line
-    assert "Move-Item" not in PS1[PS1.index("if ($migrating) {"):PS1.index("# 5b. The updater")]      # data is copied, not moved
+    mig = PS1[PS1.index("if ($migrating) {"):PS1.index("# 5b. The updater")]
+    assert "Move-Item" not in mig and "Remove-Item" not in mig and "Unregister" not in mig.replace("Unregister-ScheduledTask -TaskName $taskName", "")
+
+
+def test_windows_installer_removes_cyril_only_in_the_gated_cleanup():
+    """Update 2. Nothing named as old is ever unregistered or deleted outside section 5e."""
+    start, end = PS1.index("# 5e."), PS1.index("# 6.")
+    for n, line in enumerate(PS1.splitlines()):
+        if re.search(r"Unregister-ScheduledTask|Remove-Item|Remove-ItemProperty", line) and re.search(r"\$old|Cyril", line):
+            pos = sum(len(l) + 1 for l in PS1.splitlines()[:n])
+            assert start <= pos < end, line
+    clean = PS1[start:end]
+    # only after the hand-over (decided before this run can write the marker), and only when NetMon has proved itself
+    assert PS1.index("$cleanupOld = ") < PS1.index("[IO.File]::WriteAllText($migratedMarker")
+    assert "if ($cleanupOld)" in clean and "Test-NetMonHealthy" in clean and "259200" in clean and "failing_since" in clean
+    # a task that is running right now may be this very script: left for the next run, and then nothing is deleted
+    assert '$x.State -eq "Running"' in clean and clean.index("if ($left -eq 0) {") < clean.index("Remove-Item")
+    assert "cyril-leftovers" in clean
 
 
 def test_windows_installer_rolls_back_to_cyril_when_netmon_does_not_come_up():
@@ -57,7 +70,7 @@ def test_windows_installer_rolls_back_to_cyril_when_netmon_does_not_come_up():
 def test_windows_installer_never_stops_the_old_updater_it_may_be_running_inside_of():
     """The old updater task is what fetches this script, so stopping it would kill the install half-way."""
     assert re.search(r"Stop-ScheduledTask[^\n]*\$(oldUpdaterTasks|t)\b", PS1) is None
-    settle = PS1[PS1.index("# 5d."):PS1.index("# 6.")]
+    settle = PS1[PS1.index("# 5d."):PS1.index("# 5e.")]
     assert "Disable-ScheduledTask" in settle and "Stop-ScheduledTask" not in settle and "Unregister" not in settle
     # ... and they are only switched off after the hand-over has been recorded
     assert "if (Test-Path $migratedMarker)" in settle
@@ -70,7 +83,7 @@ def test_windows_installer_keeps_identity_and_unsent_data():
 
 
 def test_windows_installer_reports_the_hand_over_to_the_dashboard():
-    assert "/api/agent/update-log" in PS1 and 'from_version = "cyril"' in PS1
+    assert "/api/agent/update-log" in PS1 and '[string]$from = "cyril"' in PS1 and "from_version = $from" in PS1
     assert "Send-MigrationReport $true" in PS1 and "Send-MigrationReport $false" in PS1
 
 
@@ -210,6 +223,65 @@ def test_mac_hand_over_finishes_the_old_updater_if_an_earlier_run_stopped_half_w
     assert run_installer(tmp_path, stub_server).returncode == 0
     assert (tmp_path / "Library/LaunchDaemons/in.icestudios.cyril.updater.plist.disabled").exists()
     assert "handed over to NetMon" in (old / "update.sh").read_text()
+
+
+def write_health(root, failing_since=0, age=60):
+    """NetMon's own health.json, as the agent writes it."""
+    import time
+    d = root / "Library/Application Support/NetMon/data"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "health.json").write_text(json.dumps({"at": int(time.time()) - age, "failing_since": failing_since, "reason": ""}))
+
+
+def cleanup_posts(state):
+    return [p["body"] for p in state["posts"] if p["body"]["from_version"] == "cyril-leftovers"]
+
+
+@needs_tools
+def test_mac_update_2_removes_cyril_once_netmon_has_proved_itself(tmp_path, stub_server):
+    old = make_cyril_mac(tmp_path)
+    assert run_installer(tmp_path, stub_server).returncode == 0           # the hand-over run: Cyril is switched off, kept
+    assert old.exists() and cleanup_posts(stub_server) == []
+    write_health(tmp_path)                                                # NetMon has since run and its uploads work
+    r = run_installer(tmp_path, stub_server)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not old.exists()
+    for f in ("LaunchAgents/in.icestudios.cyril.plist", "LaunchAgents/in.icestudios.cyril.plist.disabled",
+              "LaunchDaemons/in.icestudios.cyril.updater.plist", "LaunchDaemons/in.icestudios.cyril.updater.plist.disabled"):
+        assert not (tmp_path / "Library" / f).exists(), f
+    posts = cleanup_posts(stub_server)
+    assert len(posts) == 1 and posts[0]["ok"] is True and posts[0]["to_version"] == "removed"
+    # NetMon itself is untouched, and a further run does nothing more
+    new = tmp_path / "Library/Application Support/NetMon"
+    assert (new / "netmon").exists() and (new / "config.json").exists() and (new / "migrated-from-cyril").exists()
+    assert run_installer(tmp_path, stub_server).returncode == 0
+    assert len(cleanup_posts(stub_server)) == 1
+    assert not any("cyril" in str(p).lower() for p in tmp_path.rglob("*") if p.is_file() and p.name not in ("migrated-from-cyril",))
+
+
+@needs_tools
+@pytest.mark.parametrize("health", ["none", "failing", "stale"])
+def test_mac_update_2_keeps_cyril_until_netmon_is_healthy(tmp_path, stub_server, health):
+    old = make_cyril_mac(tmp_path)
+    assert run_installer(tmp_path, stub_server).returncode == 0
+    if health == "failing":
+        write_health(tmp_path, failing_since=1700000000)                  # uploads have been failing
+    elif health == "stale":
+        write_health(tmp_path, age=4 * 86400)                             # has not reported for days
+    assert run_installer(tmp_path, stub_server).returncode == 0
+    assert (old / "cyril").exists() and (old / "data/spool.jsonl").exists()
+    assert (tmp_path / "Library/LaunchAgents/in.icestudios.cyril.plist.disabled").exists()
+    assert cleanup_posts(stub_server) == []
+
+
+@needs_tools
+def test_mac_update_2_never_runs_in_the_same_run_as_the_hand_over(tmp_path, stub_server):
+    """Even if a healthy-looking NetMon health.json is already there, the run that moves a Mac over keeps Cyril."""
+    old = make_cyril_mac(tmp_path)
+    write_health(tmp_path)
+    assert run_installer(tmp_path, stub_server).returncode == 0
+    assert (old / "cyril").exists() and (tmp_path / "Library/LaunchAgents/in.icestudios.cyril.plist.disabled").exists()
+    assert cleanup_posts(stub_server) == []
 
 
 @needs_tools

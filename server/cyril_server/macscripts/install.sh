@@ -6,8 +6,9 @@
 # Cyril updater job fetches this file like any other update). The hand-over: download and self-test the new program
 # FIRST; only then stop the Cyril agent, copy its config and unsent data into the NetMon folder, start NetMon and
 # check that it is running. If anything fails, the Cyril agent is switched back on and nothing is lost. The old
-# Cyril folder and jobs are only switched off here (plists renamed to .disabled), never deleted: removing them is a
-# separate, later update. One thing no installer can do: macOS ties Screen Recording to the program, so the person
+# Cyril folder and jobs are first only switched off (plists renamed to .disabled); they are removed on a
+# later run (the one after the hand-over, only once NetMon has proved itself: its own health.json, which Cyril never
+# wrote, must be recent and show uploads working). One thing no installer can do: macOS ties Screen Recording to the program, so the person
 # at the Mac may be asked to allow "netmon" once (the dashboard shows which Macs still need it).
 #
 # The easiest way is the one-liner on the dashboard's "Install agents" page (the server fills in its own address
@@ -87,6 +88,10 @@ OLD_PRESENT=0
 if [ -d "$OLD_APPDIR" ] || [ -e "$OLD_AGENT_PLIST" ] || [ -e "$OLD_AGENT_PLIST.disabled" ]; then OLD_PRESENT=1; fi
 MIGRATING=0
 if [ "$OLD_PRESENT" -eq 1 ] && [ ! -f "$MARKER" ]; then MIGRATING=1; fi
+# Already handed over on an earlier run and Cyril's leftovers are still here: they can be removed (see 5c). Decided here,
+# before this run can write the marker, so the run that does the hand-over never also does the clean-up.
+CLEANUP_OLD=0
+if [ "$OLD_PRESENT" -eq 1 ] && [ -f "$MARKER" ]; then CLEANUP_OLD=1; fi
 
 # 2. The server and the published Mac build ------------------------------------------------------------------------
 say "Contacting $SERVER_URL"
@@ -176,12 +181,12 @@ get_device() {
   [ -n "$d" ] || d="$(hostname)"
   printf '%s' "$d"
 }
-report_migration() {   # $1 = 1 or 0 (worked), $2 = what happened. Shows in the dashboard's update log; never blocks anything.
-  local okjson=false who="${USER_NAME:-$(hostname)}"
+report_migration() {   # $1 = 1 or 0 (worked), $2 = what happened, $3/$4 = from/to. Shows in the dashboard's update log; never blocks anything.
+  local okjson=false who="${USER_NAME:-$(hostname)}" from="${3:-cyril}" to="${4:-netmon $M_VERSION}"
   [ "$1" = 1 ] && okjson=true
   curl -fsS -m 15 -X POST -H "X-Api-Key: $AGENT_KEY" -H 'Content-Type: application/json' \
-    -d "$(printf '{"user":"%s","device":"%s","from_version":"cyril","to_version":"netmon %s","ok":%s,"detail":"%s"}' \
-          "$(esc "$who")" "$(esc "$(get_device)")" "$(esc "$M_VERSION")" "$okjson" "$(esc "${2:0:1900}")")" \
+    -d "$(printf '{"user":"%s","device":"%s","from_version":"%s","to_version":"%s","ok":%s,"detail":"%s"}' \
+          "$(esc "$who")" "$(esc "$(get_device)")" "$(esc "$from")" "$(esc "$to")" "$okjson" "$(esc "${2:0:1900}")")" \
     "$SERVER_URL/api/agent/update-log" >/dev/null 2>&1 || true
 }
 login_uids() { ps -axo uid= -o comm= | awk '$2 ~ /loginwindow$/ {print $1}' | sort -u; }
@@ -332,6 +337,37 @@ if [ "$MIGRATING" -eq 1 ]; then
   report_migration 1 "moved from Cyril: old agent stopped and disabled, $COPIED data item(s) copied, NetMon started"
 elif [ -f "$MARKER" ]; then
   disable_old_updater   # finishes the job if an earlier run stopped half-way; does nothing once done
+fi
+
+# 5c. Update 2: remove what the Cyril agent left behind. Only on a run AFTER the hand-over, and only when NetMon has
+#     proved itself on this Mac: its own health.json (Cyril's was never copied) is under 3 days old and shows no
+#     upload failing. Otherwise Cyril's files stay as the fallback and the next update asks again.
+netmon_healthy() {
+  local f="$DATA/health.json" at now
+  [ -f "$f" ] || return 1
+  grep -Eq '"failing_since" *: *0[ ,}]' "$f" || return 1
+  at="$(sed -n 's/.*"at" *: *\([0-9][0-9]*\).*/\1/p' "$f" | head -1)"
+  now="$(date +%s)"
+  [ -n "$at" ] && [ $((now - at)) -lt 259200 ]
+}
+if [ "$CLEANUP_OLD" -eq 1 ]; then
+  if netmon_healthy; then
+    if [ -z "$R" ]; then
+      launchctl bootout "system/$OLD_UPDATER_LABEL" 2>/dev/null || true
+      for uid in $(login_uids); do launchctl bootout "gui/$uid/$OLD_AGENT_LABEL" 2>/dev/null || true; done
+      pkill -x "$OLD_PROC" 2>/dev/null || true
+    fi
+    rm -f "$OLD_AGENT_PLIST" "$OLD_AGENT_PLIST.disabled" "$OLD_UPDATER_PLIST" "$OLD_UPDATER_PLIST.disabled"
+    if rm -rf "$OLD_APPDIR" && [ ! -e "$OLD_APPDIR" ]; then
+      ok "Old Cyril jobs and files removed"
+      report_migration 1 "old Cyril jobs, program folder and data folder removed" "cyril-leftovers" "removed"
+    else
+      warn "Some old Cyril files could not be removed yet; the next update will try again."
+      report_migration 0 "old Cyril folder could not be removed; will retry" "cyril-leftovers" "removed"
+    fi
+  else
+    say "NetMon has not reported healthy on this Mac yet; leaving the old Cyril files for the next update"
+  fi
 fi
 if [ "$UNATTENDED" -eq 1 ]; then
   [ "$SILENT" -eq 0 ] || echo "NetMon installed. The agent is running; it appears on the dashboard's Install agents page within a minute or two. (The person at the Mac still has to allow Screen Recording once.)"
