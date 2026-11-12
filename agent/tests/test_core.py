@@ -1,5 +1,5 @@
 import os
-from cyril_agent.core import Aggregator, Spool, browser_url, is_private, load_config, data_dir, setup_logging, normalize_url, is_chromium_browser, read_build
+from cyril_agent.core import Aggregator, Spool, is_private, load_config, data_dir, setup_logging, normalize_url, is_chromium_browser, read_build
 
 
 def test_merge_and_drain():
@@ -34,13 +34,6 @@ def test_drain_keep_open_false_flushes_the_open_event_too():
     # the same ongoing activity continues normally in a fresh segment
     a.add(15, 5, "code", "f.py", "", False)
     assert len(a.events) == 1 and a.events[0]["dur"] == 5
-
-
-def test_browser_url():
-    r = {"url": "https://a.com", "at": 100}
-    assert browser_url("Google-chrome", r, 110) == "https://a.com"
-    assert browser_url("code", r, 110) == ""
-    assert browser_url("chrome", r, 200) == ""
 
 
 def test_is_private():

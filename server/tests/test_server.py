@@ -117,7 +117,7 @@ def test_screenshot_upload_list_image_delete():
 def test_install_scripts_served():
     assert "ScheduledTask" in c.get("/install.ps1").text
     assert "Unregister-ScheduledTask" in c.get("/uninstall.ps1").text
-    assert "cyril.exe" in c.get("/install.ps1").text
+    assert "netmon.exe" in c.get("/install.ps1").text
 
 
 def test_agent_version_manifest():
@@ -125,7 +125,7 @@ def test_agent_version_manifest():
     assert c.get("/api/agent/version").json() == {"version": None}
     dist_dir = os.environ["CYRIL_DIST_DIR"]
     with open(os.path.join(dist_dir, "manifest.json"), "w") as f:
-        f.write('{"version": "0.2.0", "windows_exe": {"url": "/dist/cyril.exe", "sha256": "abc123"}}')
+        f.write('{"version": "0.2.0", "windows_exe": {"url": "/dist/netmon.exe", "sha256": "abc123"}}')
     assert c.get("/api/agent/version").json()["version"] == "0.2.0"
 
 
@@ -298,7 +298,7 @@ def test_manifest_with_utf8_bom_is_readable():
     # Windows PowerShell 5.1 writes a BOM; this used to 500 and the installer then saw "no checksum"
     d = os.environ["CYRIL_DIST_DIR"]
     with open(os.path.join(d, "manifest.json"), "wb") as f:
-        f.write(b"\xef\xbb\xbf" + b'{"version": "0.3.0", "build": "abc", "windows_exe": {"url": "/dist/cyril.exe", "sha256": "ff"}}')
+        f.write(b"\xef\xbb\xbf" + b'{"version": "0.3.0", "build": "abc", "windows_exe": {"url": "/dist/netmon.exe", "sha256": "ff"}}')
     r = c.get("/api/agent/version")
     assert r.status_code == 200 and r.json()["windows_exe"]["sha256"] == "ff"
     assert c.get("/api/install-info", headers=A).json()["version"] == "0.3.0"
@@ -380,7 +380,7 @@ def test_published_build_id_falls_back_to_the_exe_checksum():
     d = os.environ["CYRIL_DIST_DIR"]
     path = os.path.join(d, "manifest.json")
     with open(path, "w") as f:
-        f.write('{"version": "0.3.0", "windows_exe": {"url": "/dist/cyril.exe", "sha256": "0123456789abcdef0123"}}')
+        f.write('{"version": "0.3.0", "windows_exe": {"url": "/dist/netmon.exe", "sha256": "0123456789abcdef0123"}}')
     assert c.get("/api/install-info", headers=A).json()["build"] == "0123456789ab"      # first 12 of the hash
     with open(path, "w") as f:
         f.write('{"version": "0.3.0", "build": "7feedf0", "windows_exe": {"sha256": "ff"}}')
@@ -545,15 +545,15 @@ def test_mac_installer_and_manifest_routes():
     assert c.get("/api/agent/mac-manifest", params={"arch": "ppc"}).status_code == 400
     d = os.environ["CYRIL_DIST_DIR"]
     with open(os.path.join(d, "manifest-mac-arm64.json"), "wb") as f:
-        f.write(b'\xef\xbb\xbf{"version": "0.3.0", "build": "abc1234", "url": "/dist/cyril-mac-arm64", "sha256": "ff00", "selftest": true}')
-    open(os.path.join(d, "cyril-mac-arm64"), "wb").write(b"x")
+        f.write(b'\xef\xbb\xbf{"version": "0.3.0", "build": "abc1234", "url": "/dist/netmon-mac-arm64", "sha256": "ff00", "selftest": true}')
+    open(os.path.join(d, "netmon-mac-arm64"), "wb").write(b"x")
     m = c.get("/api/agent/mac-manifest", params={"arch": "arm64"})
-    assert m.text == "version=0.3.0\nbuild=abc1234\nurl=/dist/cyril-mac-arm64\nsha256=ff00\nselftest=1\n"
+    assert m.text == "version=0.3.0\nbuild=abc1234\nurl=/dist/netmon-mac-arm64\nsha256=ff00\nselftest=1\n"
     i = c.get("/api/install-info", headers=A).json()
     assert i["mac_published"] == {"arm64": True, "x86_64": False}
     assert i["mac_builds"] == ["abc1234"]   # Macs are compared with this, not with the Windows build
     assert i["mac_build_by_arch"] == {"arm64": "abc1234", "x86_64": None}   # lets the page flag a build that lags
-    os.remove(os.path.join(d, "manifest-mac-arm64.json")); os.remove(os.path.join(d, "cyril-mac-arm64"))
+    os.remove(os.path.join(d, "manifest-mac-arm64.json")); os.remove(os.path.join(d, "netmon-mac-arm64"))
 
 
 def test_ingest_keeps_the_batch_when_one_event_is_odd():
@@ -574,8 +574,8 @@ def test_installer_registers_the_recovery_check_and_uninstaller_removes_it():
     """A PC whose uploads fail for an hour fetches the newest agent without waiting for 03:00. The check runs as SYSTEM
     from the read-only config folder and reads the agent's health.json only as data."""
     ins, un = c.get("/install.ps1").text, c.get("/uninstall.ps1").text
-    assert "Cyril Recovery Check" in ins and "recovery-check.ps1" in ins and "failing_since" in ins and "3600" in ins
-    assert "Cyril Recovery Check" in un
+    assert "NetMon Recovery Check" in ins and "recovery-check.ps1" in ins and "failing_since" in ins and "3600" in ins
+    assert "NetMon Recovery Check" in un and "Cyril Recovery Check" in un      # a PC that was never moved over is cleaned too
 
 
 # ------------------------------------------------------------------ sign-in gate

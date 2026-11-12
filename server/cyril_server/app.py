@@ -1156,7 +1156,7 @@ def mac_manifest(arch: str):
     if not path.exists():
         raise HTTPException(404, f"no Mac build for {arch} has been published; run mac/build.sh on a {arch} Mac")
     m = json.loads(path.read_text(encoding="utf-8-sig"))
-    lines = {"version": m.get("version", ""), "build": m.get("build", ""), "url": m.get("url", f"/dist/cyril-mac-{arch}"),
+    lines = {"version": m.get("version", ""), "build": m.get("build", ""), "url": m.get("url", f"/dist/netmon-mac-{arch}"),
              "sha256": m.get("sha256", ""), "selftest": "1" if m.get("selftest") else "0"}
     return PlainTextResponse("".join(f"{k}={v}\n" for k, v in lines.items()))
 
@@ -1173,10 +1173,9 @@ def install_info(request: Request):
         except ValueError:
             pass
     return {"server_url": base, "sealed_uploads": True, "require_sealed": REQUIRE_SEALED, **_agent_one_liners(base, AGENT_KEY),
-            "exe_published": (DIST_DIR / "cyril.exe").is_file(),
-            "mac_published": {a: (DIST_DIR / f"manifest-mac-{a}.json").is_file() and (DIST_DIR / f"cyril-mac-{a}").is_file()
+            "exe_published": (DIST_DIR / "netmon.exe").is_file(),
+            "mac_published": {a: (DIST_DIR / f"manifest-mac-{a}.json").is_file() and (DIST_DIR / f"netmon-mac-{a}").is_file()
                               for a in MAC_ARCHES},
-            "extension_published": (DIST_DIR / "cyril-extension.zip").is_file(),
             "version": (manifest or {}).get("version"), "build": _published_build(manifest),
             "mac_builds": [b for b in (_mac_published_build(a) for a in MAC_ARCHES) if b],
             # per CPU type, so the page can say when one Mac build is older than the rest of the release (its build

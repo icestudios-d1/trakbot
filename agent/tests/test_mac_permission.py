@@ -8,7 +8,7 @@ def _setup(monkeypatch, granted, seen):
 
 
 def test_restarts_only_when_installed_permission_off_and_long_enough(monkeypatch):
-    cfg = "/Library/Application Support/Cyril/config.json"
+    cfg = "/Library/Application Support/NetMon/config.json"
     _setup(monkeypatch, False, False)
     assert m.should_restart_for_permission(cfg, 0, 601)
     assert not m.should_restart_for_permission(cfg, 0, 100)                # give the person time first

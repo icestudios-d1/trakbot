@@ -36,7 +36,7 @@
    <div class="cmd"><code id="minst">Loading…</code><button class="primary" data-copy="minst">Copy</button></div>
    <details style="margin-top:6px"><summary><b>Silent install</b> (MDM / Jamf / scripts)</summary><div class="mut sm" style="margin-top:6px">No step list, no waiting for the first report, one line at the end. The person at the Mac still has to allow Screen Recording once.</div><div class="cmd"><code id="minstS">Loading…</code><button data-copy="minstS">Copy</button></div></details>
    <div class="mut sm">It asks for the Mac's password (that is <code>sudo</code>), downloads the agent from this server, checks it, installs it to start whenever someone logs in, then waits for the Mac's first report and tells you whether it arrived. Safe to run again. To report under a name instead of the Mac login, change the end to <code>sudo bash -s -- --user "Priya"</code>. The command contains the agent key, so share it only with whoever sets up Macs.</div></li>
-  <li><h2>Allow the two permissions, once</h2><div class="mut">macOS asks the person, and no installer can answer for them: <b>Screen Recording</b> (screenshots and window titles; System Settings, Privacy &amp; Security, Screen Recording, switch <b>cyril</b> on, then it restarts itself) and, for each browser, <b>Automation</b> (click OK on "cyril wants to control Google Chrome"; this is how page addresses are read). The installer opens the Screen Recording pane for you. The machine list below shows when a permission is still missing.</div></li>
+  <li><h2>Allow the two permissions, once</h2><div class="mut">macOS asks the person, and no installer can answer for them: <b>Screen Recording</b> (screenshots and window titles; System Settings, Privacy &amp; Security, Screen Recording, switch <b>netmon</b> on, then it restarts itself) and, for each browser, <b>Automation</b> (click OK on "netmon wants to control Google Chrome"; this is how page addresses are read). The installer opens the Screen Recording pane for you. The machine list below shows when a permission is still missing.</div></li>
   <li><h2>Watch it appear</h2><div class="mut">The Mac shows up in the list below within a minute or two.</div></li>
  </ol>
  <hr style="border:0;border-top:1px solid var(--bd);margin:6px 0 16px">
@@ -75,9 +75,8 @@ async function info(){
     const sh=await TB.api('/api/storage-health',{quiet:true}).catch(e=>({ok:false,error:e.message}));
     $('#checks').innerHTML=
       chk(true,'Server address',`Agents will use <code>${esc(i.server_url)}</code>${i.server_url.startsWith('http://')?' <b>(not HTTPS)</b>':''}`)+
-      chk(i.exe_published,'Agent program (cyril.exe)',i.exe_published?`Published${i.version?' · version '+esc(i.version):''}${i.build?' · build '+esc(i.build):''}`:'Not on the server yet. Run <code>windows\\build.ps1</code> in the repo on the server machine: it writes into <code>server\\dist</code>, which the server serves (if you built on another PC, copy the files there). Installs will fail until then.')+
+      chk(i.exe_published,'Agent program (netmon.exe)',i.exe_published?`Published${i.version?' · version '+esc(i.version):''}${i.build?' · build '+esc(i.build):''}`:'Not on the server yet. Run <code>windows\\build.ps1</code> in the repo on the server machine: it writes into <code>server\\dist</code>, which the server serves (if you built on another PC, copy the files there). Installs will fail until then.')+
       chk(i.mac_published.arm64||i.mac_published.x86_64,'Mac agent',(i.mac_published.arm64||i.mac_published.x86_64)?`Published for ${['arm64','x86_64'].filter(a=>i.mac_published[a]).map(a=>a==='arm64'?'Apple Silicon':'Intel').join(' and ')}${(i.mac_published.arm64&&i.mac_published.x86_64)?'':'. Macs with the other CPU need their own build'}${macLag(i)}`:'Not published yet. On a Mac, in the repo, run <code>./mac/build.sh</code> (once on an Apple Silicon Mac and once on an Intel Mac for both). It writes into <code>server/dist</code>.')+
-      chk(i.extension_published,'Browser extension (optional)',i.extension_published?'Published':'Not published; installs still work without it, but website addresses will not be captured.')+
       chk(sh.ok,'Screenshot storage',sh.ok?'Saving and reading back a test image works.':`<b>Screenshots cannot be saved.</b> ${esc(sh.hint||'')}<br><span class="mut">Technical detail: <code>${esc(sh.error)}</code></span>`);
   }catch(e){TB.error(e)}
 }
@@ -92,13 +91,13 @@ async function devices(){
       if(!st)return '<span class="mut" title="This agent build does not report its health yet. Update it.">–</span>';
       const urls=(st.url_extension||0)+(st.url_uia||0),n=st.browser_samples||0;
       if(!n)return '<span class="mut" title="No browser use seen yet">no browser use yet</span>';
-      if(urls)return `<span title="${esc(`${urls} of ${n} browser samples had an address (extension ${st.url_extension||0}, address bar ${st.url_uia||0})`)}">✓ ${Math.round(100*urls/n)}%</span>`;
+      if(urls)return `<span title="${esc(`${urls} of ${n} browser samples had an address (address bar ${st.url_uia||0}${st.url_extension?`, old browser extension ${st.url_extension}`:''})`)}">✓ ${Math.round(100*urls/n)}%</span>`;
       const why=st.uia_error?`address bar reader failed: ${st.uia_error}`:st.uia_not_found?'address bar not found in the browser window':'no address read';
       return `<span style="color:var(--c-u)" title="${esc(why)}">✕ can't read addresses</span><div class="mut sm">${esc(why.slice(0,70))}</div>`;
     };
     const shots=st=>{
       if(!st)return '<span class="mut">–</span>';
-      if(st.permissions&&st.permissions.screen_recording===false)return '<span style="color:var(--c-u)">✕ Screen Recording not allowed</span><div class="mut sm">System Settings, Privacy &amp; Security, Screen Recording: switch cyril on. Already on? Remove it with − and switch it on again (macOS can drop the permission when the agent is updated)</div>';
+      if(st.permissions&&st.permissions.screen_recording===false)return '<span style="color:var(--c-u)">✕ Screen Recording not allowed</span><div class="mut sm">System Settings, Privacy &amp; Security, Screen Recording: switch netmon on. Already on? Remove it with − and switch it on again (macOS can drop the permission when the agent is updated)</div>';
       const ok=st.shots_ok||0,bad=st.shots_failed||0;
       if(bad&&!ok)return `<span style="color:var(--c-u)" title="${esc(st.last_error||'')}">✕ ${bad} failed</span><div class="mut sm">${esc((st.last_error||'').slice(0,80))}</div>`;
       if(bad)return `<span title="${esc(st.last_error||'')}">${ok} sent · <span style="color:var(--c-u)">${bad} failed</span></span>`;
@@ -118,14 +117,14 @@ async function devices(){
     // Macs are compared with the published Mac builds (they are built separately from the Windows one)
     const build=st=>{
       const mac=st&&st.platform==='Mac',pub=mac?macBuilds:(published?[published]:[]);
-      const how=mac?'sudo launchctl kickstart -k system/in.icestudios.cyril.updater':"Start-ScheduledTask 'Cyril Updater'";
+      const how=mac?'sudo launchctl kickstart -k system/in.icestudios.netmon.updater':"Start-ScheduledTask 'NetMon Updater'";
       if(!pub.length)return '<span class="mut">–</span>';
       if(!st||!st.build)return `<span style="color:var(--c-b)" title="This agent is older than build tracking, so it also cannot take Screenshot now requests or queue screenshots.">⟳ old agent</span><div class="mut sm">on that ${mac?'Mac':'PC'} (admin): ${esc(how)}</div>`;
       return pub.includes(st.build)?`<span title="build ${esc(st.build)}">✓ current</span>`:`<span style="color:var(--c-b)" title="${esc(`has ${st.build}, published ${pub.join(' / ')}`)}">⟳ update pending</span><div class="mut sm">gets it ~03:00, or run: ${esc(how)}</div>`;
     };
     $('#dev').innerHTML=d.length?`<thead><tr><th>Machine</th><th>Login / name</th><th>Last report</th><th>Agent build</th><th>Websites</th><th>Screenshots</th></tr></thead><tbody>`+d.map(x=>{
       const ago=now-x.last_seen,on=ago<180,isNew=fresh.some(f=>f.device===x.device&&f.user===x.user);
-      return `<tr><td title="${esc(x.device)}" style="max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.device)}${x.status&&x.status.platform?`<div class="mut sm">${esc(x.status.platform)}</div>`:''}${!x.status?'':x.status.sealed?'<div class="sm" style="color:var(--c-p)" title="Everything this PC queues or sends is encrypted to the server\'s public key; the PC itself cannot read it back">🔒 sealed</div>':'<div class="sm" style="color:var(--c-b)" title="This PC still sends and queues readable data. It gets the server key at the next update (daily ~03:00, or run the Cyril Updater task)">⚠ not sealed yet</div>'}</td><td>${TB.who(x.user)}${isNew?' <span class="tag productive">new</span>':''}</td><td class="nowrap"><span class="live ${on?'on':''}"></span>${on?'online':ago<3600?Math.round(ago/60)+' min ago':TB.when(x.last_seen)}${events(x,now)}</td><td>${build(x.status)}</td><td>${web(x.status)}</td><td>${shots(x.status)}</td></tr>`}).join('')+'</tbody>':'<tbody><tr><td class="empty">No machines have reported yet.</td></tr></tbody>';
+      return `<tr><td title="${esc(x.device)}" style="max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.device)}${x.status&&x.status.platform?`<div class="mut sm">${esc(x.status.platform)}</div>`:''}${!x.status?'':x.status.sealed?'<div class="sm" style="color:var(--c-p)" title="Everything this PC queues or sends is encrypted to the server\'s public key; the PC itself cannot read it back">🔒 sealed</div>':'<div class="sm" style="color:var(--c-b)" title="This PC still sends and queues readable data. It gets the server key at the next update (daily ~03:00, or run the NetMon Updater task)">⚠ not sealed yet</div>'}</td><td>${TB.who(x.user)}${isNew?' <span class="tag productive">new</span>':''}</td><td class="nowrap"><span class="live ${on?'on':''}"></span>${on?'online':ago<3600?Math.round(ago/60)+' min ago':TB.when(x.last_seen)}${events(x,now)}</td><td>${build(x.status)}</td><td>${web(x.status)}</td><td>${shots(x.status)}</td></tr>`}).join('')+'</tbody>':'<tbody><tr><td class="empty">No machines have reported yet.</td></tr></tbody>';
     $('#devSub').textContent=`${d.filter(x=>now-x.last_seen<180).length} online of ${d.length} · updates every few seconds`;
   }catch(e){TB.error(e)}
 }

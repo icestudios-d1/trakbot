@@ -10,7 +10,7 @@ charts. No keystroke logging.
 
 | ActivTrak | Cyril |
 |---|---|
-| App & website usage tracking | ✅ agent (Windows/macOS/Linux) + browser extension for URLs |
+| App & website usage tracking | ✅ agent (Windows/macOS/Linux) (page addresses are read from the browser window itself; no extension) |
 | Productivity labels (productive/unproductive/undefined) | ✅ rule engine (app / domain / title), re-labels history on edit |
 | Idle/active time | ✅ idle detection (`--idle-after`) |
 | Productivity %, top apps/sites, categories, hourly activity, trend chart | ✅ multi-page dashboard: Overview, Employees, Alerts, Screenshots, Rules |
@@ -37,7 +37,7 @@ it's reachable again — no cloud dependency, no data lost to an outage.
 | API + dashboard + installer scripts + self-update manifest | **FastAPI** (`server/cyril_server/`), in a Docker container |
 | Events, rules, alerts, screenshot metadata, update log | **SQLite** (a file on a Docker volume) |
 | Screenshot images | **SeaweedFS** (self-hosted, S3-compatible; replaces MinIO — see `server/docker-compose.yml`) |
-| Agent (per device) | Python, built to a single `cyril.exe` via PyInstaller |
+| Agent (per device) | Python, built to a single `netmon.exe` via PyInstaller |
 
 Screenshots never touch the app container's own disk: the agent posts them to the server, which stores them
 in SeaweedFS (private — no port published to the host, reachable only from the `server` container) and keeps
@@ -66,7 +66,7 @@ Tests: `cd server && pytest` (SeaweedFS is faked in-process, no container needed
 .\windows\build.ps1 -Version 0.2.1
 ```
 
-This writes `cyril.exe`, `cyril-extension.zip` and `manifest.json` (with a SHA-256 of the new build) into
+This writes `netmon.exe` and `manifest.json` (with a SHA-256 of the new build) into
 `server/dist/`, which is bind-mounted straight into the running container — nothing to restart. Every
 already-installed agent polls `/api/agent/version` hourly (`--update-check-every`, default 3600s); on seeing
 a newer version it downloads the new build, verifies the checksum, and swaps itself in, restarting via the
@@ -77,7 +77,7 @@ endpoint, so the rollout is fully auditable even though it isn't interruptive. A
 the update rather than applying anything.
 
 **Windows PCs in practice:** the installer starts the agent with `--update-check-every 0` (it runs as the logged-in
-user and cannot replace the installed program), and updating is done by the SYSTEM task "Cyril Updater" (daily ~03:00
+user and cannot replace the installed program), and updating is done by the SYSTEM task "NetMon Updater" (daily ~03:00
 and 5 minutes after start). A PC that is stuck on a bug used to wait for that. Now the agent writes
 `ProgramData\Cyril\data\health.json` after every upload attempt (`failing_since` = when uploads started failing,
 0 when they work). A second SYSTEM task, "Cyril Recovery Check", runs every 15 minutes, reads that file as data, and if
@@ -100,7 +100,7 @@ the update comes from the server.
   them, with their original capture times, as soon as the server accepts them again. *Install agents* shows how many are
   waiting.
 - **Old agents.** An agent built before a feature existed can't use it. *Install agents* marks it "old agent" and
-  **Screenshot now** says so immediately instead of waiting; update it with `Start-ScheduledTask 'Cyril Updater'`
+  **Screenshot now** says so immediately instead of waiting; update it with `Start-ScheduledTask 'NetMon Updater'`
   (elevated) on that PC after publishing a new build.
 - **Storage check.** *Install agents* shows whether the server can actually save screenshots (it writes, reads back and
   deletes a test image). If screenshots fail with a 502 the reason and the fix are shown there and on the machine's row.
@@ -138,8 +138,7 @@ The **Web activity** page is the detailed report: every page with its **full URL
 and CSV download. Private/incognito windows are not in it (their address is not recorded).
 
 On Windows the agent reads the address of the foreground Chromium browser (Edge, Chrome, Brave, Opera, Vivaldi)
-straight from the browser window through UI Automation, so **no browser extension is needed** (the extension remains an
-optional fallback). Each agent also reports its own health, shown per machine on **Install agents**: whether web
+straight from the browser window through UI Automation, so **there is no browser extension**. Each agent also reports its own health, shown per machine on **Install agents**: whether web
 addresses are readable and whether screenshots are getting through, with the last error.
 
 ### Reporting interval ("Group by")
@@ -161,7 +160,7 @@ and the matching uninstall command.
 
 - **Build it on a Mac** (PyInstaller builds for the CPU it runs on): `./mac/build.sh` in the repo, once on an Apple Silicon
   Mac (arm64) and once on an Intel Mac (x86_64) if you have both. It self-tests the result, writes
-  `server/dist/cyril-mac-<arch>` + `manifest-mac-<arch>.json` (the folder the server serves; no copy, no restart) and
+  `server/dist/netmon-mac-<arch>` + `manifest-mac-<arch>.json` (the folder the server serves; no copy, no restart) and
   refuses to publish a build that can't start. Needs Python 3.11+.
 - **What the installer does:** installs to `/Library/Application Support/Cyril`, adds a **LaunchAgent** (runs in the
   logged-in user's session, started at login, restarted by launchd if closed) and a root **LaunchDaemon** that re-runs the
@@ -233,7 +232,7 @@ Python/PyInstaller is only needed **once**, on a machine IT uses to build the ag
 
 ```powershell
 git clone <this repo>; cd cyril
-.\windows\build.ps1      # writes server\dist\cyril.exe + cyril-extension.zip + manifest.json
+.\windows\build.ps1      # writes server\dist\netmon.exe + manifest.json
 cd server; docker compose up -d --build
 ```
 
@@ -256,21 +255,20 @@ files; and it restores Incognito if an older installer had disabled it). History
 
 Run the agent directly on Linux/macOS (Linux also needs `xprop` and `xprintidle`):
 `cd agent && pip install -r requirements.txt && CYRIL_SERVER=http://<office-server>:8000 CYRIL_AGENT_KEY=... python -m cyril_agent`.
-Load `browser-extension/` as an unpacked extension (or deploy by Chrome/Edge policy) to capture URLs.
 
-The installer puts the agent at `Program Files\Cyril\cyril.exe` and stores the server URL/agent key in
-`ProgramData\Cyril\config.json` (only administrators can change it; the agent's own log and spool live in
-`ProgramData\Cyril\data`). It registers two scheduled tasks:
-- **Cyril Agent** runs `cyril.exe` **inside the logged-in user's session**: at every logon, and re-launched every
+The installer puts the agent at `Program Files\NetMon\netmon.exe` and stores the server URL/agent key in
+`ProgramData\NetMon\config.json` (only administrators can change it; the agent's own log and spool live in
+`ProgramData\NetMon\data`). It registers two scheduled tasks:
+- **NetMon Agent** runs `netmon.exe` **inside the logged-in user's session**: at every logon, and re-launched every
   5 minutes if it was closed. It has to run there: a service or boot-time `SYSTEM` task lives in Windows session 0,
   which has no desktop, so it cannot see windows, screenshots or input. Running as the user also means reports carry
   the real Windows login rather than `PCNAME$`.
-- **Cyril Updater** runs as `SYSTEM` daily at about 03:00 (random delay up to 30 min) **and 5 minutes after every start**,
+- **NetMon Updater** runs as `SYSTEM` daily at about 03:00 (random delay up to 30 min) **and 5 minutes after every start**,
   on battery too, retrying 3 times 10 minutes apart if it fails, and re-runs the installer; nothing happens unless a new
   build is published to the server. It never wakes a sleeping PC: one that was off or asleep at 03:00 catches up when it
   next starts or resumes, so a new `windows\build.ps1` build reaches every PC within about a day.
 
-It's not hidden: `cyril.exe` shows in Task Manager and both tasks show in `Get-ScheduledTask` under their real names.
+It's not hidden: `netmon.exe` shows in Task Manager and both tasks show in `Get-ScheduledTask` under their real names.
 Trade-off to know about: because the agent runs as the employee, an employee *can* end the process and can read
 the agent key from the config file. Ending it is undone within 5 minutes by the re-launch; only administrators can
 disable or delete the tasks. The key only allows submitting reports, not reading anything.

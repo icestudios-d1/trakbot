@@ -38,10 +38,10 @@ if ($SkipPull) { Info "Skipping git pull" }
 else { Run "git pull origin main" { git -C $root pull origin main } }
 
 # 2. Has anything the agent is built from changed? --------------------------------------------------------------------
-# Hash of the agent's source, its dependency list, the browser extension and the build script. Server-only changes do
+# Hash of the agent's source, its dependency list, and the build script. Server-only changes do
 # not touch it, so they never trigger a (40 s) PyInstaller build.
 function Get-AgentSourceHash {
-    $files = foreach ($d in @("agent", "browser-extension")) {
+    $files = foreach ($d in @("agent")) {
         $p = Join-Path $root $d
         if (Test-Path $p) {
             Get-ChildItem -Path $p -Recurse -File | Where-Object {
@@ -59,7 +59,7 @@ function Get-AgentSourceHash {
 }
 $current = Get-AgentSourceHash
 $previous = if (Test-Path $stampFile) { (Get-Content $stampFile -Raw).Trim() } else { "" }
-$exePresent = Test-Path (Join-Path $server "dist\cyril.exe")
+$exePresent = Test-Path (Join-Path $server "dist\netmon.exe")
 $build = $ForceAgent -or -not $exePresent -or ($current -ne $previous)
 
 # 3. Agents ------------------------------------------------------------------------------------------------------------------
@@ -125,5 +125,5 @@ if (-not $DryRun) {
 }
 Write-Host ""
 Info "PCs pick up a new agent by themselves (daily ~03:00 and 5 minutes after every start)."
-Info "To push it to one PC right now, on that PC (elevated): Start-ScheduledTask 'Cyril Updater'"
+Info "To push it to one PC right now, on that PC (elevated): Start-ScheduledTask 'NetMon Updater'"
 Info "Macs are built by GitHub Actions too (no Mac needed); ./mac/build.sh is only for building one by hand."

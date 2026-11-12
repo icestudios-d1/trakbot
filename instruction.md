@@ -21,7 +21,7 @@ data-protection exposure. It never means hiding Cyril from the employee. Out of 
 | Employee login name, device ID (machine GUID) | Agent | SQLite, on the office server | On every record |
 | Foreground app name | Agent | SQLite `events` | Every ~5s, merged into intervals |
 | **Window title** (full text) | Agent | SQLite `events`, `alerts` | Titles often contain names, email subjects, document names, account numbers |
-| **Full browser URL** incl. path, query string, fragment | Browser extension → agent | SQLite `events`, `alerts` | Query strings can carry tokens, search terms, IDs |
+| **Full browser URL** incl. path, query string, fragment | Agent (read from the browser window: UI Automation on Windows, AppleScript on macOS) | SQLite `events`, `alerts` | Query strings can carry tokens, search terms, IDs |
 | Idle/active state | Agent | SQLite | |
 | **Screenshots of the entire screen, all monitors** | Agent (every 3 min while an app is foreground ≥60s) | Image in **SeaweedFS**, self-hosted on the office server; metadata + object key in SQLite | Captures whatever is visible: personal email, banking, chats, passwords being shown |
 | Private/incognito windows | Agent | SQLite | Only the *fact* is stored; title/URL redacted on-device. Screenshots still occur |

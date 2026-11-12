@@ -217,7 +217,7 @@
       body.innerHTML = `<div class="mrow"><div class="st"><b style="color:var(--c-u)">✕ This PC is not checking in for requests.</b></div>
         <p class="sm">Either its agent is older than the Screenshot now feature (see <b>Agent build</b> on Install agents: "unknown" or "update pending"), or the PC is off or asleep.</p>
         <p class="sm">To update a PC: publish a new build (<code>windows\\build.ps1</code> on the server), then on that PC in an elevated PowerShell run
-        <code>Start-ScheduledTask 'Cyril Updater'</code>. It picks the new agent up within a minute or two.</p>
+        <code>Start-ScheduledTask 'NetMon Updater'</code>. It picks the new agent up within a minute or two.</p>
         <button id="tryAnyway">Try anyway</button></div>`;
       body.querySelector('#tryAnyway').onclick = () => { body.innerHTML = ''; askAll(); };
     } else askAll();

@@ -10,7 +10,7 @@ name: agents
 on:
   push:
     branches: [main]
-    paths: ["agent/**", "browser-extension/**", "windows/build.ps1", "mac/build.sh", ".github/workflows/agents.yml"]
+    paths: ["agent/**", "windows/build.ps1", "mac/build.sh", ".github/workflows/agents.yml"]
   workflow_dispatch:
 permissions:
   contents: write
@@ -59,7 +59,7 @@ jobs:
           # Keep the Mac binaries of the previous release until fresh ones are built.
           mkdir -p old
           gh release download agent-latest --repo "$GITHUB_REPOSITORY" --dir old \
-            --pattern 'cyril-mac-*' --pattern 'manifest-mac-*.json' || true
+            --pattern 'netmon-mac-*' --pattern 'manifest-mac-*.json' || true
           for f in old/*; do
             [ -f "$f" ] && [ ! -f "files/$(basename "$f")" ] && cp "$f" "files/$(basename "$f")"
           done

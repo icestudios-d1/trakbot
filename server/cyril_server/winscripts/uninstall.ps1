@@ -1,13 +1,15 @@
 <#
-Removes the Cyril agent completely and says what it removed. Needs an ELEVATED
-PowerShell on purpose: a standard employee cannot remove it (see README, tamper resistance).
+Removes the NetMon agent completely (and the old Cyril agent too, if this PC still has it) and says what it
+removed. Needs an ELEVATED PowerShell on purpose: a standard employee cannot remove it (see README, tamper
+resistance).
 
-  & ([scriptblock]::Create((irm 'https://cyril.example.com/uninstall.ps1')))
+  & ([scriptblock]::Create((irm 'https://your-server.example.com/uninstall.ps1')))
 
-Removes: the "Cyril Agent", "Cyril Updater" and "Cyril Recovery Check" scheduled tasks, the running process,
-C:\Program Files\Cyril, C:\ProgramData\Cyril (config, key, agent log and spool), any
-leftover spool/log files from older versions, and the Incognito setting if an older
-installer had disabled it. Data already stored on the server is not touched.
+Removes: the "NetMon Agent", "NetMon Updater" and "NetMon Recovery Check" scheduled tasks (and the same three
+under their old "Cyril" names), the running process, C:\Program Files\NetMon, C:\ProgramData\NetMon (config,
+key, agent log and spool) and the old C:\Program Files\Cyril / C:\ProgramData\Cyril, any leftover spool/log
+files from older versions, and the Incognito setting if an older installer had disabled it. Data already stored
+on the server is not touched.
 #>
 $ErrorActionPreference = "Stop"
 
@@ -18,20 +20,20 @@ function Row($name, $done, $note) {
 }
 
 Write-Host ""
-Write-Host "Cyril agent uninstaller" -ForegroundColor White
+Write-Host "NetMon agent uninstaller" -ForegroundColor White
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "  [xx] Run this in an elevated PowerShell (right-click PowerShell, 'Run as administrator')." -ForegroundColor Red
-    throw "Cyril uninstall needs administrator rights."
+    throw "NetMon uninstall needs administrator rights."
 }
 
-$installDir = Join-Path $env:ProgramFiles "Cyril"
-$cfgDir     = Join-Path $env:ProgramData "Cyril"
+$dirs       = @((Join-Path $env:ProgramFiles "NetMon"), (Join-Path $env:ProgramData "NetMon"),      # NetMon
+                (Join-Path $env:ProgramFiles "Cyril"),  (Join-Path $env:ProgramData "Cyril"))       # the old product, if still here
 $regKey     = "HKLM:\SOFTWARE\Cyril"
 $failures   = 0
 
 # Tasks first, so nothing can restart the process we are about to stop.
-foreach ($t in @("Cyril Agent", "Cyril Updater", "Cyril Recovery Check")) {
+foreach ($t in @("NetMon Agent", "NetMon Updater", "NetMon Recovery Check", "Cyril Agent", "Cyril Updater", "Cyril Recovery Check")) {
     if (Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue) {
         try { Stop-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue
               Unregister-ScheduledTask -TaskName $t -Confirm:$false
@@ -40,15 +42,15 @@ foreach ($t in @("Cyril Agent", "Cyril Updater", "Cyril Recovery Check")) {
     } else { Row "Scheduled task '$t'" $true "was not present" }
 }
 
-$procs = Get-Process -Name "cyril" -ErrorAction SilentlyContinue
+$procs = Get-Process -Name "netmon", "cyril" -ErrorAction SilentlyContinue
 if ($procs) {
     $procs | Stop-Process -Force
     Start-Sleep -Seconds 2
-    if (Get-Process -Name "cyril" -ErrorAction SilentlyContinue) { Row "Agent process" $false "still running"; $failures++ }
+    if (Get-Process -Name "netmon", "cyril" -ErrorAction SilentlyContinue) { Row "Agent process" $false "still running"; $failures++ }
     else { Row "Agent process" $true "stopped" }
 } else { Row "Agent process" $true "was not running" }
 
-foreach ($d in @($installDir, $cfgDir)) {
+foreach ($d in $dirs) {
     if (Test-Path $d) {
         try { Remove-Item -Recurse -Force $d; Row $d $true "deleted" }
         catch { Row $d $false $_.Exception.Message; $failures++ }
@@ -75,7 +77,7 @@ if (Test-Path $regKey) {
 }
 
 Write-Host ""
-if ($failures) { Write-Host "Cyril agent partly removed: $failures item(s) need attention (see above)." -ForegroundColor Yellow }
-else { Write-Host "Cyril agent removed. Nothing is left running on this machine." -ForegroundColor Green }
+if ($failures) { Write-Host "NetMon agent partly removed: $failures item(s) need attention (see above)." -ForegroundColor Yellow }
+else { Write-Host "NetMon agent removed. Nothing is left running on this machine." -ForegroundColor Green }
 Write-Host "Its past activity stays on the server until you delete it there."
 Write-Host ""
