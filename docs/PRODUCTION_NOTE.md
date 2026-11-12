@@ -218,9 +218,15 @@ did not change), and those scripts are now the NetMon installers. Order of event
 5. Only then register/load the NetMon updater and disable the old Cyril updater and recovery check. (Disabled, never stopped: one of them is the process running the script.)
 6. Report `from_version = "cyril"` to `/api/agent/update-log` (ok or rolled back, with the reason): see the dashboard's update log.
 
-Nothing of Cyril is deleted in this update: `Program Files\Cyril`, `ProgramData\Cyril` / `/Library/Application Support/Cyril`, and the old tasks/plists stay, switched off. Removing them is **update 2** (not built yet): publish it only after the soak check below.
+Update 1 deletes nothing: `Program Files\Cyril`, `ProgramData\Cyril` / `/Library/Application Support/Cyril`, and the old tasks/plists stay, switched off, as the fallback.
 
-**Soak check before update 2:** every machine on *Install agents* shows the NetMon build, the update log has one `from_version = cyril, ok` row per machine and no unresolved `rolled back` rows, and machines that were off during the roll-out have caught up.
+**Soak check before merging update 2:** every machine on *Install agents* shows the NetMon build, the update log has one `from_version = cyril, ok` row per machine and no unresolved `rolled back` rows, and machines that were off during the roll-out have caught up. **Merge update 2 only after this.**
+
+**Update 2: removing Cyril.** The same installer, on a later run, removes what Cyril left: its three scheduled tasks / two launchd jobs, any `.disabled` plists, the program folder (including the old `extension` folder) and the data folder. It is deliberately conservative:
+- Only on a run **after** the hand-over, never the same run (so it never executes inside a Cyril task it is about to delete). A machine that has not been handed over yet is handed over first, nothing more, and keeps Cyril until a later run.
+- Only when NetMon has **proved itself on that machine**: NetMon's own `data\health.json` (Cyril's was never copied) is under 3 days old and shows no upload failing. Otherwise Cyril stays as the fallback and the next update asks again. A PC that is off, or whose NetMon is failing, keeps its old files.
+- A Cyril task that is running at that moment is left for the next run, and nothing is deleted on that run.
+- It reports `from_version = cyril-leftovers, to_version = removed` (ok, or the reason it will retry) to the update log, separate from the hand-over rows. When every machine has one ok row, the clean-up is complete everywhere.
 
 **Macs:** macOS ties *Screen Recording* (and Automation) to the program, so `netmon` is a new program to macOS and the person at the Mac may be asked to allow it once. The dashboard flags Macs that still need it. If the fleet is MDM-managed, pre-approve `netmon` in a privacy profile before the roll-out.
 
