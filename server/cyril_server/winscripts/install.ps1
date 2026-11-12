@@ -1,12 +1,18 @@
 <#
-Cyril agent installer. Needs only PowerShell on the target machine (no git, no npm,
+NetMon agent installer (formerly "Cyril"). Needs only PowerShell on the target machine (no git, no npm,
 no Python). Safe to run again: it updates an existing install in place.
+
+A PC that still has the old Cyril agent is moved over by this same script, with no step for the user (the old
+"Cyril Updater" task fetches this file like any other update). The hand-over is: download and self-test the new
+program FIRST; only then stop the Cyril agent, copy its config and unsent data into the NetMon folder, start
+NetMon and check that it is running. If anything fails, the Cyril agent is switched back on and nothing is lost.
+The old Cyril folders and tasks are only switched off here, not deleted: removing them is a separate, later update.
 
 The easiest way is the one-liner on your server's "Install agents" page in the dashboard.
 It looks like this (run in an ELEVATED PowerShell; the server fills in its own
 address, and the agent key travels in the URL):
 
-  & ([scriptblock]::Create((irm 'https://cyril.example.com/install.ps1?key=AGENT_KEY')))
+  & ([scriptblock]::Create((irm 'https://your-server.example.com/install.ps1?key=AGENT_KEY')))
 
 Optional switches:
   -User "Priya"     report under this name instead of the Windows login
@@ -37,9 +43,9 @@ try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::
 function Step($msg) { if (-not $Unattended) { Write-Host "  [..] $msg" -ForegroundColor Cyan } }
 function Ok($msg)   { if (-not $Unattended) { Write-Host "  [ok] $msg" -ForegroundColor Green } }
 function Warn($msg) { Write-Host "  [!!] $msg" -ForegroundColor Yellow }
-function Fail($msg) { Write-Host ""; Write-Host "  [xx] $msg" -ForegroundColor Red; Write-Host ""; throw "Cyril install failed: $msg" }
+function Fail($msg) { Write-Host ""; Write-Host "  [xx] $msg" -ForegroundColor Red; Write-Host ""; throw "NetMon install failed: $msg" }
 
-if (-not $Unattended) { Write-Host ""; Write-Host "Welcome to Cyril by ICE" -ForegroundColor White }
+if (-not $Unattended) { Write-Host ""; Write-Host "Welcome to NetMon by ICE" -ForegroundColor White }
 
 # 1. Preconditions -------------------------------------------------------------
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -51,16 +57,37 @@ if (-not $ServerUrl) { Fail "No server address. Use the command from the dashboa
 if (-not "$AgentKey".Trim()) { Fail "No agent key. Use the command from the dashboard's Install page (it includes ?key=...)." }
 $AgentKey = $AgentKey.Trim()
 
-$installDir = Join-Path $env:ProgramFiles "Cyril"
-$cfgDir     = Join-Path $env:ProgramData "Cyril"
+$installDir = Join-Path $env:ProgramFiles "NetMon"
+$cfgDir     = Join-Path $env:ProgramData "NetMon"
 $dataDir    = Join-Path $cfgDir "data"          # log + spool, writable by the logged-in user
-$exe        = Join-Path $installDir "cyril.exe"
+$exe        = Join-Path $installDir "netmon.exe"
+$procName   = "netmon"
 $cfgFile    = Join-Path $cfgDir "config.json"
-$taskName   = "Cyril Agent"
-$updaterName = "Cyril Updater"
-$regKey     = "HKLM:\SOFTWARE\Cyril"
+$taskName   = "NetMon Agent"
+$updaterName = "NetMon Updater"
+$recoveryName = "NetMon Recovery Check"
+$migratedMarker = Join-Path $cfgDir "migrated-from-cyril.txt"   # written once the hand-over from Cyril has succeeded
+# What the old product left on a PC. Only ever switched off here (see the header), never deleted.
+$oldInstallDir = Join-Path $env:ProgramFiles "Cyril"
+$oldCfgDir     = Join-Path $env:ProgramData "Cyril"
+$oldCfgFile    = Join-Path $oldCfgDir "config.json"
+$oldDataDir    = Join-Path $oldCfgDir "data"
+$oldExe        = Join-Path $oldInstallDir "cyril.exe"
+$oldProc       = "cyril"
+$oldAgentTask  = "Cyril Agent"
+$oldUpdaterTasks = @("Cyril Updater", "Cyril Recovery Check")
+$regKey     = "HKLM:\SOFTWARE\Cyril"       # the old product's key: an earlier version stored its Incognito undo here (section 6)
 $usersSid   = "S-1-5-32-545"                    # BUILTIN\Users, locale-independent
 $updating   = Test-Path $exe
+
+# Is the old Cyril agent still on this PC and not yet handed over?
+$oldPresent = (Test-Path $oldCfgDir) -or (Test-Path $oldExe) -or [bool](Get-ScheduledTask -TaskName $oldAgentTask -ErrorAction SilentlyContinue)
+$migrating  = $oldPresent -and -not (Test-Path $migratedMarker)
+
+function Quiet([scriptblock]$b) { try { & $b } catch { } }
+function Get-DeviceId {
+    try { return [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64').OpenSubKey('SOFTWARE\Microsoft\Cryptography').GetValue('MachineGuid') } catch { return "" }
+}
 
 # 2. Check the server and that the agent build is published ---------------------
 Step "Contacting $ServerUrl"
@@ -87,13 +114,13 @@ if ($upToDate) {
 } else {
     if ($updating) { Step "Existing install found, updating it" }
     Step "Downloading"
-    $tmp = Join-Path $installDir "cyril.new.exe"
+    $tmp = Join-Path $installDir "netmon.new.exe"
     # ?h=<hash>: a different URL for every build, so no proxy/CDN can hand back an old cached exe.
     $bust = if ($expectedHash) { $expectedHash.Substring(0, 16) } else { [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
-    try { Invoke-WebRequest -UseBasicParsing -Uri "$ServerUrl/dist/cyril.exe?h=$bust" -OutFile $tmp -TimeoutSec 300 }
+    try { Invoke-WebRequest -UseBasicParsing -Uri "$ServerUrl/dist/netmon.exe?h=$bust" -OutFile $tmp -TimeoutSec 300 }
     catch {
         Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-        Fail "Could not download $ServerUrl/dist/cyril.exe ($($_.Exception.Message)). The agent build has not been published to the server yet - run windows\build.ps1 in the repo on the server machine (it writes into server\dist, which the server serves; if you built elsewhere, copy the files there)."
+        Fail "Could not download $ServerUrl/dist/netmon.exe ($($_.Exception.Message)). The agent build has not been published to the server yet - run windows\build.ps1 in the repo on the server machine (it writes into server\dist, which the server serves; if you built elsewhere, copy the files there)."
     }
     if ($expectedHash) {
         $actual = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
@@ -104,22 +131,16 @@ if ($upToDate) {
         # Run the downloaded program once before it replaces anything: a broken build is rejected here,
         # on this PC, instead of installing and silently never reporting.
         $t = Start-Process -FilePath $tmp -ArgumentList "--selftest" -Wait -PassThru
-        if ($t.ExitCode -ne 0) { Remove-Item $tmp -Force; Fail "The downloaded cyril.exe does not start (self-test exit code $($t.ExitCode)). It is a broken build: rebuild with windows\build.ps1 and run this again. Nothing was installed." }
+        if ($t.ExitCode -ne 0) { Remove-Item $tmp -Force; Fail "The downloaded netmon.exe does not start (self-test exit code $($t.ExitCode)). It is a broken build: rebuild with windows\build.ps1 and run this again. Nothing was installed." }
         Ok "Start Successful"
     }
     if ($updating) {
         Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-        Get-Process -Name "cyril" -ErrorAction SilentlyContinue | Stop-Process -Force
+        Get-Process -Name $procName -ErrorAction SilentlyContinue | Stop-Process -Force
         Start-Sleep -Seconds 2
     }
     Move-Item -Force $tmp $exe
     Ok "System Installed to $installDir$(if ($buildInfo) { " ($buildInfo)" })"
-    try {
-        $zip = Join-Path $installDir "cyril-extension.zip"
-        Invoke-WebRequest -UseBasicParsing -Uri "$ServerUrl/dist/cyril-extension.zip?t=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" -OutFile $zip -TimeoutSec 60
-        Expand-Archive -Force $zip (Join-Path $installDir "extension")
-        Ok "Browser extension unpacked to $installDir\extension"
-    } catch { Warn "Browser extension step skipped: $($_.Exception.Message)" }
 }
 
 # 4. Config ----------------------------------------------------------------------------------------------
@@ -128,8 +149,12 @@ if ($upToDate) {
 $cfg = @{ server = $ServerUrl; key = $AgentKey }
 if ("$PayloadKey".Trim() -and "$PayloadKey" -notmatch '[{]') { $cfg.payload_key = "$PayloadKey".Trim() }
 if ($User) { $cfg.user = $User }
-elseif (Test-Path $cfgFile) {
-    try { $old = Get-Content $cfgFile -Raw | ConvertFrom-Json; if ($old.user) { $cfg.user = $old.user } } catch { }
+else {
+    foreach ($f in @($cfgFile, $oldCfgFile)) {   # this install's own config first, else the one the Cyril agent had
+        if (Test-Path $f) {
+            try { $old = Get-Content $f -Raw | ConvertFrom-Json; if ($old.user) { $cfg.user = $old.user; break } } catch { }
+        }
+    }
 }
 # UTF-8 *without* BOM (Windows PowerShell 5.1's "-Encoding UTF8" adds one).
 [IO.File]::WriteAllText($cfgFile, ($cfg | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
@@ -143,21 +168,91 @@ Ok "Config written"
 
 # 5. Tasks ---------------------------------------------------------------------------------------------------
 # Old versions ran the agent as SYSTEM at boot. SYSTEM has no desktop, so any such copy is useless: stop it.
-Get-Process -Name "cyril" -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq 0 } | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process -Name $procName -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq 0 } | Stop-Process -Force -ErrorAction SilentlyContinue
 
-# 5a. The agent: at every logon, in that user's session, plus a 5-minute re-launch if it was closed.
-$usersName = ([Security.Principal.SecurityIdentifier]$usersSid).Translate([Security.Principal.NTAccount]).Value
-Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-$action    = New-ScheduledTaskAction -Execute $exe -Argument "--config `"$cfgFile`" --update-check-every 0"
-$triggers  = @(
-    (New-ScheduledTaskTrigger -AtLogOn),
-    (New-ScheduledTaskTrigger -Once -At ((Get-Date).Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650))
-)
-$principal = New-ScheduledTaskPrincipal -GroupId $usersName -RunLevel Limited
-$settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
-    -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $triggers `
-    -Principal $principal -Settings $settings -Force | Out-Null
+function Send-MigrationReport([bool]$ok, [string]$detail) {
+    # Visible in the dashboard's update log, so the roll-out can be checked machine by machine. Never blocks the install.
+    try {
+        $who = if ($cfg.user) { "$($cfg.user)" } elseif ($env:USERNAME) { $env:USERNAME } else { $env:COMPUTERNAME }
+        $dev = Get-DeviceId; if (-not $dev) { $dev = $env:COMPUTERNAME }
+        $body = @{ user = $who; device = "$dev"; from_version = "cyril"; to_version = "netmon $($ver.version)"; ok = $ok; detail = $detail.Substring(0, [Math]::Min(1900, $detail.Length)) } | ConvertTo-Json
+        Invoke-RestMethod -UseBasicParsing -Method Post -Uri "$ServerUrl/api/agent/update-log" -Headers @{ "X-Api-Key" = $AgentKey } `
+            -ContentType "application/json" -Body $body -TimeoutSec 15 | Out-Null
+    } catch { }
+}
+
+function Register-AgentTask {
+    # The agent: at every logon, in that user's session, plus a 5-minute re-launch if it was closed.
+    $usersName = ([Security.Principal.SecurityIdentifier]$usersSid).Translate([Security.Principal.NTAccount]).Value
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    $action    = New-ScheduledTaskAction -Execute $exe -Argument "--config `"$cfgFile`" --update-check-every 0"
+    $triggers  = @(
+        (New-ScheduledTaskTrigger -AtLogOn),
+        (New-ScheduledTaskTrigger -Once -At ((Get-Date).Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650))
+    )
+    $principal = New-ScheduledTaskPrincipal -GroupId $usersName -RunLevel Limited
+    $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+        -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $triggers `
+        -Principal $principal -Settings $settings -Force | Out-Null
+}
+
+# 5a. Hand over from Cyril. Everything above (download, checksum, self-test, config) has already succeeded, so the
+#     old agent is only stopped now. It is switched off (task disabled, process stopped), never deleted: if NetMon
+#     does not come up, it is switched straight back on. The old UPDATER and recovery tasks are left enabled until
+#     NetMon is confirmed running (they are the retry path), and may be the very process running this script, so
+#     they are never stopped here, only disabled afterwards (5d).
+function Restore-Cyril([string]$why) {
+    Warn "NetMon could not take over ($why). Switching the Cyril agent back on; the next update will try again."
+    Quiet { Stop-ScheduledTask -TaskName $taskName }
+    Quiet { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false }
+    Get-Process -Name $procName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Quiet { Enable-ScheduledTask -TaskName $oldAgentTask | Out-Null }
+    Quiet { Start-ScheduledTask -TaskName $oldAgentTask }
+    Send-MigrationReport $false "rolled back to Cyril: $why"
+}
+
+if ($migrating) {
+    Step "Moving this PC from Cyril to NetMon"
+    $copied = 0
+    try {
+        Quiet { Stop-ScheduledTask -TaskName $oldAgentTask -ErrorAction Stop }
+        Quiet { Disable-ScheduledTask -TaskName $oldAgentTask -ErrorAction Stop | Out-Null }
+        Get-Process -Name $oldProc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+        if (Get-Process -Name $oldProc -ErrorAction SilentlyContinue) { throw "the Cyril agent would not stop" }
+        Ok "Cyril agent stopped"
+        # Unsent events and screenshots waiting for the server. Copied (not moved) so Cyril still has them if we roll back.
+        # health.json is the old agent's own status; the new agent writes its own.
+        if (Test-Path $oldDataDir) {
+            foreach ($item in (Get-ChildItem -Path $oldDataDir -Force | Where-Object { $_.Name -ne "health.json" })) {
+                $dest = Join-Path $dataDir $item.Name
+                if (-not (Test-Path $dest)) { Copy-Item -Path $item.FullName -Destination $dest -Recurse -Force; $copied++ }
+            }
+        }
+        Ok "Unsent data copied to $dataDir ($copied item(s))"
+        Register-AgentTask
+        Start-ScheduledTask -TaskName $taskName
+        # Check it really runs. With nobody logged on there is no desktop to start it in: the logon trigger starts it
+        # at the next login, so there is nothing to wait for.
+        if (Get-Process -Name "explorer" -ErrorAction SilentlyContinue) {
+            $up = $false
+            foreach ($i in 1..15) { Start-Sleep -Seconds 2; if (Get-Process -Name $procName -ErrorAction SilentlyContinue) { $up = $true; break } }
+            if (-not $up) { throw "netmon.exe did not start within 30 seconds" }
+            Start-Sleep -Seconds 5
+            if (-not (Get-Process -Name $procName -ErrorAction SilentlyContinue)) { throw "netmon.exe exited right after starting" }
+        }
+        [IO.File]::WriteAllText($migratedMarker, "moved from Cyril at $([DateTimeOffset]::UtcNow.ToString('o'))")
+        Ok "NetMon is running"
+        Send-MigrationReport $true "moved from Cyril: old agent stopped and disabled, $copied data item(s) copied, NetMon started"
+    } catch {
+        $why = $_.Exception.Message
+        Restore-Cyril $why
+        Fail "Moving from Cyril to NetMon did not work ($why). Cyril has been switched back on and is still monitoring this PC."
+    }
+} else {
+    Register-AgentTask
+}
 Ok "Task CA Registered"
 
 # 5b. The updater: SYSTEM, daily. Re-runs this installer, which does nothing unless a new build is published.
@@ -182,10 +277,9 @@ Ok "Task CU Registered"
 #     The script lives in the read-only config folder (users cannot edit what SYSTEM runs); health.json is only read
 #     as data. At most one attempt per 30 minutes. Registered once: re-registering it from inside its own run would
 #     cut that run short.
-$recoveryName = "Cyril Recovery Check"
 $recoveryFile = Join-Path $cfgDir "recovery-check.ps1"
 $recoveryBody = @'
-# Cyril recovery check (written by install.ps1; runs as SYSTEM every 15 minutes).
+# NetMon recovery check (written by install.ps1; runs as SYSTEM every 15 minutes).
 $ErrorActionPreference = "Stop"
 try {
     $dir   = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -210,7 +304,17 @@ if (-not (Get-ScheduledTask -TaskName $recoveryName -ErrorAction SilentlyContinu
     Ok "Task CR Registered"
 }
 
-# 6. Earlier versions disabled Incognito/InPrivate by browser policy. Cyril does not do that any more
+# 5d. Once NetMon has taken over, switch off the old Cyril updater and recovery tasks so the two updaters never run
+#     together. Disabled, not deleted, and never stopped (one of them may be running this very script). Runs on every
+#     install (cheap, and it finishes the job if an earlier run stopped half-way); removing them is a later update.
+if (Test-Path $migratedMarker) {
+    foreach ($t in $oldUpdaterTasks) {
+        $old = Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue
+        if ($old -and $old.State -ne "Disabled") { Quiet { Disable-ScheduledTask -TaskName $t -ErrorAction Stop | Out-Null }; Ok "Old task '$t' switched off" }
+    }
+}
+
+# 6. Earlier versions disabled Incognito/InPrivate by browser policy. The agent does not do that any more
 #    (private windows are flagged and screenshotted instead), so undo it where this installer had set it.
 if (Test-Path $regKey) {
     $set = (Get-ItemProperty -Path $regKey -Name "IncognitoPolicySetFor" -ErrorAction SilentlyContinue).IncognitoPolicySetFor
@@ -222,15 +326,14 @@ if (Test-Path $regKey) {
 
 # 7. Start it now, then confirm the server really receives reports -------------------------------------
 $since = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 5
-if (-not (Get-Process -Name "cyril" -ErrorAction SilentlyContinue)) { Start-ScheduledTask -TaskName $taskName }
+if (-not (Get-Process -Name $procName -ErrorAction SilentlyContinue)) { Start-ScheduledTask -TaskName $taskName }
 if ($Unattended) {
-    if ($Silent) { Write-Host "Cyril installed$(if ($buildInfo) { " ($buildInfo)" }). The agent is running; it appears on the dashboard's Install agents page within a minute or two." }
+    if ($Silent) { Write-Host "NetMon installed$(if ($buildInfo) { " ($buildInfo)" }). The agent is running; it appears on the dashboard's Install agents page within a minute or two." }
     return
 }
 
 Step "Waiting for Server Confirmation"
-$device = $null
-try { $device = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64').OpenSubKey('SOFTWARE\Microsoft\Cryptography').GetValue('MachineGuid') } catch { }
+$device = Get-DeviceId
 $seen = $null
 foreach ($i in 1..24) {
     Start-Sleep -Seconds 5
@@ -241,9 +344,9 @@ foreach ($i in 1..24) {
 function Show-Diagnostics {
     Write-Host ""
     Write-Host "  Diagnostics:" -ForegroundColor White
-    $procs = Get-Process -Name "cyril" -ErrorAction SilentlyContinue
-    if ($procs) { $procs | ForEach-Object { Write-Host "    cyril.exe pid $($_.Id) running in session $($_.SessionId)  (session 0 = background services, cannot see any desktop)" } }
-    else { Write-Host "    cyril.exe is NOT running" }
+    $procs = Get-Process -Name $procName -ErrorAction SilentlyContinue
+    if ($procs) { $procs | ForEach-Object { Write-Host "    netmon.exe pid $($_.Id) running in session $($_.SessionId)  (session 0 = background services, cannot see any desktop)" } }
+    else { Write-Host "    netmon.exe is NOT running" }
     $info = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Get-ScheduledTaskInfo -ErrorAction SilentlyContinue
     if ($info) { Write-Host "    task last run: $($info.LastRunTime), result: 0x$('{0:X}' -f $info.LastTaskResult)" }
     $log = Join-Path $dataDir "agent.log"

@@ -24,8 +24,8 @@ services:
       CYRIL_S3_BUCKET: cyril-screenshots
     volumes:
       - cyril_db:/data
-      # Bind mount, not a named volume: windows/build.ps1 writes cyril.exe,
-      # cyril-extension.zip and manifest.json straight into ./dist on the
+      # Bind mount, not a named volume: windows/build.ps1 writes netmon.exe
+      # and manifest.json straight into ./dist on the
       # host, and they're immediately served from /dist -- no copy step,
       # and the agent's self-update check picks up a new manifest.json as
       # soon as it's dropped in, with no server restart needed.

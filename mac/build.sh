@@ -24,8 +24,8 @@ pip install --quiet --upgrade pip
 pip install --quiet pyinstaller mss pillow
 pip install --quiet -r "$ROOT/agent/requirements.txt"      # pulls pyobjc (Cocoa, Quartz) on macOS
 
-BIN="$OUT/cyril-mac-$ARCH"
-pyinstaller --onefile --name "cyril-mac-$ARCH" \
+BIN="$OUT/netmon-mac-$ARCH"
+pyinstaller --onefile --name "netmon-mac-$ARCH" \
   --paths "$ROOT/agent" \
   --collect-data certifi --collect-all cryptography --hidden-import truststore --hidden-import AppKit --hidden-import Quartz --hidden-import Foundation \
   --distpath "$OUT" --workpath "$ROOT/build/mac-$ARCH" --specpath "$ROOT/build/mac-$ARCH" \
@@ -41,7 +41,7 @@ echo "Self-test passed."
 
 SHA="$(shasum -a 256 "$BIN" | cut -d' ' -f1)"
 BUILD="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || true)"
-printf '{"version":"%s","build":"%s","arch":"%s","url":"/dist/cyril-mac-%s","sha256":"%s","selftest":true}\n' \
+printf '{"version":"%s","build":"%s","arch":"%s","url":"/dist/netmon-mac-%s","sha256":"%s","selftest":true}\n' \
   "$VERSION" "$BUILD" "$ARCH" "$ARCH" "$SHA" > "$OUT/manifest-mac-$ARCH.json"
 
 echo
@@ -52,4 +52,4 @@ echo
 echo "Published: these are in server/dist, which the server serves directly (no copy, no restart)."
 echo "New Macs: use the command on the dashboard's 'Install agents' page (Mac tab)."
 echo "Existing Macs: their updater job re-runs the installer daily and at every start; to do it now run:"
-echo "  sudo launchctl kickstart -k system/in.icestudios.cyril.updater"
+echo "  sudo launchctl kickstart -k system/in.icestudios.netmon.updater"

@@ -40,9 +40,8 @@ Repository: `icestudios-d1/trakbot` · Public address used in examples: `https:/
 | Server (API, dashboard, installers, update manifest) | Python 3.12, FastAPI, Uvicorn | container `server`, port 8000 | SQLite file `/data/cyril.db` (volume `cyril_db`) |
 | Screenshot store | SeaweedFS (S3 gateway) | container `seaweedfs`, **no published port** | volume `cyril_screenshots` |
 | Agent build outputs | files | `server/dist/` on the host, mounted at `/dist` | host folder (not in git) |
-| Windows agent | Python → single `cyril.exe` (PyInstaller) | each PC, `C:\Program Files\Cyril` | `C:\ProgramData\Cyril` |
+| Windows agent | Python → single `netmon.exe` (PyInstaller) | each PC, `C:\Program Files\NetMon` | `C:\ProgramData\NetMon` |
 | Mac agent | Python → single binary per CPU (PyInstaller) | each Mac, `/Library/Application Support/Cyril` | same folder, `data/` |
-| Browser extension (optional) | MV3 extension | unpacked from `cyril-extension.zip` | none |
 
 Design intent: **self-hosted, no cloud dependency.** If the server is down the agents keep sampling, queue everything on disk and
 send the backlog when it is back (events: `spool.jsonl`, up to ~50 MB; screenshots: `shots-pending`, up to ~300 MB / 7 days).
@@ -61,7 +60,6 @@ send the backlog when it is back (events: `spool.jsonl`, up to ~50 MB; screensho
 | `windows/build.ps1`, `mac/build.sh` | agent build scripts (used by CI and by hand) |
 | `.github/workflows/agents.yml` | CI that builds and publishes the agents |
 | `update.ps1` | one-command update of the office server |
-| `browser-extension/` | optional URL reporter (the Windows agent normally reads the address bar itself) |
 
 ---
 
@@ -142,22 +140,22 @@ Encrypt the server's disk (BitLocker/LUKS): the database and screenshots are not
 
 ### 4.1 The CI workflow (`.github/workflows/agents.yml`, name `agents`)
 
-**When it runs:** on a push to `main` that touches `agent/**`, `browser-extension/**`, `windows/build.ps1`, `mac/build.sh` or the workflow file; or manually (*Actions → agents → Run workflow*).
+**When it runs:** on a push to `main` that touches `agent/**`, `windows/build.ps1`, `mac/build.sh` or the workflow file; or manually (*Actions → agents → Run workflow*).
 Server-only changes (dashboard, API) do **not** rebuild agents. Work on a feature branch builds nothing until it is merged to `main`.
 
 **Jobs**
 
 | Job | Runner | What it does | Output (workflow artifact) |
 |---|---|---|---|
-| `windows` | `windows-latest`, Python 3.12 | `./windows/build.ps1 -OutDir out`: installs PyInstaller + deps, builds `cyril.exe` (`--onefile --noconsole`, bundles `uiautomation`, `comtypes`, `certifi`), **runs `cyril.exe --selftest` and refuses to publish if it fails**, zips the browser extension, writes `manifest.json` (SHA-256, `build` = short git SHA, `selftest: true`) | `win` → `cyril.exe`, `cyril-extension.zip`, `manifest.json` |
-| `mac-arm64` | `macos-15` (Apple Silicon) | `OUT_DIR=out ./mac/build.sh`: venv, PyInstaller one-file build, self-test, writes `manifest-mac-arm64.json` | `mac-arm64` → `cyril-mac-arm64`, `manifest-mac-arm64.json` |
-| `mac-x86_64` | `macos-15-intel` (Intel) | same script | `mac-x86_64` → `cyril-mac-x86_64`, `manifest-mac-x86_64.json` |
+| `windows` | `windows-latest`, Python 3.12 | `./windows/build.ps1 -OutDir out`: installs PyInstaller + deps, builds `netmon.exe` (`--onefile --noconsole`, bundles `uiautomation`, `comtypes`, `certifi`), **runs `netmon.exe --selftest` and refuses to publish if it fails**, writes `manifest.json` (SHA-256, `build` = short git SHA, `selftest: true`) | `win` → `netmon.exe`, `manifest.json` |
+| `mac-arm64` | `macos-15` (Apple Silicon) | `OUT_DIR=out ./mac/build.sh`: venv, PyInstaller one-file build, self-test, writes `manifest-mac-arm64.json` | `mac-arm64` → `netmon-mac-arm64`, `manifest-mac-arm64.json` |
+| `mac-x86_64` | `macos-15-intel` (Intel) | same script | `mac-x86_64` → `netmon-mac-x86_64`, `manifest-mac-x86_64.json` |
 | `publish` | `ubuntu-latest`, needs **`windows` only** | carries over the Mac files of the previous release, **deletes** the release `agent-latest` (and its tag), **re-creates** it at the commit SHA with the Windows files, using the built-in `GITHUB_TOKEN` (`permissions: contents: write`) | GitHub Release **`agent-latest`** ("Agents (latest)") |
 | `publish-mac-arm64`, `publish-mac-x86_64` | `ubuntu-latest`, each needs its Mac build + `publish` | add that Mac build to the release (`gh release upload --clobber`) | same release |
 
 No Mac build is waited for: GitHub's Mac runners are scarce and a job can sit queued for a long time. Windows publishes at once; each Mac keeps its previously published build until the new one arrives. A `concurrency` group stops two runs from recreating the release at the same time.
 
-**What is in the release (7 files):** `cyril.exe`, `cyril-extension.zip`, `manifest.json`, `cyril-mac-arm64`, `manifest-mac-arm64.json`, `cyril-mac-x86_64`, `manifest-mac-x86_64.json`.
+**What is in the release (6 files):** `netmon.exe`, `manifest.json`, `netmon-mac-arm64`, `manifest-mac-arm64.json`, `netmon-mac-x86_64`, `manifest-mac-x86_64.json`.
 
 Things to know:
 - `agent-latest` is a **rolling** release: only the newest build exists. There is no history to roll back to; to go back, revert the commit on `main` (CI rebuilds) or re-run the workflow on an older commit, and keep a copy of a known-good `server/dist/`.
@@ -189,30 +187,51 @@ Without `gh` (or not signed in) it falls back to a local Windows build, and the 
 | Windows | `& ([scriptblock]::Create((irm 'https://<server>/install.ps1?key=<AGENT_KEY>')))` | add `-Silent` |
 | Mac | `curl -fsSL 'https://<server>/install.sh?key=<AGENT_KEY>' \| sudo bash` | `… \| sudo bash -s -- --silent` |
 
-What the installer does (Windows; the Mac one mirrors it): checks the server, reads `/api/agent/version` (SHA-256), downloads `/dist/cyril.exe?h=<hash>` to a temp name, **verifies the checksum**, **runs `--selftest` on the new file before replacing anything**, only then stops the old agent and swaps the file; unpacks the extension; writes `C:\ProgramData\Cyril\config.json` (server, key, optional user) with admin-only write permission and a user-writable `data\` folder; registers scheduled tasks; starts the agent.
+What the installer does (Windows; the Mac one mirrors it): checks the server, reads `/api/agent/version` (SHA-256), downloads `/dist/netmon.exe?h=<hash>` to a temp name, **verifies the checksum**, **runs `--selftest` on the new file before replacing anything**, only then stops the old agent and swaps the file; writes `C:\ProgramData\NetMon\config.json` (server, key, optional user) with admin-only write permission and a user-writable `data\` folder; registers scheduled tasks; starts the agent.
 
 **Windows scheduled tasks**
 
 | Task | Runs as | When | Purpose |
 |---|---|---|---|
-| Cyril Agent | logged-in user (`Users` group, limited) | at every logon, plus re-launch every 5 min if closed | must run in the user's desktop session (SYSTEM/session 0 cannot see windows or the screen); runs `cyril.exe --config … --update-check-every 0` |
-| Cyril Updater | SYSTEM | daily ~03:00 (+≤30 min random), 5 min after every start, retries 3×/10 min | re-runs the installer in `-Unattended` mode; does nothing unless a new build is published |
+| NetMon Agent | logged-in user (`Users` group, limited) | at every logon, plus re-launch every 5 min if closed | must run in the user's desktop session (SYSTEM/session 0 cannot see windows or the screen); runs `netmon.exe --config … --update-check-every 0` |
+| NetMon Updater | SYSTEM | daily ~03:00 (+≤30 min random), 5 min after every start, retries 3×/10 min | re-runs the installer in `-Unattended` mode; does nothing unless a new build is published |
 | Cyril Recovery Check | SYSTEM | every 15 min | reads `data\health.json`; if uploads have failed for over an hour, re-runs the installer to fetch a fix (at most once per 30 min) |
 
-**Mac:** installs to `/Library/Application Support/Cyril`, a **LaunchAgent** (`in.icestudios.cyril`, runs in the logged-in user's session, restarted by launchd) and a root **LaunchDaemon** (`in.icestudios.cyril.updater`, re-runs the installer daily and at start). The person at the Mac must allow **Screen Recording** once, and **Automation** per browser to let the agent read page addresses; no installer can grant these (an MDM privacy profile can pre-approve them).
+**Mac:** installs to `/Library/Application Support/NetMon`, a **LaunchAgent** (`in.icestudios.netmon`, runs in the logged-in user's session, restarted by launchd) and a root **LaunchDaemon** (`in.icestudios.netmon.updater`, re-runs the installer daily and at start). The person at the Mac must allow **Screen Recording** once, and **Automation** per browser to let the agent read page addresses; no installer can grant these (an MDM privacy profile can pre-approve them).
 
-**Updates:** the agent's own updater is disabled (`--update-check-every 0`); updating is done by the SYSTEM/root updater job re-running the installer, which downloads only when the published hash differs. So a published build reaches every PC within about a day (or on next start / resume), or immediately with `Start-ScheduledTask 'Cyril Updater'` (Windows, elevated) / `sudo launchctl kickstart -k system/in.icestudios.cyril.updater` (Mac). The *Agent build* column on *Install agents* shows `✓ current`, `⟳ update pending` or `⟳ old agent`.
+**Updates:** the agent's own updater is disabled (`--update-check-every 0`); updating is done by the SYSTEM/root updater job re-running the installer, which downloads only when the published hash differs. So a published build reaches every PC within about a day (or on next start / resume), or immediately with `Start-ScheduledTask 'NetMon Updater'` (Windows, elevated) / `sudo launchctl kickstart -k system/in.icestudios.netmon.updater` (Mac). The *Agent build* column on *Install agents* shows `✓ current`, `⟳ update pending` or `⟳ old agent`.
 
 **Uninstall:** `& ([scriptblock]::Create((irm 'https://<server>/uninstall.ps1')))` (admin) / `curl -fsSL '…/uninstall.sh' | sudo bash`; each lists what it removed. Server-side history stays until you delete the employee (*Employees → Delete* also removes screenshot files).
 
 **What if the installer window is closed early?** The agent is already installed and started *before* the installer starts waiting for the first report (`Start-ScheduledTask` runs first; the agent is owned by Task Scheduler, not by your window). Closing during *Waiting for Server Confirmation* only loses the success message. Closing during the download leaves the old agent in place (the new file is a temp file until verified); the daily updater retries. `-Silent` skips the wait entirely.
+
+### 4.3a Cyril -> NetMon hand-over (update 1 of 2)
+
+The product was renamed. PCs and Macs that still run the old **Cyril** agent are moved over by the normal daily
+updater, with nothing for the employee to do: the old Cyril updater fetches `/install.ps1` / `/install.sh` (the URLs
+did not change), and those scripts are now the NetMon installers. Order of events on a machine:
+
+1. Download `netmon.exe` / `netmon-mac-<arch>`, verify the checksum, run `--selftest`. **Cyril is not touched until this has worked**, so a failed download or a broken build changes nothing.
+2. Stop the Cyril agent and disable its start (Windows: task disabled; Mac: LaunchAgent plist renamed `.disabled`).
+3. Copy Cyril's unsent data (`spool.jsonl`, pending screenshots) and employee name into the NetMon folder. Same device id (machine GUID / hardware UUID), so the dashboard shows the same machine, not a new one.
+4. Start NetMon and check it is running. **If not, Cyril is switched straight back on** and the next update tries again.
+5. Only then register/load the NetMon updater and disable the old Cyril updater and recovery check. (Disabled, never stopped: one of them is the process running the script.)
+6. Report `from_version = "cyril"` to `/api/agent/update-log` (ok or rolled back, with the reason): see the dashboard's update log.
+
+Nothing of Cyril is deleted in this update: `Program Files\Cyril`, `ProgramData\Cyril` / `/Library/Application Support/Cyril`, and the old tasks/plists stay, switched off. Removing them is **update 2** (not built yet): publish it only after the soak check below.
+
+**Soak check before update 2:** every machine on *Install agents* shows the NetMon build, the update log has one `from_version = cyril, ok` row per machine and no unresolved `rolled back` rows, and machines that were off during the roll-out have caught up.
+
+**Macs:** macOS ties *Screen Recording* (and Automation) to the program, so `netmon` is a new program to macOS and the person at the Mac may be asked to allow it once. The dashboard flags Macs that still need it. If the fleet is MDM-managed, pre-approve `netmon` in a privacy profile before the roll-out.
+
+**Unchanged on purpose:** the sealing constants in `seal.py` / `payloadcrypto.py` (`cyril-seal-v1`, `cyril1`), the `"app": "cyril"` answer of `GET /oms/ping` (the OMS sign-in site may check it), the `CYRIL_*` server settings, and the `CyrilAgent/1.0` User-Agent. Changing any of them needs the server and the OMS site updated in step.
 
 ### 4.4 Release checklist (agent change)
 
 1. Change code under `agent/` (bump `VERSION` in `agent/cyril_agent/update.py` if you track versions), run `cd agent && pytest`.
 2. Merge to `main`. Watch *Actions → agents* until all three jobs and `publish` are green (builds take a few minutes).
 3. On the server PC: `.\update.ps1`. Confirm *Install agents* shows the new **build** under "Agent program" and `Mac agent` published for both CPUs.
-4. Push to one test PC: `Start-ScheduledTask 'Cyril Updater'`; confirm its row turns `✓ current`.
+4. Push to one test PC: `Start-ScheduledTask 'NetMon Updater'`; confirm its row turns `✓ current`.
 5. The rest follow overnight. Check *Install agents* the next morning for `update pending` rows (PCs that were off).
 
 ### 4.5 Release checklist (server/dashboard-only change)
@@ -274,7 +293,7 @@ traffic); the stronger step is a SYSTEM service owning the agent's work (item 3 
 What cannot be hidden: the employee can always see their own screen, and a determined local administrator can observe anything a process on their machine does. Cyril deliberately does not hide itself (visible in Task Manager and Task Scheduler); see README "What we deliberately didn't build".
 
 **Other items to be aware of**
-- The agent's local listener `127.0.0.1:7077` **no longer accepts reports from web pages**: `POST /` is refused unless it comes from a browser extension (or has no Origin), must be `application/json`, and the Host must be `127.0.0.1`/`localhost` (DNS-rebinding guard); it sends no `Access-Control-Allow-Origin`. A website can therefore no longer feed the agent a made-up URL. (Another program running on the PC as the same user still can; that is inside the trust boundary.)
+- The agent's local listener `127.0.0.1:7077` **no longer accepts reports from web pages**: there is no POST endpoint at all any more (the browser extension that used it is gone; page addresses are read from the browser window), so nothing can feed the agent a made-up URL. Only `GET /oms/ping` is answered, and the Host must be `127.0.0.1`/`localhost` (DNS-rebinding guard).
 - `seaweedfs` image is `chrislusf/seaweedfs:latest` — pin a tag before production (comment in `docker-compose.yml`).
 - Unsigned agent binaries (see §4.1). Single admin token. No retention on events/URLs/titles. Legal/consent: the README's *Scope & compliance* section applies; keep the employee notice and agreement in step with what is collected.
 
@@ -305,7 +324,7 @@ If the fetch throws (connection refused) Cyril is not running on that computer.
 - [ ] Reverse proxy / tunnel, TLS owner, forwarded headers (§2.4).
 - [ ] Backups of `cyril_db`, `cyril_screenshots`, `.env` (§2.6) and restore test.
 - [ ] Retention policy for events/URLs/titles (none today) and screenshots.
-- [ ] Code signing for `cyril.exe` / Mac binaries; SmartScreen/Gatekeeper/AV exclusions.
+- [ ] Code signing for `netmon.exe` / Mac binaries; SmartScreen/Gatekeeper/AV exclusions.
 - [ ] Pin the SeaweedFS image tag.
 - [ ] Individual admin accounts and an access log if policy needs one.
 - [ ] Set `CYRIL_OMS_ORIGINS` if OMS lives anywhere besides `https://office.icestudios.in`, then `CYRIL_REQUIRE_SEALED=1` once every PC shows 🔒 sealed.

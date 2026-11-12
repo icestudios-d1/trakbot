@@ -1,11 +1,19 @@
 #!/bin/bash
-# Cyril agent installer for macOS. Needs only what macOS ships with (bash, curl, launchctl): no Homebrew, no Python.
-# Safe to run again: it updates an existing install in place.
+# NetMon agent installer for macOS (formerly "Cyril"). Needs only what macOS ships with (bash, curl, launchctl): no
+# Homebrew, no Python. Safe to run again: it updates an existing install in place.
+#
+# A Mac that still has the old Cyril agent is moved over by this same script, with no step for the user (the old
+# Cyril updater job fetches this file like any other update). The hand-over: download and self-test the new program
+# FIRST; only then stop the Cyril agent, copy its config and unsent data into the NetMon folder, start NetMon and
+# check that it is running. If anything fails, the Cyril agent is switched back on and nothing is lost. The old
+# Cyril folder and jobs are only switched off here (plists renamed to .disabled), never deleted: removing them is a
+# separate, later update. One thing no installer can do: macOS ties Screen Recording to the program, so the person
+# at the Mac may be asked to allow "netmon" once (the dashboard shows which Macs still need it).
 #
 # The easiest way is the one-liner on the dashboard's "Install agents" page (the server fills in its own address
 # and the agent key):
 #
-#   curl -fsSL 'https://cyril.example.com/install.sh?key=AGENT_KEY' | sudo bash
+#   curl -fsSL 'https://your-server.example.com/install.sh?key=AGENT_KEY' | sudo bash
 #
 # Options (after "bash -s --"):  --user "Priya"   report under this name instead of the Mac login
 #                                --silent         quiet install for roll-outs (MDM, Jamf, a script): no step list, no first-report
@@ -15,7 +23,7 @@
 # How it runs: the agent must live inside the logged-in user's session (that is where the windows and the screen
 # are), so it is a LaunchAgent that starts at login and is restarted by launchd if it is closed. A second job, a
 # LaunchDaemon running as root, re-runs this installer daily and at every start so new builds reach every Mac.
-# Testing: set CYRIL_TEST_ROOT to prefix every path (the tests run this against a scratch directory).
+# Testing: set NETMON_TEST_ROOT to prefix every path (the tests run this against a scratch directory).
 set -euo pipefail
 
 SERVER_URL='{{SERVER_URL}}'
@@ -33,22 +41,33 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-R="${CYRIL_TEST_ROOT:-}"
-APPDIR="$R/Library/Application Support/Cyril"
-BIN="$APPDIR/cyril"
+R="${NETMON_TEST_ROOT:-${CYRIL_TEST_ROOT:-}}"
+APPDIR="$R/Library/Application Support/NetMon"
+BIN="$APPDIR/netmon"
+PROC="netmon"
 CFG="$APPDIR/config.json"
 DATA="$APPDIR/data"
-AGENT_LABEL="in.icestudios.cyril"
-UPDATER_LABEL="in.icestudios.cyril.updater"
+AGENT_LABEL="in.icestudios.netmon"
+UPDATER_LABEL="in.icestudios.netmon.updater"
 AGENT_PLIST="$R/Library/LaunchAgents/$AGENT_LABEL.plist"
 UPDATER_PLIST="$R/Library/LaunchDaemons/$UPDATER_LABEL.plist"
+MARKER="$APPDIR/migrated-from-cyril"      # written once the hand-over from Cyril has succeeded
+# What the old product left on a Mac. Only ever switched off here (see the header), never deleted.
+OLD_APPDIR="$R/Library/Application Support/Cyril"
+OLD_CFG="$OLD_APPDIR/config.json"
+OLD_DATA="$OLD_APPDIR/data"
+OLD_PROC="cyril"
+OLD_AGENT_LABEL="in.icestudios.cyril"
+OLD_UPDATER_LABEL="in.icestudios.cyril.updater"
+OLD_AGENT_PLIST="$R/Library/LaunchAgents/$OLD_AGENT_LABEL.plist"
+OLD_UPDATER_PLIST="$R/Library/LaunchDaemons/$OLD_UPDATER_LABEL.plist"
 
 say()  { [ "$UNATTENDED" -eq 1 ] || printf '  \033[36m[..]\033[0m %s\n' "$1"; }
 ok()   { [ "$UNATTENDED" -eq 1 ] || printf '  \033[32m[ok]\033[0m %s\n' "$1"; }
 warn() { printf '  \033[33m[!!]\033[0m %s\n' "$1"; }
 fail() { printf '\n  \033[31m[xx]\033[0m %s\n\n' "$1" >&2; exit 1; }
 
-[ "$UNATTENDED" -eq 1 ] || printf '\nWelcome to Cyril by ICE\n'
+[ "$UNATTENDED" -eq 1 ] || printf '\nWelcome to NetMon by ICE\n'
 
 # 1. Preconditions ----------------------------------------------------------------------------------------------
 [ -n "$R" ] || [ "$(uname -s)" = "Darwin" ] || fail "This installer is for macOS. On Windows use the PowerShell command."
@@ -62,6 +81,12 @@ case "$(uname -m)" in
   *) fail "Unsupported CPU: $(uname -m)" ;;
 esac
 CONSOLE_UID="$(stat -f%u /dev/console 2>/dev/null || echo 0)"   # whoever is sitting at the Mac (0 = login window)
+
+# Is the old Cyril agent still on this Mac and not yet handed over?
+OLD_PRESENT=0
+if [ -d "$OLD_APPDIR" ] || [ -e "$OLD_AGENT_PLIST" ] || [ -e "$OLD_AGENT_PLIST.disabled" ]; then OLD_PRESENT=1; fi
+MIGRATING=0
+if [ "$OLD_PRESENT" -eq 1 ] && [ ! -f "$MARKER" ]; then MIGRATING=1; fi
 
 # 2. The server and the published Mac build ------------------------------------------------------------------------
 say "Contacting $SERVER_URL"
@@ -81,7 +106,7 @@ NEW_BUILD_STAMP="${M_BUILD:-${M_SHA:0:12}}"
 CURRENT_SHA=""
 if [ -x "$BIN" ]; then CURRENT_SHA="$(shasum -a 256 "$BIN" | cut -d' ' -f1 || true)"; fi
 mkdir -p "$APPDIR"
-TMP="$(mktemp "${TMPDIR:-/tmp}/cyril.XXXXXX")"
+TMP="$(mktemp "${TMPDIR:-/tmp}/netmon.XXXXXX")"
 trap 'rm -f "$TMP"' EXIT
 if [ -n "$M_SHA" ] && [ "$CURRENT_SHA" = "$M_SHA" ]; then
   ok "Agent is already the published build ($INFO)"
@@ -104,7 +129,7 @@ fi
 # 4. Install -----------------------------------------------------------------------------------------------------------
 if [ "$UP_TO_DATE" -eq 0 ]; then
   if [ -x "$BIN" ]; then
-    if [ -z "$R" ]; then launchctl bootout "gui/$CONSOLE_UID/$AGENT_LABEL" 2>/dev/null || true; pkill -x cyril 2>/dev/null || true; sleep 1; fi
+    if [ -z "$R" ]; then launchctl bootout "gui/$CONSOLE_UID/$AGENT_LABEL" 2>/dev/null || true; pkill -x "$PROC" 2>/dev/null || true; sleep 1; fi
   fi
   install -m 755 "$TMP" "$BIN"
   ok "System Installed to $APPDIR ($INFO)"
@@ -112,7 +137,9 @@ fi
 
 # config: readable by every user (the agent runs as the logged-in user and must read it); only root can change it
 OLD_USER=""
-if [ -f "$CFG" ]; then OLD_USER="$(sed -n 's/.*"user" *: *"\([^"]*\)".*/\1/p' "$CFG" | head -1 || true)"; fi
+for f in "$CFG" "$OLD_CFG"; do   # this install's own config first, else the one the Cyril agent had
+  if [ -z "$OLD_USER" ] && [ -f "$f" ]; then OLD_USER="$(sed -n 's/.*"user" *: *"\([^"]*\)".*/\1/p' "$f" | head -1 || true)"; fi
+done
 [ -n "$USER_NAME" ] || USER_NAME="$OLD_USER"
 esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 {
@@ -142,12 +169,67 @@ if [ -z "$R" ]; then
 fi
 ok "Config written"
 
+# 4b. Hand over from Cyril (step 1 of 2: stop the old agent, copy what it had not sent yet) ---------------------------
+get_device() {
+  local d=""
+  d="$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/{print $4}' || true)"
+  [ -n "$d" ] || d="$(hostname)"
+  printf '%s' "$d"
+}
+report_migration() {   # $1 = 1 or 0 (worked), $2 = what happened. Shows in the dashboard's update log; never blocks anything.
+  local okjson=false who="${USER_NAME:-$(hostname)}"
+  [ "$1" = 1 ] && okjson=true
+  curl -fsS -m 15 -X POST -H "X-Api-Key: $AGENT_KEY" -H 'Content-Type: application/json' \
+    -d "$(printf '{"user":"%s","device":"%s","from_version":"cyril","to_version":"netmon %s","ok":%s,"detail":"%s"}' \
+          "$(esc "$who")" "$(esc "$(get_device)")" "$(esc "$M_VERSION")" "$okjson" "$(esc "${2:0:1900}")")" \
+    "$SERVER_URL/api/agent/update-log" >/dev/null 2>&1 || true
+}
+login_uids() { ps -axo uid= -o comm= | awk '$2 ~ /loginwindow$/ {print $1}' | sort -u; }
+COPIED=0
+if [ "$MIGRATING" -eq 1 ]; then
+  say "Moving this Mac from Cyril to NetMon"
+  if [ -z "$R" ]; then
+    for uid in $(login_uids); do launchctl bootout "gui/$uid/$OLD_AGENT_LABEL" 2>/dev/null || true; done
+    pkill -x "$OLD_PROC" 2>/dev/null || true
+    sleep 2
+    if pgrep -x "$OLD_PROC" >/dev/null 2>&1; then fail "The Cyril agent would not stop, so NetMon did not take over. Cyril is still monitoring this Mac; the next update will try again."; fi
+  fi
+  # keep the old agent from loading again at the next login: renamed, so it can be put back
+  if [ -f "$OLD_AGENT_PLIST" ]; then mv "$OLD_AGENT_PLIST" "$OLD_AGENT_PLIST.disabled"; fi
+  ok "Cyril agent stopped"
+  # Unsent events and screenshots waiting for the server. Copied (not moved) so Cyril still has them if we roll back.
+  # health.json is the old agent's own status, updater.log belongs to the old updater job.
+  if [ -d "$OLD_DATA" ]; then
+    for f in "$OLD_DATA"/* "$OLD_DATA"/.[!.]*; do
+      [ -e "$f" ] || continue
+      b="$(basename "$f")"
+      case "$b" in health.json|updater.log) continue ;; esac
+      if [ ! -e "$DATA/$b" ]; then cp -Rp "$f" "$DATA/$b" && COPIED=$((COPIED + 1)); fi
+    done
+  fi
+  ok "Unsent data copied to $DATA ($COPIED item(s))"
+fi
+restore_cyril() {   # NetMon did not come up: switch the old agent straight back on
+  warn "NetMon could not take over ($1). Switching the Cyril agent back on; the next update will try again."
+  if [ -z "$R" ]; then
+    for uid in $(login_uids); do launchctl bootout "gui/$uid/$AGENT_LABEL" 2>/dev/null || true; done
+    pkill -x "$PROC" 2>/dev/null || true
+  fi
+  rm -f "$AGENT_PLIST"
+  if [ -f "$OLD_AGENT_PLIST.disabled" ]; then mv "$OLD_AGENT_PLIST.disabled" "$OLD_AGENT_PLIST"; fi
+  if [ -z "$R" ] && [ "$CONSOLE_UID" -ne 0 ] && [ -f "$OLD_AGENT_PLIST" ]; then
+    launchctl bootstrap "gui/$CONSOLE_UID" "$OLD_AGENT_PLIST" 2>/dev/null || true
+    launchctl kickstart -k "gui/$CONSOLE_UID/$OLD_AGENT_LABEL" 2>/dev/null || true
+  fi
+  report_migration 0 "rolled back to Cyril: $1"
+}
+
 # updater script: re-runs this installer using the saved address and key
 cat > "$APPDIR/update.sh" <<'UPD'
 #!/bin/bash
-# Run by the Cyril updater job (root). Does nothing unless a new build is published.
-CFG="/Library/Application Support/Cyril/config.json"
-[ -f "${CYRIL_TEST_ROOT:-}$CFG" ] && CFG="${CYRIL_TEST_ROOT:-}$CFG"
+# Run by the NetMon updater job (root). Does nothing unless a new build is published.
+CFG="/Library/Application Support/NetMon/config.json"
+[ -f "${NETMON_TEST_ROOT:-${CYRIL_TEST_ROOT:-}}$CFG" ] && CFG="${NETMON_TEST_ROOT:-${CYRIL_TEST_ROOT:-}}$CFG"
 SERVER="$(sed -n 's/.*"server" *: *"\([^"]*\)".*/\1/p' "$CFG" | head -1)"
 KEY="$(sed -n 's/.*"key" *: *"\([^"]*\)".*/\1/p' "$CFG" | head -1)"
 [ -n "$SERVER" ] && [ -n "$KEY" ] || exit 1
@@ -165,8 +247,8 @@ cat > "$AGENT_PLIST" <<PLIST
   <key>Label</key><string>$AGENT_LABEL</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Library/Application Support/Cyril/cyril</string>
-    <string>--config</string><string>/Library/Application Support/Cyril/config.json</string>
+    <string>/Library/Application Support/NetMon/netmon</string>
+    <string>--config</string><string>/Library/Application Support/NetMon/config.json</string>
     <string>--update-check-every</string><string>0</string>
   </array>
   <key>RunAtLoad</key><true/>
@@ -184,29 +266,35 @@ cat > "$UPDATER_PLIST" <<PLIST
 <dict>
   <key>Label</key><string>$UPDATER_LABEL</string>
   <key>ProgramArguments</key>
-  <array><string>/bin/bash</string><string>/Library/Application Support/Cyril/update.sh</string></array>
+  <array><string>/bin/bash</string><string>/Library/Application Support/NetMon/update.sh</string></array>
   <key>RunAtLoad</key><true/>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>
   <key>ThrottleInterval</key><integer>600</integer>
-  <key>StandardErrorPath</key><string>/Library/Application Support/Cyril/data/updater.log</string>
+  <key>StandardErrorPath</key><string>/Library/Application Support/NetMon/data/updater.log</string>
 </dict>
 </plist>
 PLIST
 if [ -z "$R" ]; then
   chown root:wheel "$AGENT_PLIST" "$UPDATER_PLIST"; chmod 644 "$AGENT_PLIST" "$UPDATER_PLIST"
+fi
+load_updater() {
   # Never unload the updater job when it is already loaded: this installer is usually running INSIDE that job
   # (update.sh), and unloading it kills this very script before it can load it again, leaving the Mac with no
   # updater at all. Its plist never changes between builds, so loading it once is enough.
+  [ -z "$R" ] || return 0
   if ! launchctl print "system/$UPDATER_LABEL" >/dev/null 2>&1; then
     launchctl bootstrap system "$UPDATER_PLIST" 2>/dev/null \
       || warn "Could not load the updater job; run: sudo launchctl bootstrap system $UPDATER_PLIST"
   fi
-fi
+}
+# While handing over from Cyril the NetMon updater is only loaded once NetMon is confirmed running (below), so that a
+# rolled-back attempt never leaves two updaters about; the old Cyril updater is the retry path until then.
+if [ "$MIGRATING" -eq 0 ]; then load_updater; fi
 ok "Updater job installed (daily ~03:00 and at every start; picks up new builds)"
 
 SINCE="$(date +%s)"; SINCE=$((SINCE - 5))
 if [ -z "$R" ]; then
-  if [ "$UP_TO_DATE" -eq 1 ] && pgrep -x cyril >/dev/null 2>&1; then
+  if [ "$UP_TO_DATE" -eq 1 ] && pgrep -x "$PROC" >/dev/null 2>&1; then
     ok "Agent is already running"
   elif [ "$CONSOLE_UID" -ne 0 ]; then
     launchctl bootout "gui/$CONSOLE_UID" "$AGENT_PLIST" 2>/dev/null || true
@@ -217,26 +305,53 @@ if [ -z "$R" ]; then
     warn "Nobody is logged in at the Mac right now; the agent will start at the next login."
   fi
 fi
+
+# 5b. Hand over from Cyril (step 2 of 2: check NetMon really runs, then switch the old updater off) ------------------
+disable_old_updater() {
+  # Never booted out: this installer may be running inside that very job. Its script is replaced by one that does
+  # nothing (written to a new file and moved over, so a shell still reading the old one is not disturbed) and its
+  # plist is renamed so it does not load again at the next start. Removing both is a later update.
+  if [ -f "$OLD_APPDIR/update.sh" ] && ! grep -q 'handed over to NetMon' "$OLD_APPDIR/update.sh" 2>/dev/null; then
+    printf '#!/bin/bash\n# handed over to NetMon: this old updater does nothing any more\nexit 0\n' > "$OLD_APPDIR/update.sh.new" \
+      && chmod 755 "$OLD_APPDIR/update.sh.new" && mv -f "$OLD_APPDIR/update.sh.new" "$OLD_APPDIR/update.sh"
+  fi
+  if [ -f "$OLD_UPDATER_PLIST" ]; then mv "$OLD_UPDATER_PLIST" "$OLD_UPDATER_PLIST.disabled"; fi
+}
+if [ "$MIGRATING" -eq 1 ]; then
+  if [ -z "$R" ] && [ "$CONSOLE_UID" -ne 0 ]; then
+    UP=0
+    for _ in $(seq 1 15); do sleep 2; if pgrep -x "$PROC" >/dev/null 2>&1; then UP=1; break; fi; done
+    if [ "$UP" -eq 0 ]; then restore_cyril "netmon did not start within 30 seconds"; fail "Moving from Cyril to NetMon did not work. Cyril has been switched back on and is still monitoring this Mac."; fi
+    sleep 5
+    if ! pgrep -x "$PROC" >/dev/null 2>&1; then restore_cyril "netmon exited right after starting"; fail "Moving from Cyril to NetMon did not work. Cyril has been switched back on and is still monitoring this Mac."; fi
+  fi
+  printf 'moved from Cyril at %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MARKER"
+  ok "NetMon is running"
+  load_updater
+  disable_old_updater
+  report_migration 1 "moved from Cyril: old agent stopped and disabled, $COPIED data item(s) copied, NetMon started"
+elif [ -f "$MARKER" ]; then
+  disable_old_updater   # finishes the job if an earlier run stopped half-way; does nothing once done
+fi
 if [ "$UNATTENDED" -eq 1 ]; then
-  [ "$SILENT" -eq 0 ] || echo "Cyril installed. The agent is running; it appears on the dashboard's Install agents page within a minute or two. (The person at the Mac still has to allow Screen Recording once.)"
+  [ "$SILENT" -eq 0 ] || echo "NetMon installed. The agent is running; it appears on the dashboard's Install agents page within a minute or two. (The person at the Mac still has to allow Screen Recording once.)"
   exit 0
 fi
 
 # 6. Permissions: macOS asks the person, an installer cannot grant them -------------------------------------------------
 echo
 echo "  macOS needs the user's OK once. At first run the agent asks for:"
-echo "    - Screen Recording (screenshots and window titles): System Settings > Privacy & Security > Screen Recording > cyril"
-echo "    - Automation for each browser, to read the page address: click OK on the 'cyril wants to control ...' prompt"
+echo "    - Screen Recording (screenshots and window titles): System Settings > Privacy & Security > Screen Recording > netmon"
+echo "    - Automation for each browser, to read the page address: click OK on the 'netmon wants to control ...' prompt"
 if [ -z "$R" ] && [ "$CONSOLE_UID" -ne 0 ]; then
   launchctl asuser "$CONSOLE_UID" open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" 2>/dev/null || true
 fi
 
 # 7. Confirm the server really receives reports --------------------------------------------------------------------------
 say "Waiting for Server Confirmation"
-DEVICE="$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/{print $4}' || true)"
-[ -n "$DEVICE" ] || DEVICE="$(hostname)"
+DEVICE="$(get_device)"
 SEEN=""; EVENTS=0; WITH_APP=0
-WAITS="${CYRIL_TEST_WAITS:-24}"; STEP="${CYRIL_TEST_STEP:-5}"
+WAITS="${NETMON_TEST_WAITS:-${CYRIL_TEST_WAITS:-24}}"; STEP="${NETMON_TEST_STEP:-${CYRIL_TEST_STEP:-5}}"
 i=0
 while [ "$i" -lt "$WAITS" ]; do
   sleep "$STEP"; i=$((i + 1))
@@ -247,7 +362,7 @@ while [ "$i" -lt "$WAITS" ]; do
 done
 diagnostics() {
   echo; echo "  Diagnostics:"
-  if pgrep -x cyril >/dev/null 2>&1; then echo "    cyril is running (pid $(pgrep -x cyril | head -1))"; else echo "    cyril is NOT running"; fi
+  if pgrep -x "$PROC" >/dev/null 2>&1; then echo "    netmon is running (pid $(pgrep -x "$PROC" | head -1))"; else echo "    netmon is NOT running"; fi
   if [ -f "$DATA/agent.log" ]; then echo "    last lines of $DATA/agent.log :"; tail -n 12 "$DATA/agent.log" | sed 's/^/      /'
   else echo "    no agent log yet at $DATA/agent.log (the agent never started)"; fi
   if [ -f "$DATA/crash.log" ]; then echo "    the agent crashed on startup:"; tail -n 15 "$DATA/crash.log" | sed 's/^/      /'; fi

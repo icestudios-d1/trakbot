@@ -1,4 +1,4 @@
-"""The agent's local listener (127.0.0.1:7077): extension reports, and "OMS Ping"."""
+"""The agent's local listener (127.0.0.1:7077): only "OMS Ping" - nothing can be sent to the agent through it."""
 import http.client
 import json
 import threading
@@ -11,12 +11,11 @@ from cyril_agent import main as m
 
 @pytest.fixture
 def door():
-    srv = HTTPServer(("127.0.0.1", 0), m.ExtHandler)
+    srv = HTTPServer(("127.0.0.1", 0), m.LocalDoor)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     m.OMS_ORIGINS.clear()
     m.OMS_ORIGINS.add("https://oms.example.com")
     m.IDENT.update(user="priya", device="DEV-1")
-    m.ext_report = None
     yield srv.server_address[1]
     srv.shutdown()
 
@@ -26,7 +25,11 @@ def call(port, method, path, headers=None, body=None):
     c.request(method, path, body=body, headers=headers or {})
     r = c.getresponse()
     raw = r.read()
-    return r.status, {k.lower(): v for k, v in r.getheaders()}, (json.loads(raw) if raw else None)
+    try:
+        body = json.loads(raw) if raw else None
+    except ValueError:      # the standard library's HTML error page (e.g. 501 for a method the door does not have)
+        body = None
+    return r.status, {k.lower(): v for k, v in r.getheaders()}, body
 
 
 def test_oms_ping_answers_the_allowed_site_with_details(door):
@@ -55,17 +58,16 @@ def test_ping_without_origin_is_for_local_tools_and_checked_for_host(door):
     assert call(door, "GET", "/nope")[0] == 404
 
 
-def test_websites_cannot_feed_the_agent_a_fake_url(door):
+def test_nothing_can_be_sent_to_the_agent_through_the_door(door):
+    """There is no browser extension any more, so there is no POST endpoint: a page address can only come from the
+    browser window itself. Every POST is refused, whoever sends it."""
     pl = json.dumps({"url": "https://fake.example/", "title": "x"})
     js = {"Content-Type": "application/json"}
-    assert call(door, "POST", "/", {**js, "Origin": "https://evil.example"}, pl)[0] == 403
-    assert call(door, "POST", "/", {**js, "Origin": "null"}, pl)[0] == 403                       # sandboxed iframes / no-cors
-    assert call(door, "POST", "/", {"Content-Type": "text/plain"}, pl)[0] == 415                 # the "simple request" trick
-    assert call(door, "POST", "/", {**js, "Host": "attacker.example"}, pl)[0] == 403
-    assert m.ext_report is None
-    st, h, _ = call(door, "POST", "/", {**js, "Origin": "chrome-extension://abcdef"}, pl)        # the real extension
-    assert st == 204 and "access-control-allow-origin" not in h and m.ext_report["url"] == "https://fake.example/"
-    # preflight from a website is not granted either
+    for h in ({**js, "Origin": "https://evil.example"}, {**js, "Origin": "chrome-extension://abcdef"}, js,
+              {"Content-Type": "text/plain"}):
+        assert call(door, "POST", "/", h, pl)[0] == 501
+    assert not hasattr(m, "ext_report")
+    # a preflight from a website is not granted either
     st, h, _ = call(door, "OPTIONS", "/", {"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"})
     assert "access-control-allow-origin" not in h
 

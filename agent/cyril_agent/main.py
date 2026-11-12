@@ -16,7 +16,7 @@ import urllib.request
 from urllib.parse import quote
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from .core import (Aggregator, ShotSpool, Spool, browser_url, classify_status, data_dir, deliver_events, is_chromium_browser,
+from .core import (Aggregator, ShotSpool, Spool, classify_status, data_dir, deliver_events, is_chromium_browser,
                    is_private, load_config, normalize_url, read_build, sanitize_event, setup_logging, write_health)
 from .platform.active_window import get_active_window, idle_seconds
 from .seal import make_sealer
@@ -29,7 +29,6 @@ SEAL = lambda obj: obj   # noqa: E731  set in main(): seals everything that is q
 DEFAULT_OMS_ORIGINS = ("https://office.icestudios.in",)
 OMS_ORIGINS: set = set(DEFAULT_OMS_ORIGINS)
 IDENT = {"user": "", "device": ""}
-ext_report = None  # latest {"url","title","at"} from the browser extension
 log = logging.getLogger("cyril-agent")
 HEALTH_PATH: str | None = None   # set in main(): read by the machine-level updater, which fetches a fix if this stays red
 SHOT_SPOOL: ShotSpool | None = None   # set in main(): screenshots waiting for the server to come back
@@ -37,7 +36,7 @@ LATEST = {"app": "", "title": "", "idle": False}   # what is in front right now 
 
 # Health counters sent to the server after every flush, so the dashboard can show WHY websites or screenshots are
 # missing on a given PC without anyone reading logs on it.
-STATUS = {"version": VERSION, "platform": {"win32": "Windows", "darwin": "Mac"}.get(sys.platform, sys.platform), "session": None, "browser_samples": 0, "url_extension": 0, "url_uia": 0,
+STATUS = {"version": VERSION, "platform": {"win32": "Windows", "darwin": "Mac"}.get(sys.platform, sys.platform), "session": None, "browser_samples": 0, "url_uia": 0,
           "uia_not_found": 0, "uia_error": "", "shots_ok": 0, "shots_failed": 0, "shots_queued": 0, "last_error": "",
           "events_ok": 0, "events_dropped": 0, "events_queued": 0, "events_last_ok": 0, "events_error": "", "events_failing_since": 0}
 
@@ -72,18 +71,16 @@ def device_id() -> str:
     return platform.node()  # fallback: hostname
 
 
-EXT_SCHEMES = ("chrome-extension://", "moz-extension://", "safari-web-extension://")
 OMS_PING_PATH = "/oms/ping"
 
 
-class ExtHandler(BaseHTTPRequestHandler):
-    """The agent's only local door, bound to 127.0.0.1. Two things come in:
-    - POST /          the browser extension reporting the active tab's address. ONLY a browser extension may do this:
-                      a request carrying a web page's Origin is refused, so no website can feed the agent a made-up
-                      URL (this used to answer `Access-Control-Allow-Origin: *`, i.e. any page could).
-    - GET /oms/ping   "OMS Ping": lets the company's sign-in site ask 'is Cyril on this computer?'. Only origins the
+class LocalDoor(BaseHTTPRequestHandler):
+    """The agent's only local door, bound to 127.0.0.1. One thing comes in:
+    - GET /oms/ping   "OMS Ping": lets the company's sign-in site ask 'is the agent on this computer?'. Only origins the
                       admin listed (https://office.icestudios.in built in, plus server setting CYRIL_OMS_ORIGINS or
                       "oms_origins" in config.json) can read the answer.
+    Nothing can be sent TO the agent through it: page addresses are read from the browser window itself (see
+    platform/browser_url.py), so there is no browser extension and no POST endpoint. Any POST gets 501.
     Requests whose Host is not 127.0.0.1/localhost are refused (DNS-rebinding guard)."""
 
     def _origin(self) -> str:
@@ -106,20 +103,6 @@ class ExtHandler(BaseHTTPRequestHandler):
         self.end_headers()
         if data:
             self.wfile.write(data)
-
-    def do_POST(self):
-        global ext_report
-        o = self._origin()
-        if not self._host_ok() or (o and not o.startswith(EXT_SCHEMES)):
-            return self._send(403)
-        if not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
-            return self._send(415)
-        try:
-            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)))[:8192])
-            ext_report = {"url": str(body["url"])[:2048], "title": str(body.get("title", ""))[:512], "at": time.time()}
-        except Exception:
-            return self._send(400)
-        self._send(204)
 
     def do_OPTIONS(self):
         o = self._origin()
@@ -260,7 +243,7 @@ def send_screenshot(server: str, key: str, user: str, device: str, ts: float, ap
             err = "Screen Recording not allowed: macOS returned a blank screen"
             STATUS["shots_failed"] += 1
             if STATUS["last_error"] != err:
-                log.warning("%s (System Settings > Privacy & Security > Screen Recording > cyril)", err)
+                log.warning("%s (System Settings > Privacy & Security > Screen Recording > netmon)", err)
             STATUS["last_error"] = err
             if command_id is not None:
                 _post(server, "/api/agent/command-result", key, {"device": device, "id": command_id, "ok": False, "error": err})
@@ -363,7 +346,7 @@ def is_url_browser(app: str) -> bool:
 
 
 SCREEN = {"content_seen": False}   # macOS: has a screenshot ever shown real screen content in this run?
-MAC_INSTALL_DIR = "/Library/Application Support/Cyril/"
+MAC_INSTALL_DIR = "/Library/Application Support/NetMon/"
 RESTART_FOR_PERMISSION_AFTER = 600.0   # seconds
 
 
@@ -413,7 +396,7 @@ def main():
     ap.add_argument("--interval", type=float, default=5.0)
     ap.add_argument("--idle-after", type=float, default=120.0)
     ap.add_argument("--flush", type=float, default=60.0)
-    ap.add_argument("--ext-port", type=int, default=7077)
+    ap.add_argument("--local-port", "--ext-port", dest="local_port", type=int, default=7077)
     ap.add_argument("--screenshot-every", type=float, default=60.0, help="seconds between shots while the app in front keeps changing (the server can override this)")
     ap.add_argument("--screenshot-stable-every", type=float, default=180.0, help="seconds between shots while the same app stays in front (the server can override this)")
     ap.add_argument("--no-screenshots", action="store_true")
@@ -461,7 +444,7 @@ def main():
     STATUS["shots_queued"] = SHOT_SPOOL.count()
     setup_logging(a.log or os.path.join(ddir, "agent.log"))
 
-    srv = HTTPServer(("127.0.0.1", a.ext_port), ExtHandler)
+    srv = HTTPServer(("127.0.0.1", a.local_port), LocalDoor)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
     sess = windows_session_id()
@@ -479,7 +462,7 @@ def main():
         refresh_permissions()
         if STATUS.get("permissions", {}).get("screen_recording") is False:
             log.warning("macOS Screen Recording is not granted: screenshots and window titles will be blank until it is "
-                        "(System Settings > Privacy & Security > Screen Recording > cyril). Asking now.")
+                        "(System Settings > Privacy & Security > Screen Recording > netmon). Asking now.")
             macos.request_screen_recording()
 
     agg, spool, last_flush = Aggregator(), Spool(spool_path), time.time()
@@ -517,17 +500,14 @@ def main():
                 log.info("foreground window visible again")
             no_window = 0
         w = w or {"app": "", "title": ""}
-        url = browser_url(w["app"], ext_report, now)
+        url = ""
         mac_private = False
         if is_url_browser(w["app"]) and not idle and not is_private(w["title"]):
             STATUS["browser_samples"] += 1
+            url, mac_private = read_browser_url(w)   # read from the browser window itself; no extension
             if url:
-                STATUS["url_extension"] += 1
-            else:
-                url, mac_private = read_browser_url(w)   # no extension needed
-                if url:
-                    STATUS["url_uia"] += 1
-        title = ext_report["title"] if url and ext_report and not w["title"] else w["title"]
+                STATUS["url_uia"] += 1
+        title = w["title"]
 
         private = is_private(title) or mac_private
         if private:

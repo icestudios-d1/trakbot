@@ -8,11 +8,8 @@ import re
 import time
 from dataclasses import dataclass, field
 
-BROWSERS = ("chrome", "chromium", "firefox", "msedge", "edge", "brave", "opera", "vivaldi", "safari", "arc")
-
-# Browsers put this in the window title in private mode; the extension never
-# gets a URL out of such a window (that's the browser's own privacy boundary,
-# and we don't try to work around it — see shots.py / README).
+# Browsers put this in the window title in private mode. We never store a URL or title from such a window
+# (that's the browser's own privacy boundary, and we don't try to work around it - see shots.py / README).
 PRIVATE_TITLE_RE = re.compile(r"\(incognito\)|\(inprivate\)|private browsing|private window|private/incognito", re.I)
 
 
@@ -40,12 +37,6 @@ class Aggregator:
         out = self.events[:-1] if keep_open else self.events
         self.events = self.events[-1:] if keep_open else []
         return [{k: v for k, v in e.items() if k != "_k"} for e in out]
-
-
-def browser_url(app: str, ext_report: dict | None, now: float, max_age: float = 20.0) -> str:
-    if ext_report and any(b in app.lower() for b in BROWSERS) and now - ext_report["at"] <= max_age:
-        return ext_report["url"]
-    return ""
 
 
 class Spool:
@@ -303,7 +294,7 @@ def load_config(path: str | None) -> dict:
 
 
 def data_dir(config_path: str | None) -> str:
-    """Where spool + log live. Next to the installer's config (ProgramData\\Cyril\\data, writable by the
+    """Where spool + log live. Next to the installer's config (ProgramData\\NetMon\\data, writable by the
     logged-in user the agent runs as); otherwise the home directory (running by hand)."""
     if config_path:
         d = os.path.join(os.path.dirname(os.path.abspath(config_path)), "data")
