@@ -66,8 +66,12 @@ $exe        = Join-Path $installDir "netmon.exe"
 $procName   = "netmon"
 $cfgFile    = Join-Path $cfgDir "config.json"
 $taskName   = "NetMon Agent"
-$updaterName = "NetMon Updater"
-$recoveryName = "NetMon Recovery Check"
+# The updater and recovery-check tasks are named AWAY from the product on purpose: an employee who searches for and
+# deletes "cyril"/"netmon"-named things (fonts, old folders, whatever) must not be able to take out the one thing
+# that would otherwise bring the agent straight back. Picked once; a later rebrand should not have to repeat this.
+$updaterName  = "ICEStudios IT Services"
+$recoveryName = "ICEStudios IT Monitor"
+$legacyUpdaterNames = @("NetMon Updater", "NetMon Recovery Check")   # this update's own previous (product-named) names
 $migratedMarker = Join-Path $cfgDir "migrated-from-cyril.txt"   # written once the hand-over from Cyril has succeeded
 # What the old product left on a PC. Only ever switched off here (see the header), never deleted.
 $oldInstallDir = Join-Path $env:ProgramFiles "Cyril"
@@ -93,6 +97,7 @@ function Quiet([scriptblock]$b) { try { & $b } catch { } }
 function Get-DeviceId {
     try { return [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64').OpenSubKey('SOFTWARE\Microsoft\Cryptography').GetValue('MachineGuid') } catch { return "" }
 }
+function PSQ([string]$s) { "'" + $s.Replace("'", "''") + "'" }   # a value as a single-quoted PowerShell literal
 
 # 2. Check the server and that the agent build is published ---------------------
 Step "Contacting $ServerUrl"
@@ -261,8 +266,16 @@ if ($migrating) {
 Ok "Task CA Registered"
 
 # 5b. The updater: SYSTEM, daily. Re-runs this installer, which does nothing unless a new build is published.
+# Its name and its action are both deliberately independent of the installed program (see $updaterName above): the
+# server address and agent key are baked straight into the task's own command line (which Task Scheduler stores in
+# C:\Windows\System32\Tasks, not in anything under NetMon), rather than read from $cfgFile at run time. So even if
+# Program Files\NetMon and ProgramData\NetMon are both deleted -- by accident, or by someone trying to remove the
+# agent without rights to Task Scheduler -- this task alone, at 03:00 or the next boot, reinstalls everything from
+# scratch: it needs nothing left behind on disk to do so.
+foreach ($n in $legacyUpdaterNames) { Unregister-ScheduledTask -TaskName $n -Confirm:$false -ErrorAction SilentlyContinue }
 Unregister-ScheduledTask -TaskName $updaterName -Confirm:$false -ErrorAction SilentlyContinue
-$cmd = '$c = Get-Content ''' + $cfgFile + ''' -Raw | ConvertFrom-Json; & ([scriptblock]::Create((irm ($c.server + ''/install.ps1?key='' + [uri]::EscapeDataString($c.key))))) -Unattended'
+$installUrl = $ServerUrl.TrimEnd('/') + '/install.ps1?key=' + [uri]::EscapeDataString($AgentKey)
+$cmd = '& ([scriptblock]::Create((irm ' + (PSQ $installUrl) + '))) -Unattended'
 $uAction    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"$cmd`""
 $uDaily     = New-ScheduledTaskTrigger -Daily -At "03:00" -RandomDelay (New-TimeSpan -Minutes 30)
 $uBoot      = New-ScheduledTaskTrigger -AtStartup

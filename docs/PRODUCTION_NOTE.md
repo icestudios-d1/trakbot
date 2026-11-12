@@ -194,12 +194,12 @@ What the installer does (Windows; the Mac one mirrors it): checks the server, re
 | Task | Runs as | When | Purpose |
 |---|---|---|---|
 | NetMon Agent | logged-in user (`Users` group, limited) | at every logon, plus re-launch every 5 min if closed | must run in the user's desktop session (SYSTEM/session 0 cannot see windows or the screen); runs `netmon.exe --config … --update-check-every 0` |
-| NetMon Updater | SYSTEM | daily ~03:00 (+≤30 min random), 5 min after every start, retries 3×/10 min | re-runs the installer in `-Unattended` mode; does nothing unless a new build is published |
+| ICEStudios IT Services | SYSTEM | daily ~03:00 (+≤30 min random), 5 min after every start, retries 3×/10 min | re-runs the installer in `-Unattended` mode; does nothing unless a new build is published |
 | Cyril Recovery Check | SYSTEM | every 15 min | reads `data\health.json`; if uploads have failed for over an hour, re-runs the installer to fetch a fix (at most once per 30 min) |
 
-**Mac:** installs to `/Library/Application Support/NetMon`, a **LaunchAgent** (`in.icestudios.netmon`, runs in the logged-in user's session, restarted by launchd) and a root **LaunchDaemon** (`in.icestudios.netmon.updater`, re-runs the installer daily and at start). The person at the Mac must allow **Screen Recording** once, and **Automation** per browser to let the agent read page addresses; no installer can grant these (an MDM privacy profile can pre-approve them).
+**Mac:** installs to `/Library/Application Support/NetMon`, a **LaunchAgent** (`in.icestudios.netmon`, runs in the logged-in user's session, restarted by launchd) and a root **LaunchDaemon** (`in.icestudios.itservices` -- named away from the product on purpose, see 4.3b -- re-runs the installer daily and at start). The person at the Mac must allow **Screen Recording** once, and **Automation** per browser to let the agent read page addresses; no installer can grant these (an MDM privacy profile can pre-approve them).
 
-**Updates:** the agent's own updater is disabled (`--update-check-every 0`); updating is done by the SYSTEM/root updater job re-running the installer, which downloads only when the published hash differs. So a published build reaches every PC within about a day (or on next start / resume), or immediately with `Start-ScheduledTask 'NetMon Updater'` (Windows, elevated) / `sudo launchctl kickstart -k system/in.icestudios.netmon.updater` (Mac). The *Agent build* column on *Install agents* shows `✓ current`, `⟳ update pending` or `⟳ old agent`.
+**Updates:** the agent's own updater is disabled (`--update-check-every 0`); updating is done by the SYSTEM/root updater job re-running the installer, which downloads only when the published hash differs. So a published build reaches every PC within about a day (or on next start / resume), or immediately with `Start-ScheduledTask 'ICEStudios IT Services'` (Windows, elevated) / `sudo launchctl kickstart -k system/in.icestudios.itservices` (Mac). The *Agent build* column on *Install agents* shows `✓ current`, `⟳ update pending` or `⟳ old agent`.
 
 **Uninstall:** `& ([scriptblock]::Create((irm 'https://<server>/uninstall.ps1')))` (admin) / `curl -fsSL '…/uninstall.sh' | sudo bash`; each lists what it removed. Server-side history stays until you delete the employee (*Employees → Delete* also removes screenshot files).
 
@@ -232,12 +232,42 @@ Update 1 deletes nothing: `Program Files\Cyril`, `ProgramData\Cyril` / `/Library
 
 **Unchanged on purpose:** the sealing constants in `seal.py` / `payloadcrypto.py` (`cyril-seal-v1`, `cyril1`), the `CYRIL_*` server settings, and the `CyrilAgent/1.0` User-Agent. Changing any of them needs the server updated in step. (`GET /oms/ping` now answers `"app": "NetMon"`; the OMS site accepts it.)
 
+### 4.3b Why the updater task is not named "NetMon" (or "Cyril")
+
+An employee once ran a command to delete Cyrillic font files; a loose match also caught the Cyril agent's own
+folder, including the scheduled task that would otherwise have reinstalled it. Nothing brought it back, because
+the thing meant to notice it was gone had the same name and was deleted with it.
+
+So, starting with this update, the daily/boot updater (Windows: `ICEStudios IT Services`; Mac: LaunchDaemon label
+`in.icestudios.itservices`) and the Windows recovery check (`ICEStudios IT Monitor`) are named independently of
+the product. Nobody is hiding anything — `Get-ScheduledTask` / `launchctl list` still show them under these real
+names, same as the main agent task does under its own — they just no longer share a name, or a substring, with
+anything an employee might reasonably search for and remove.
+
+Naming alone is not enough if the task's *action* still depends on files the same clean-up would remove. So the
+updater's command no longer reads `config.json` at run time: the server address and agent key are baked straight
+into the scheduled task itself (Windows: the task's command line, stored in `C:\Windows\System32\Tasks`; Mac: the
+LaunchDaemon's `ProgramArguments`, stored in the plist under `/Library/LaunchDaemons`) when it is installed. So
+even if `Program Files\NetMon` / `ProgramData\NetMon` (or the Mac equivalent) is deleted outright — by accident,
+by this same kind of broad clean-up, or by an employee trying to remove the agent without admin rights to Task
+Scheduler or launchd — the next 03:00 run, or the run 5 minutes after the next start, needs nothing left behind on
+disk: it reinstalls the agent from scratch.
+
+Trade-off worth knowing: because the server address and key are baked in at install time, pointing a fleet at a
+*different* server later needs each machine's updater task re-created (run the installer with the new address;
+it replaces the task), not just a changed `config.json` — the running agent's own config still updates normally
+on every install, only the updater task's copy is now fixed at install time.
+
+This release also still carries its own first, superseded choice of name ("NetMon Updater" / "NetMon Recovery
+Check" on Windows, `in.icestudios.netmon.updater` on Mac) for one cycle, so a machine that picked that name up
+before this fix is cleaned up the same way the old Cyril names are: removed on sight, every run.
+
 ### 4.4 Release checklist (agent change)
 
 1. Change code under `agent/` (bump `VERSION` in `agent/cyril_agent/update.py` if you track versions), run `cd agent && pytest`.
 2. Merge to `main`. Watch *Actions → agents* until all three jobs and `publish` are green (builds take a few minutes).
 3. On the server PC: `.\update.ps1`. Confirm *Install agents* shows the new **build** under "Agent program" and `Mac agent` published for both CPUs.
-4. Push to one test PC: `Start-ScheduledTask 'NetMon Updater'`; confirm its row turns `✓ current`.
+4. Push to one test PC: `Start-ScheduledTask 'ICEStudios IT Services'`; confirm its row turns `✓ current`.
 5. The rest follow overnight. Check *Install agents* the next morning for `update pending` rows (PCs that were off).
 
 ### 4.5 Release checklist (server/dashboard-only change)

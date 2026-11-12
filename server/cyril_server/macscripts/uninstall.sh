@@ -4,16 +4,18 @@
 #
 #   curl -fsSL 'https://your-server.example.com/uninstall.sh' | sudo bash
 #
-# Removes: the agent job (LaunchAgent), the daily updater job (LaunchDaemon), the running process and
-# /Library/Application Support/NetMon (program, config + key, log, queued data), and the same for the old Cyril
-# names. The macOS permissions the person granted (Screen Recording, Automation) stay listed in System Settings;
-# they do nothing without the program.
-# Data already stored on the server is not touched.
+# Removes: the agent job (LaunchAgent), the daily updater job (LaunchDaemon; named "in.icestudios.itservices",
+# deliberately not "netmon", so a clean-up of product-named things can't disable the one job that would otherwise
+# bring the agent back -- this one is removed explicitly, by that exact label, same as every other), the running
+# process and /Library/Application Support/NetMon (program, config + key, log, queued data), and the same for
+# this release's earlier updater label and for the old Cyril names. The macOS permissions the person granted
+# (Screen Recording, Automation) stay listed in System Settings; they do nothing without the program.
+# Data already stored on the server is not touched. Also removes /Library/Logs/icestudios-updater.log.
 set -uo pipefail
 R="${NETMON_TEST_ROOT:-${CYRIL_TEST_ROOT:-}}"
 APPDIRS=("$R/Library/Application Support/NetMon" "$R/Library/Application Support/Cyril")
 AGENT_LABELS=("in.icestudios.netmon" "in.icestudios.cyril")
-UPDATER_LABELS=("in.icestudios.netmon.updater" "in.icestudios.cyril.updater")
+UPDATER_LABELS=("in.icestudios.itservices" "in.icestudios.netmon.updater" "in.icestudios.cyril.updater")
 # the plists, and the ".disabled" copies a hand-over from Cyril leaves behind
 PLISTS=()
 for l in "${AGENT_LABELS[@]}"; do PLISTS+=("$R/Library/LaunchAgents/$l.plist" "$R/Library/LaunchAgents/$l.plist.disabled"); done
@@ -49,6 +51,8 @@ fi
 for APPDIR in "${APPDIRS[@]}"; do
   if [ -d "$APPDIR" ]; then rm -rf "$APPDIR" && row "$APPDIR" ok "deleted" || row "$APPDIR" bad "could not delete"; else row "$APPDIR" ok "was not present"; fi
 done
+LOG="$R/Library/Logs/icestudios-updater.log"      # the updater job's own log, kept outside the deletable app folder
+if [ -f "$LOG" ]; then rm -f "$LOG" && row "$LOG" ok "deleted" || row "$LOG" bad "could not delete"; else row "$LOG" ok "was not present"; fi
 
 echo
 if [ "$FAILURES" -gt 0 ]; then printf '\033[33mNetMon agent partly removed: %s item(s) need attention (see above).\033[0m\n' "$FAILURES"

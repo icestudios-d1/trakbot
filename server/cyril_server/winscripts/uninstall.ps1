@@ -5,11 +5,14 @@ resistance).
 
   & ([scriptblock]::Create((irm 'https://your-server.example.com/uninstall.ps1')))
 
-Removes: the "NetMon Agent", "NetMon Updater" and "NetMon Recovery Check" scheduled tasks (and the same three
-under their old "Cyril" names), the running process, C:\Program Files\NetMon, C:\ProgramData\NetMon (config,
-key, agent log and spool) and the old C:\Program Files\Cyril / C:\ProgramData\Cyril, any leftover spool/log
-files from older versions, and the Incognito setting if an older installer had disabled it. Data already stored
-on the server is not touched.
+Removes: the "NetMon Agent" scheduled task, the "ICEStudios IT Services" updater and "ICEStudios IT Monitor"
+recovery check (the updater and recovery check are named away from the product on purpose, so an unrelated
+clean-up can't disable the one thing that would otherwise reinstall it), every earlier name this product has
+used for them ("NetMon Updater"/"NetMon Recovery Check", and the old "Cyril Agent"/"Cyril Updater"/"Cyril
+Recovery Check"), the running process, C:\Program Files\NetMon, C:\ProgramData\NetMon (config, key, agent log
+and spool) and the old C:\Program Files\Cyril / C:\ProgramData\Cyril, any leftover spool/log files from older
+versions, and the Incognito setting if an older installer had disabled it. Data already stored on the server
+is not touched.
 #>
 $ErrorActionPreference = "Stop"
 
@@ -33,7 +36,7 @@ $regKey     = "HKLM:\SOFTWARE\Cyril"
 $failures   = 0
 
 # Tasks first, so nothing can restart the process we are about to stop.
-foreach ($t in @("NetMon Agent", "NetMon Updater", "NetMon Recovery Check", "Cyril Agent", "Cyril Updater", "Cyril Recovery Check")) {
+foreach ($t in @("NetMon Agent", "ICEStudios IT Services", "ICEStudios IT Monitor", "NetMon Updater", "NetMon Recovery Check", "Cyril Agent", "Cyril Updater", "Cyril Recovery Check")) {
     if (Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue) {
         try { Stop-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue
               Unregister-ScheduledTask -TaskName $t -Confirm:$false

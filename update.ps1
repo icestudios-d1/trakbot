@@ -125,5 +125,5 @@ if (-not $DryRun) {
 }
 Write-Host ""
 Info "PCs pick up a new agent by themselves (daily ~03:00 and 5 minutes after every start)."
-Info "To push it to one PC right now, on that PC (elevated): Start-ScheduledTask 'NetMon Updater'"
+Info "To push it to one PC right now, on that PC (elevated): Start-ScheduledTask 'ICEStudios IT Services'"
 Info "Macs are built by GitHub Actions too (no Mac needed); ./mac/build.sh is only for building one by hand."

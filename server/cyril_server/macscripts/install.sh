@@ -49,9 +49,15 @@ PROC="netmon"
 CFG="$APPDIR/config.json"
 DATA="$APPDIR/data"
 AGENT_LABEL="in.icestudios.netmon"
-UPDATER_LABEL="in.icestudios.netmon.updater"
+# The updater job's label is deliberately NOT "netmon": an employee who searches for and removes "cyril"/"netmon"-
+# named things (fonts, old folders, whatever) must not be able to take out the one job that would otherwise bring
+# the agent straight back. "itservices" replaces this product's own first choice, "in.icestudios.netmon.updater"
+# (one release only -- cleaned up below like any other legacy label).
+UPDATER_LABEL="in.icestudios.itservices"
+LEGACY_UPDATER_LABEL="in.icestudios.netmon.updater"
 AGENT_PLIST="$R/Library/LaunchAgents/$AGENT_LABEL.plist"
 UPDATER_PLIST="$R/Library/LaunchDaemons/$UPDATER_LABEL.plist"
+LEGACY_UPDATER_PLIST="$R/Library/LaunchDaemons/$LEGACY_UPDATER_LABEL.plist"
 MARKER="$APPDIR/migrated-from-cyril"      # written once the hand-over from Cyril has succeeded
 # What the old product left on a Mac. Only ever switched off here (see the header), never deleted.
 OLD_APPDIR="$R/Library/Application Support/Cyril"
@@ -229,10 +235,12 @@ restore_cyril() {   # NetMon did not come up: switch the old agent straight back
   report_migration 0 "rolled back to Cyril: $1"
 }
 
-# updater script: re-runs this installer using the saved address and key
+# update.sh: for a person to run by hand ("sudo bash '/Library/Application Support/NetMon/update.sh'") if they want
+# an update right now. The scheduled updater job itself does NOT call this any more (see the plist below): its own
+# command is self-contained, so it survives this very folder being deleted, which this script cannot.
 cat > "$APPDIR/update.sh" <<'UPD'
 #!/bin/bash
-# Run by the NetMon updater job (root). Does nothing unless a new build is published.
+# For a person to run by hand. Does nothing unless a new build is published.
 CFG="/Library/Application Support/NetMon/config.json"
 [ -f "${NETMON_TEST_ROOT:-${CYRIL_TEST_ROOT:-}}$CFG" ] && CFG="${NETMON_TEST_ROOT:-${CYRIL_TEST_ROOT:-}}$CFG"
 SERVER="$(sed -n 's/.*"server" *: *"\([^"]*\)".*/\1/p' "$CFG" | head -1)"
@@ -242,8 +250,10 @@ curl -fsS -m 60 "$SERVER/install.sh?key=$KEY" | bash -s -- --unattended
 UPD
 chmod 755 "$APPDIR/update.sh"
 
+esc_xml() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+
 # 5. launchd jobs ---------------------------------------------------------------------------------------------------------
-mkdir -p "$(dirname "$AGENT_PLIST")" "$(dirname "$UPDATER_PLIST")"
+mkdir -p "$(dirname "$AGENT_PLIST")" "$(dirname "$UPDATER_PLIST")" "/Library/Logs"
 cat > "$AGENT_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -264,6 +274,13 @@ cat > "$AGENT_PLIST" <<PLIST
 </dict>
 </plist>
 PLIST
+# Self-contained on purpose (see $UPDATER_LABEL above): the server address and agent key are baked straight into
+# this job's own argv, which launchd stores in the plist itself (under /Library/LaunchDaemons, never under NetMon),
+# instead of being read from $CFG at run time. So even if /Library/Application Support/NetMon is deleted entirely --
+# by accident, or by someone trying to remove the agent without root -- this job alone, at 03:00 or the next start,
+# reinstalls everything from scratch: it needs nothing left behind on disk to do so. Passed as separate array
+# elements (not interpolated into the script text), so no shell-quoting of the URL or key is needed, only XML
+# escaping; "$1"/"$2" inside the script stay literal (the backslash stops THIS heredoc from expanding them now).
 cat > "$UPDATER_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -271,21 +288,32 @@ cat > "$UPDATER_PLIST" <<PLIST
 <dict>
   <key>Label</key><string>$UPDATER_LABEL</string>
   <key>ProgramArguments</key>
-  <array><string>/bin/bash</string><string>/Library/Application Support/NetMon/update.sh</string></array>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>curl -fsS -m 60 "\$1/install.sh?key=\$2" | bash -s -- --unattended</string>
+    <string>updater</string>
+    <string>$(esc_xml "$SERVER_URL")</string>
+    <string>$(esc_xml "$AGENT_KEY")</string>
+  </array>
   <key>RunAtLoad</key><true/>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>
   <key>ThrottleInterval</key><integer>600</integer>
-  <key>StandardErrorPath</key><string>/Library/Application Support/NetMon/data/updater.log</string>
+  <key>StandardErrorPath</key><string>/Library/Logs/icestudios-updater.log</string>
 </dict>
 </plist>
 PLIST
 if [ -z "$R" ]; then
   chown root:wheel "$AGENT_PLIST" "$UPDATER_PLIST"; chmod 644 "$AGENT_PLIST" "$UPDATER_PLIST"
 fi
+# This release's own previous (product-named) updater label: unload and remove it before loading the new one.
+if [ -z "$R" ]; then launchctl bootout "system/$LEGACY_UPDATER_LABEL" 2>/dev/null || true; fi
+rm -f "$LEGACY_UPDATER_PLIST"
 load_updater() {
-  # Never unload the updater job when it is already loaded: this installer is usually running INSIDE that job
-  # (update.sh), and unloading it kills this very script before it can load it again, leaving the Mac with no
-  # updater at all. Its plist never changes between builds, so loading it once is enough.
+  # Never unload the (new-named) updater job when it is already loaded: this installer can run INSIDE that job,
+  # and unloading it kills this very script before it can load it again, leaving the Mac with no updater at all.
+  # Its plist only changes with a new SERVER_URL/AGENT_KEY, which does not happen on a routine update, so loading
+  # it once is enough.
   [ -z "$R" ] || return 0
   if ! launchctl print "system/$UPDATER_LABEL" >/dev/null 2>&1; then
     launchctl bootstrap system "$UPDATER_PLIST" 2>/dev/null \

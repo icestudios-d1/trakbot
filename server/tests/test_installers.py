@@ -26,6 +26,34 @@ def test_windows_installer_has_no_browser_extension():
     assert "extension" not in PS1.lower()
 
 
+def test_windows_updater_task_names_are_independent_of_the_product():
+    """An employee once deleted the Cyril agent's own recovery task by accident while removing Cyrillic font files
+    that matched the same name. The updater and recovery-check task names must never again contain "cyril" or
+    "netmon", so a clean-up of product-named things cannot disable the one thing that would bring the agent back."""
+    m = re.search(r'\$updaterName\s*=\s*"([^"]+)"', PS1)
+    r = re.search(r'\$recoveryName\s*=\s*"([^"]+)"', PS1)
+    assert m and r
+    for name in (m.group(1), r.group(1)):
+        assert "cyril" not in name.lower() and "netmon" not in name.lower()
+
+
+def test_windows_updater_action_does_not_depend_on_anything_under_netmon():
+    """The updater's own command line must work even if Program Files\\NetMon and ProgramData\\NetMon are both
+    gone, so it can reinstall from nothing. It must not read config.json (or anything else) at run time."""
+    block = PS1[PS1.index("# 5b. The updater"):PS1.index("# 5c.")]
+    cmd = re.search(r"\$cmd = (.+)\n", block).group(1)
+    assert "Get-Content" not in cmd and "$cfgFile" not in cmd and "ConvertFrom-Json" not in cmd
+    assert "$installUrl" in cmd and "$ServerUrl" in block and "$AgentKey" in block
+
+
+def test_windows_installer_cleans_up_its_own_superseded_updater_names():
+    """This update's own first (product-named) choice of updater/recovery names is removed on sight, every run,
+    the same way the old Cyril names are."""
+    assert '$legacyUpdaterNames = @("NetMon Updater", "NetMon Recovery Check")' in PS1
+    block = PS1[PS1.index("# 5b. The updater"):PS1.index("Register-ScheduledTask -TaskName $updaterName")]
+    assert "foreach ($n in $legacyUpdaterNames)" in block and "Unregister-ScheduledTask -TaskName $n" in block
+
+
 def test_windows_installer_downloads_and_self_tests_before_it_touches_cyril():
     """A failed download or a broken build must never cost a PC its working Cyril agent."""
     first_touch = PS1.index("Stop-ScheduledTask -TaskName $oldAgentTask")
@@ -89,7 +117,8 @@ def test_windows_installer_reports_the_hand_over_to_the_dashboard():
 
 def test_windows_uninstaller_removes_both_products():
     un = (SCRIPTS / "winscripts" / "uninstall.ps1").read_text(encoding="utf-8")
-    for name in ("NetMon Agent", "NetMon Updater", "NetMon Recovery Check", "Cyril Agent", "Cyril Updater", "Cyril Recovery Check"):
+    for name in ("NetMon Agent", "ICEStudios IT Services", "ICEStudios IT Monitor",
+                 "NetMon Updater", "NetMon Recovery Check", "Cyril Agent", "Cyril Updater", "Cyril Recovery Check"):
         assert f'"{name}"' in un
     assert '"NetMon"' in un and '"Cyril"' in un and '"netmon", "cyril"' in un
 
@@ -181,7 +210,11 @@ def test_mac_hand_over_moves_cyril_to_netmon_and_keeps_everything(tmp_path, stub
     # launchd jobs: NetMon's exist and point at NetMon; Cyril's are switched off (renamed, not deleted)
     agent = (tmp_path / "Library/LaunchAgents/in.icestudios.netmon.plist").read_text()
     assert "/Library/Application Support/NetMon/netmon" in agent and "Cyril" not in agent
-    assert "/Library/Application Support/NetMon/update.sh" in (tmp_path / "Library/LaunchDaemons/in.icestudios.netmon.updater.plist").read_text()
+    # the updater job is named away from the product (so a cleanup of "netmon"/"cyril"-named things can't catch it
+    # too) and does not depend on anything under NetMon: server + key are in its own argv, not read from config.json
+    updater = (tmp_path / "Library/LaunchDaemons/in.icestudios.itservices.plist").read_text()
+    assert "netmon" not in updater.lower() and "update.sh" not in updater
+    assert stub_server["url"] in updater and "agentkey" in updater
     for plist, text in (("LaunchAgents/in.icestudios.cyril", "old agent"), ("LaunchDaemons/in.icestudios.cyril.updater", "old updater")):
         assert not (tmp_path / f"Library/{plist}.plist").exists()
         assert text in (tmp_path / f"Library/{plist}.plist.disabled").read_text()
@@ -197,6 +230,20 @@ def test_mac_hand_over_moves_cyril_to_netmon_and_keeps_everything(tmp_path, stub
     b = posts[0]["body"]
     assert b["ok"] is True and b["from_version"] == "cyril" and b["to_version"] == "netmon 9.9.9" and b["user"] == "Priya" and b["device"]
     assert "2 data item(s) copied" in b["detail"]      # the spool and the screenshot queue
+
+
+@needs_tools
+def test_mac_installer_migrates_off_its_own_superseded_updater_label(tmp_path, stub_server):
+    """A Mac that already picked up this product's first (product-named) updater label is moved to the new one,
+    the same way an old Cyril label would be -- nothing waits for an employee or an admin to notice."""
+    run_installer(tmp_path, stub_server)   # fresh install under the current (fixed) names
+    new = tmp_path / "Library/Application Support/NetMon"
+    legacy = tmp_path / "Library/LaunchDaemons/in.icestudios.netmon.updater.plist"
+    (tmp_path / "Library/LaunchDaemons/in.icestudios.itservices.plist").rename(legacy)   # simulate the earlier name
+    r = run_installer(tmp_path, stub_server)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not legacy.exists()
+    assert (tmp_path / "Library/LaunchDaemons/in.icestudios.itservices.plist").exists()
 
 
 @needs_tools
