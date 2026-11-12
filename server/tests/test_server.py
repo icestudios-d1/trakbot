@@ -149,9 +149,18 @@ def _day():
 
 def test_pages_and_me():
     assert c.get("/api/me").status_code == 401
-    assert c.get("/api/me", headers=A).json() == {"ok": True}
+    assert c.get("/api/me", headers=A).json() == {"ok": True, "superadmin": False}
     page = TestClient(app)
     page.post("/api/session", headers=A, json={})        # signs this browser in (sets the cookie)
+    for path in ("/employees", "/employee", "/day", "/web", "/install", "/alerts", "/screenshots", "/rules"):   # Admin mode: Overview only
+        r = page.get(path, follow_redirects=False)
+        assert r.status_code == 302 and r.headers["location"] == "/", path
+    assert 'content="admin"' in page.get("/").text
+    r = page.get("/superadmin", follow_redirects=False)                               # same token unlocks SuperAdmin
+    assert r.status_code == 302 and r.headers["location"] == "/"
+    assert 'content="super"' in page.get("/").text and page.get("/api/me").json()["superadmin"] is True
+    anon = TestClient(app)
+    assert anon.get("/superadmin", follow_redirects=False).headers["location"] == "/login?next=%2Fsuperadmin"
     for path in ("/", "/login", "/employees", "/employee", "/day", "/web", "/install", "/alerts", "/screenshots", "/rules"):
         r = page.get(path, follow_redirects=False)
         assert (r.status_code == 302 if path == "/login" else r.status_code == 200 and "text/html" in r.headers["content-type"]), path
@@ -600,7 +609,7 @@ def test_session_cookie_signs_in_pages_and_images_but_never_writes():
     ck = r.headers["set-cookie"].lower()
     assert "httponly" in ck and "samesite=lax" in ck and "max-age" in ck and "admin" not in ck   # token never in the cookie
     assert b.get("/", follow_redirects=False).status_code == 200
-    assert b.get("/api/me").json() == {"ok": True}                                   # cookie is fine for GET
+    assert b.get("/api/me").json() == {"ok": True, "superadmin": False}                                   # cookie is fine for GET
     assert b.post("/api/groups", json={"name": "x"}).status_code == 401              # ...but cannot change anything
     assert b.get("/login?next=/day", follow_redirects=False).headers["location"] == "/day"
     assert b.get("/login?next=//evil.example", follow_redirects=False).headers["location"] == "/"

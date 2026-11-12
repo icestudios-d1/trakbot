@@ -17,10 +17,14 @@
   const toLogin = async () => { try { await fetch('/api/logout', { method: 'POST' }); } catch (e) {} location.replace('/login?next=' + encodeURIComponent(location.pathname + location.search)); };
   if (!isLogin && !TB.token()) { toLogin(); }
 
-  /* ---------- work / all view ---------- */
+  /* ---------- admin / superadmin mode ---------- */
+  // Admin: Overview only, "Work" hours only, no group picker. SuperAdmin (unlocked at /superadmin with the same token)
+  // gets everything. The server decides the mode and tells each page through a <meta name="tb-mode"> tag.
+  TB.isSuper = (document.querySelector('meta[name="tb-mode"]') || {}).content === 'super';
+
   // "Work" = 8 AM to 10 PM your time: every number and list is trimmed to those hours (the server does the cutting).
   const SCOPE_KEY = 'tb_scope';
-  TB.scope = () => { try { return localStorage.getItem(SCOPE_KEY) === 'work' ? 'work' : 'all'; } catch (e) { return 'all'; } };
+  TB.scope = () => { if (!TB.isSuper) return 'work'; try { return localStorage.getItem(SCOPE_KEY) === 'work' ? 'work' : 'all'; } catch (e) { return 'all'; } };
   TB.setScope = (v) => { try { localStorage.setItem(SCOPE_KEY, v); } catch (e) {} location.reload(); };
   const SCOPED = /^\/api\/(overview|employee|slots|timeline|web|screenshots|summary|trend)(\?|$)/;
   const scoped = (path) => {
@@ -97,18 +101,20 @@
   TB.setParams = (o) => { const p = new URLSearchParams(location.search); for (const [k, v] of Object.entries(o)) v ? p.set(k, v) : p.delete(k); history.replaceState(null, '', location.pathname + (p.toString() ? '?' + p : '')); };
 
   /* ---------- nav ---------- */
-  const NAV = [['/', 'Overview'], ['/employees', 'Employees'], ['/day', 'Day viewer'], ['/web', 'Web activity'], ['/alerts', 'Alerts'], ['/screenshots', 'Screenshots'], ['/rules', 'Productivity rules'], ['/install', 'Install agents']];
+  const NAV_ALL = [['/', 'Overview'], ['/employees', 'Employees'], ['/day', 'Day viewer'], ['/web', 'Web activity'], ['/alerts', 'Alerts'], ['/screenshots', 'Screenshots'], ['/rules', 'Productivity rules'], ['/install', 'Install agents']];
+  const NAV = TB.isSuper ? NAV_ALL : [['/', 'Overview']];
   if (!isLogin) {
     const here = location.pathname === '/employee' ? '/employees' : location.pathname;
     const top = document.createElement('header');
     top.className = 'top';
-    top.innerHTML = `<a class="brand" href="/"><i></i>Cyril</a><button class="burger" id="burger" aria-label="Menu" aria-expanded="false" aria-controls="mainnav"><span></span><span></span><span></span></button><nav id="mainnav">${NAV.map(([h, t]) => `<a href="${h}" class="${h === here ? 'on' : ''}">${t}${h === '/alerts' ? '<span id="alertBadge"></span>' : ''}</a>`).join('')}</nav><span class="scope" id="scope" role="group" aria-label="Which hours to show" title="Work shows only 8 AM to 10 PM (your time) in every number and list. All shows the whole day."><button data-v="work">Work</button><button data-v="all">All</button></span><span class="sm mut" id="build" title="Version of the server code that is running"></span><button class="out" id="signout">Sign out</button>`;
+    top.innerHTML = `<a class="brand" href="/"><i></i>Cyril</a><button class="burger" id="burger" aria-label="Menu" aria-expanded="false" aria-controls="mainnav"><span></span><span></span><span></span></button><nav id="mainnav">${NAV.map(([h, t]) => `<a href="${h}" class="${h === here ? 'on' : ''}">${t}${h === '/alerts' ? '<span id="alertBadge"></span>' : ''}</a>`).join('')}</nav>${TB.isSuper ? '<span class="scope" id="scope" role="group" aria-label="Which hours to show" title="Work shows only 8 AM to 10 PM (your time) in every number and list. All shows the whole day."><button data-v="work">Work</button><button data-v="all">All</button></span>' : '<span style="margin-left:auto"></span>'}<span class="sm mut" id="build" title="Version of the server code that is running"></span><button class="out" id="signout">Sign out</button>`;
     document.body.prepend(top);
     $('#signout').onclick = TB.signOut;
+    if (TB.isSuper) { const x = document.createElement('button'); x.className = 'out'; x.textContent = 'Exit SuperAdmin'; x.title = 'Back to Admin mode'; x.onclick = async () => { try { await fetch('/api/superadmin/exit', { method: 'POST', headers: { Authorization: 'Bearer ' + TB.token() } }); } catch (e) {} location.href = '/'; }; $('#signout').before(x); }
     document.querySelectorAll('#scope button').forEach((b) => { b.classList.toggle('on', b.dataset.v === TB.scope()); b.onclick = () => { if (b.dataset.v !== TB.scope()) TB.setScope(b.dataset.v); }; });
     $('#burger').onclick = () => { const o = top.classList.toggle('open'); $('#burger').setAttribute('aria-expanded', o); };
     fetch('/api/health').then((r) => r.json()).then((h) => { if (h.build) $('#build').textContent = 'build ' + h.build; }).catch(() => {});
-    TB.api('/api/alerts?' + TB.qs({ unacked: 'true', limit: 1000 }), { quiet: true }).then((a) => { if (a.length) $('#alertBadge').outerHTML = `<span class="badge">${a.length}</span>`; }).catch(() => {});
+    if (TB.isSuper) TB.api('/api/alerts?' + TB.qs({ unacked: 'true', limit: 1000 }), { quiet: true }).then((a) => { if (a.length) $('#alertBadge').outerHTML = `<span class="badge">${a.length}</span>`; }).catch(() => {});
     const tip = document.createElement('div'); tip.id = 'tip'; document.body.append(tip);
     document.addEventListener('mousemove', (e) => {
       const t = e.target.closest && e.target.closest('[data-tip]');

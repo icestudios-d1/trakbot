@@ -20,7 +20,7 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
@@ -38,6 +38,7 @@ DB_PATH = os.environ.get("CYRIL_DB", "data/cyril.db")
 WORK_START = int(os.environ.get("CYRIL_WORK_START", "8"))    # the dashboard's "Work" view: local hours [start, end)
 WORK_END = int(os.environ.get("CYRIL_WORK_END", "22"))
 SESSION_COOKIE = "cyril_session"
+SUPER_COOKIE = "cyril_super"
 # Web origins whose pages may read the agent's "OMS Ping" answer on 127.0.0.1:7077. Defaults to the company OMS;
 # agents also have it built in. Set CYRIL_OMS_ORIGINS (comma separated) to list others.
 OMS_ORIGINS = [o.strip().rstrip("/") for o in os.environ.get("CYRIL_OMS_ORIGINS", "https://office.icestudios.in").split(",")
@@ -102,6 +103,16 @@ def _session_value() -> str:
 def _signed_in(request: Request) -> bool:
     given, want = request.cookies.get(SESSION_COOKIE), _session_value()
     return bool(given and want and hmac.compare_digest(given, want))
+
+
+def _super_value() -> str:
+    return hmac.new(ADMIN_TOKEN.encode(), b"cyril-superadmin-v1", hashlib.sha256).hexdigest() if ADMIN_TOKEN else ""
+
+
+def _is_super(request: Request) -> bool:
+    """SuperAdmin mode: signed in AND has visited /superadmin on this browser (same admin token, no second secret)."""
+    given, want = request.cookies.get(SUPER_COOKIE), _super_value()
+    return bool(_signed_in(request) and given and want and hmac.compare_digest(given, want))
 
 
 def admin(request: Request, authorization: str | None = Header(None)):
@@ -488,8 +499,8 @@ def slot_report(user: str, start: str | None = None, end: str | None = None,
 
 
 @app.get("/api/me", dependencies=[Depends(admin)])
-def me():
-    return {"ok": True}
+def me(request: Request):
+    return {"ok": True, "superadmin": _is_super(request)}
 
 
 def _https(request: Request) -> bool:
@@ -513,6 +524,13 @@ def start_session(b: SessionIn, request: Request, response: Response):
 @app.post("/api/logout")
 def end_session(response: Response):
     response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(SUPER_COOKIE, path="/")
+    return {"ok": True}
+
+
+@app.post("/api/superadmin/exit", dependencies=[Depends(admin)])
+def exit_superadmin(response: Response):
+    response.delete_cookie(SUPER_COOKIE, path="/")
     return {"ok": True}
 
 
@@ -1385,17 +1403,36 @@ def _safe_next(n: str | None) -> str:
     return n if n and re.match(r"^/(?!/)[^\\\s]*$", n) else "/"
 
 
-def _page(name: str):
+_ADMIN_PAGES = {"/"}   # Admin mode sees the Overview only; every other page needs SuperAdmin mode
+
+
+def _page(name: str, path: str):
     def handler(request: Request):
         if not _signed_in(request):
             nxt = request.url.path + (("?" + request.url.query) if request.url.query else "")
             return RedirectResponse("/login?next=" + quote(nxt, safe=""), status_code=302, headers=_NO_STORE)
-        return FileResponse(PAGES_DIR / name, headers=_NO_STORE)
+        sup = _is_super(request)
+        if path not in _ADMIN_PAGES and not sup:
+            return RedirectResponse("/", status_code=302, headers=_NO_STORE)
+        # The page learns its mode from this tag (the cookie itself is HttpOnly), so the nav is right on first paint.
+        html = (PAGES_DIR / name).read_text(encoding="utf-8").replace(
+            "<head>", f'<head><meta name="tb-mode" content="{"super" if sup else "admin"}">', 1)
+        return HTMLResponse(html, headers=_NO_STORE)
     return handler
 
 
 for _path, _file in PAGES.items():
-    app.get(_path, include_in_schema=False)(_page(_file))
+    app.get(_path, include_in_schema=False)(_page(_file, _path))
+
+
+@app.get("/superadmin", include_in_schema=False)
+def superadmin_page(request: Request):
+    """Unlocks SuperAdmin mode for this browser. Same admin token: sign in first (login bounces back here)."""
+    if not _signed_in(request):
+        return RedirectResponse("/login?next=%2Fsuperadmin", status_code=302, headers=_NO_STORE)
+    r = RedirectResponse("/", status_code=302, headers=_NO_STORE)
+    r.set_cookie(SUPER_COOKIE, _super_value(), httponly=True, samesite="lax", secure=_https(request), path="/")
+    return r
 
 
 @app.get("/login", include_in_schema=False)
