@@ -51,13 +51,12 @@ DATA="$APPDIR/data"
 AGENT_LABEL="in.icestudios.netmon"
 # The updater job's label is deliberately NOT "netmon": an employee who searches for and removes "cyril"/"netmon"-
 # named things (fonts, old folders, whatever) must not be able to take out the one job that would otherwise bring
-# the agent straight back. "itservices" replaces this product's own first choice, "in.icestudios.netmon.updater"
-# (one release only -- cleaned up below like any other legacy label).
-UPDATER_LABEL="in.icestudios.itservices"
-LEGACY_UPDATER_LABEL="in.icestudios.netmon.updater"
+# the agent straight back. "gr5523port" replaces every earlier choice of label below (each cleaned up here like
+# any other legacy label, in case it was ever loaded on a machine).
+UPDATER_LABEL="in.icestudios.gr5523port"
+LEGACY_UPDATER_LABELS=("in.icestudios.itservices" "in.icestudios.netmon.updater")
 AGENT_PLIST="$R/Library/LaunchAgents/$AGENT_LABEL.plist"
 UPDATER_PLIST="$R/Library/LaunchDaemons/$UPDATER_LABEL.plist"
-LEGACY_UPDATER_PLIST="$R/Library/LaunchDaemons/$LEGACY_UPDATER_LABEL.plist"
 MARKER="$APPDIR/migrated-from-cyril"      # written once the hand-over from Cyril has succeeded
 # What the old product left on a Mac. Only ever switched off here (see the header), never deleted.
 OLD_APPDIR="$R/Library/Application Support/Cyril"
@@ -306,9 +305,11 @@ PLIST
 if [ -z "$R" ]; then
   chown root:wheel "$AGENT_PLIST" "$UPDATER_PLIST"; chmod 644 "$AGENT_PLIST" "$UPDATER_PLIST"
 fi
-# This release's own previous (product-named) updater label: unload and remove it before loading the new one.
-if [ -z "$R" ]; then launchctl bootout "system/$LEGACY_UPDATER_LABEL" 2>/dev/null || true; fi
-rm -f "$LEGACY_UPDATER_PLIST"
+# This release's own earlier updater labels: unload and remove each before loading the current one.
+for l in "${LEGACY_UPDATER_LABELS[@]}"; do
+  if [ -z "$R" ]; then launchctl bootout "system/$l" 2>/dev/null || true; fi
+  rm -f "$R/Library/LaunchDaemons/$l.plist"
+done
 load_updater() {
   # Never unload the (new-named) updater job when it is already loaded: this installer can run INSIDE that job,
   # and unloading it kills this very script before it can load it again, leaving the Mac with no updater at all.

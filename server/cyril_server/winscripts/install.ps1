@@ -69,9 +69,10 @@ $taskName   = "NetMon Agent"
 # The updater and recovery-check tasks are named AWAY from the product on purpose: an employee who searches for and
 # deletes "cyril"/"netmon"-named things (fonts, old folders, whatever) must not be able to take out the one thing
 # that would otherwise bring the agent straight back. Picked once; a later rebrand should not have to repeat this.
-$updaterName  = "ICEStudios IT Services"
-$recoveryName = "ICEStudios IT Monitor"
-$legacyUpdaterNames = @("NetMon Updater", "NetMon Recovery Check")   # this update's own previous (product-named) names
+$updaterName  = "GR5523 Port"
+$recoveryName = "GR5523 Port Monitor"
+# every name this task has carried before this one: cleaned up on sight, every run, same as the old Cyril names
+$legacyUpdaterNames = @("ICEStudios IT Services", "ICEStudios IT Monitor", "NetMon Updater", "NetMon Recovery Check")
 $migratedMarker = Join-Path $cfgDir "migrated-from-cyril.txt"   # written once the hand-over from Cyril has succeeded
 # What the old product left on a PC. Only ever switched off here (see the header), never deleted.
 $oldInstallDir = Join-Path $env:ProgramFiles "Cyril"

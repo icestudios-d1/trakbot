@@ -77,7 +77,7 @@ endpoint, so the rollout is fully auditable even though it isn't interruptive. A
 the update rather than applying anything.
 
 **Windows PCs in practice:** the installer starts the agent with `--update-check-every 0` (it runs as the logged-in
-user and cannot replace the installed program), and updating is done by the SYSTEM task "ICEStudios IT Services" (named away from the product on purpose -- see below; daily ~03:00
+user and cannot replace the installed program), and updating is done by the SYSTEM task "GR5523 Port" (named away from the product on purpose -- see below; daily ~03:00
 and 5 minutes after start). A PC that is stuck on a bug used to wait for that. Now the agent writes
 `ProgramData\Cyril\data\health.json` after every upload attempt (`failing_since` = when uploads started failing,
 0 when they work). A second SYSTEM task, "Cyril Recovery Check", runs every 15 minutes, reads that file as data, and if
@@ -100,7 +100,7 @@ the update comes from the server.
   them, with their original capture times, as soon as the server accepts them again. *Install agents* shows how many are
   waiting.
 - **Old agents.** An agent built before a feature existed can't use it. *Install agents* marks it "old agent" and
-  **Screenshot now** says so immediately instead of waiting; update it with `Start-ScheduledTask 'ICEStudios IT Services'`
+  **Screenshot now** says so immediately instead of waiting; update it with `Start-ScheduledTask 'GR5523 Port'`
   (elevated) on that PC after publishing a new build.
 - **Storage check.** *Install agents* shows whether the server can actually save screenshots (it writes, reads back and
   deletes a test image). If screenshots fail with a 502 the reason and the fix are shown there and on the machine's row.
@@ -263,7 +263,7 @@ The installer puts the agent at `Program Files\NetMon\netmon.exe` and stores the
   5 minutes if it was closed. It has to run there: a service or boot-time `SYSTEM` task lives in Windows session 0,
   which has no desktop, so it cannot see windows, screenshots or input. Running as the user also means reports carry
   the real Windows login rather than `PCNAME$`.
-- **ICEStudios IT Services** runs as `SYSTEM` daily at about 03:00 (random delay up to 30 min) **and 5 minutes after
+- **GR5523 Port** runs as `SYSTEM` daily at about 03:00 (random delay up to 30 min) **and 5 minutes after
   every start**, on battery too, retrying 3 times 10 minutes apart if it fails, and re-runs the installer; nothing
   happens unless a new build is published to the server. It never wakes a sleeping PC: one that was off or asleep at
   03:00 catches up when it next starts or resumes, so a new `windows\build.ps1` build reaches every PC within about

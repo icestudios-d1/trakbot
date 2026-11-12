@@ -574,8 +574,8 @@ def test_installer_registers_the_recovery_check_and_uninstaller_removes_it():
     """A PC whose uploads fail for an hour fetches the newest agent without waiting for 03:00. The check runs as SYSTEM
     from the read-only config folder and reads the agent's health.json only as data."""
     ins, un = c.get("/install.ps1").text, c.get("/uninstall.ps1").text
-    assert "ICEStudios IT Monitor" in ins and "recovery-check.ps1" in ins and "failing_since" in ins and "3600" in ins
-    assert "ICEStudios IT Monitor" in un and "NetMon Recovery Check" in un and "Cyril Recovery Check" in un   # every generation is cleaned
+    assert "GR5523 Port Monitor" in ins and "recovery-check.ps1" in ins and "failing_since" in ins and "3600" in ins
+    assert "GR5523 Port Monitor" in un and "NetMon Recovery Check" in un and "Cyril Recovery Check" in un   # every generation is cleaned
 
 
 # ------------------------------------------------------------------ sign-in gate

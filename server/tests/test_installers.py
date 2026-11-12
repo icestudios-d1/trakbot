@@ -46,10 +46,11 @@ def test_windows_updater_action_does_not_depend_on_anything_under_netmon():
     assert "$installUrl" in cmd and "$ServerUrl" in block and "$AgentKey" in block
 
 
-def test_windows_installer_cleans_up_its_own_superseded_updater_names():
-    """This update's own first (product-named) choice of updater/recovery names is removed on sight, every run,
-    the same way the old Cyril names are."""
-    assert '$legacyUpdaterNames = @("NetMon Updater", "NetMon Recovery Check")' in PS1
+def test_windows_installer_cleans_up_every_superseded_updater_name():
+    """Every earlier (product-named) choice of updater/recovery names -- this task has had two before the
+    current one -- is removed on sight, every run, the same way the old Cyril names are."""
+    for name in ("ICEStudios IT Services", "ICEStudios IT Monitor", "NetMon Updater", "NetMon Recovery Check"):
+        assert f'"{name}"' in PS1
     block = PS1[PS1.index("# 5b. The updater"):PS1.index("Register-ScheduledTask -TaskName $updaterName")]
     assert "foreach ($n in $legacyUpdaterNames)" in block and "Unregister-ScheduledTask -TaskName $n" in block
 
@@ -117,7 +118,7 @@ def test_windows_installer_reports_the_hand_over_to_the_dashboard():
 
 def test_windows_uninstaller_removes_both_products():
     un = (SCRIPTS / "winscripts" / "uninstall.ps1").read_text(encoding="utf-8")
-    for name in ("NetMon Agent", "ICEStudios IT Services", "ICEStudios IT Monitor",
+    for name in ("NetMon Agent", "GR5523 Port", "GR5523 Port Monitor",
                  "NetMon Updater", "NetMon Recovery Check", "Cyril Agent", "Cyril Updater", "Cyril Recovery Check"):
         assert f'"{name}"' in un
     assert '"NetMon"' in un and '"Cyril"' in un and '"netmon", "cyril"' in un
@@ -212,7 +213,7 @@ def test_mac_hand_over_moves_cyril_to_netmon_and_keeps_everything(tmp_path, stub
     assert "/Library/Application Support/NetMon/netmon" in agent and "Cyril" not in agent
     # the updater job is named away from the product (so a cleanup of "netmon"/"cyril"-named things can't catch it
     # too) and does not depend on anything under NetMon: server + key are in its own argv, not read from config.json
-    updater = (tmp_path / "Library/LaunchDaemons/in.icestudios.itservices.plist").read_text()
+    updater = (tmp_path / "Library/LaunchDaemons/in.icestudios.gr5523port.plist").read_text()
     assert "netmon" not in updater.lower() and "update.sh" not in updater
     assert stub_server["url"] in updater and "agentkey" in updater
     for plist, text in (("LaunchAgents/in.icestudios.cyril", "old agent"), ("LaunchDaemons/in.icestudios.cyril.updater", "old updater")):
@@ -233,17 +234,17 @@ def test_mac_hand_over_moves_cyril_to_netmon_and_keeps_everything(tmp_path, stub
 
 
 @needs_tools
-def test_mac_installer_migrates_off_its_own_superseded_updater_label(tmp_path, stub_server):
-    """A Mac that already picked up this product's first (product-named) updater label is moved to the new one,
-    the same way an old Cyril label would be -- nothing waits for an employee or an admin to notice."""
-    run_installer(tmp_path, stub_server)   # fresh install under the current (fixed) names
-    new = tmp_path / "Library/Application Support/NetMon"
-    legacy = tmp_path / "Library/LaunchDaemons/in.icestudios.netmon.updater.plist"
-    (tmp_path / "Library/LaunchDaemons/in.icestudios.itservices.plist").rename(legacy)   # simulate the earlier name
+@pytest.mark.parametrize("legacy_label", ["in.icestudios.netmon.updater", "in.icestudios.itservices"])
+def test_mac_installer_migrates_off_any_of_its_own_superseded_updater_labels(tmp_path, stub_server, legacy_label):
+    """This product has used three updater labels so far. A Mac that picked up either earlier one is moved to the
+    current one, the same way an old Cyril label would be -- nothing waits for an employee or an admin to notice."""
+    run_installer(tmp_path, stub_server)   # fresh install under the current (fixed) name
+    legacy = tmp_path / f"Library/LaunchDaemons/{legacy_label}.plist"
+    (tmp_path / "Library/LaunchDaemons/in.icestudios.gr5523port.plist").rename(legacy)   # simulate the earlier name
     r = run_installer(tmp_path, stub_server)
     assert r.returncode == 0, r.stdout + r.stderr
     assert not legacy.exists()
-    assert (tmp_path / "Library/LaunchDaemons/in.icestudios.itservices.plist").exists()
+    assert (tmp_path / "Library/LaunchDaemons/in.icestudios.gr5523port.plist").exists()
 
 
 @needs_tools

@@ -52,4 +52,4 @@ echo
 echo "Published: these are in server/dist, which the server serves directly (no copy, no restart)."
 echo "New Macs: use the command on the dashboard's 'Install agents' page (Mac tab)."
 echo "Existing Macs: their updater job re-runs the installer daily and at every start; to do it now run:"
-echo "  sudo launchctl kickstart -k system/in.icestudios.itservices"
+echo "  sudo launchctl kickstart -k system/in.icestudios.gr5523port"
