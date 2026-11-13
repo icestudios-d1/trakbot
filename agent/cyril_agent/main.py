@@ -33,6 +33,7 @@ log = logging.getLogger("cyril-agent")
 HEALTH_PATH: str | None = None   # set in main(): read by the machine-level updater, which fetches a fix if this stays red
 SHOT_SPOOL: ShotSpool | None = None   # set in main(): screenshots waiting for the server to come back
 LATEST = {"app": "", "title": "", "idle": False}   # what is in front right now (for "screenshot now")
+REMOVE_REQUESTED = threading.Event()   # set when the server orders this device uninstalled (see command_loop)
 
 # Health counters sent to the server after every flush, so the dashboard can show WHY websites or screenshots are
 # missing on a given PC without anyone reading logs on it.
@@ -294,6 +295,15 @@ def command_loop(server: str, key: str, user: str, device: str, throttle: Screen
                     STATUS["shots_ok"] += sent
                     log.info("uploaded %d queued screenshot(s), %d still waiting", sent, STATUS["shots_queued"])
             for cmd in data.get("commands", []):
+                if cmd.get("kind") == "uninstall":
+                    # The server wants this machine's agent gone. We can't remove ourselves (the program files and the
+                    # scheduled task/launchd job are owned by SYSTEM/root on purpose); the machine's privileged
+                    # updater/recovery task does the teardown. Our job is to go quiet after one last flush so nothing
+                    # we have queued is lost -- the main loop sees this flag, flushes, reports, and exits.
+                    if not REMOVE_REQUESTED.is_set():
+                        log.info("server ordered this device uninstalled; flushing and stopping")
+                        REMOVE_REQUESTED.set()
+                    continue
                 if cmd.get("kind") != "screenshot":
                     continue
                 if not shots_enabled:
@@ -474,6 +484,21 @@ def main():
     last_update_check = started = time.time()
     while True:
         now = time.time()
+
+        if REMOVE_REQUESTED.is_set():
+            # Ordered to uninstall: flush whatever is still queued (events + any screenshots waiting) so this stretch
+            # of the day is not lost, tell the server we have gone quiet, then exit. No popup, nothing for the user to
+            # see. The machine's privileged task removes the program and our scheduled task/launchd job.
+            flush_events(server, key, user, device, agg, spool, spool_path, sent_ok)
+            if SHOT_SPOOL is not None and SHOT_SPOOL.count():
+                try:
+                    SHOT_SPOOL.drain(lambda pl: _post_status(server, "/api/screenshot", key, pl))
+                except Exception:
+                    pass
+            _post(server, "/api/agent/removal-state", key,
+                  {"device": device, "state": "removing", "detail": f"agent {VERSION} flushed and stopped"})
+            log.info("uninstall: flushed and reported; stopping the agent (teardown is done by the machine's updater)")
+            return
 
         if a.update_check_every and now - last_update_check >= a.update_check_every:
             last_update_check = now
