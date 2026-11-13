@@ -24,7 +24,7 @@ charts. No keystroke logging.
 | Remote uninstall | ✅ **Uninstall now** per machine on the Install page: the order is durable (an offline PC is removed when it next checks in), silent on the device (no popup), and the device's past activity is kept. The agent flushes and goes quiet within seconds; the machine's privileged task (Windows SYSTEM recovery/updater, macOS root daemon) does the teardown — the user-level agent cannot remove its own SYSTEM-owned files/tasks by design |
 | Reports | ✅ in-app only, no email reports (by request) |
 | Teams / groups | ✅ **Employees -> Manage groups**: business units, or a group (marked *excluded*) for PCs not handed out yet that must stay out of regular reports; filter Overview, Employees and Web activity by group |
-| Work hours vs everything | ✅ **Work / All** switch in the top bar: *Work* trims every number, chart and list to 8 AM-10 PM (your local time; `CYRIL_WORK_START` / `CYRIL_WORK_END` change it) |
+| Work hours vs everything | ✅ **Work / All** switch in the top bar: *Work* trims every number, chart and list to 9:30 AM-8:30 PM (your local time; `CYRIL_WORK_START` / `CYRIL_WORK_END` change it) |
 | Keystroke logging, workload/utilisation, SSO | ❌ not built (keylogging intentionally omitted) |
 
 ## Architecture

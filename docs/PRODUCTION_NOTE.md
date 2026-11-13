@@ -85,7 +85,7 @@ curl http://localhost:8000/api/health      # {"ok":true,...,"build":"xxxxxxxx"}
 | `CYRIL_S3_ACCESS_KEY` | yes | SeaweedFS login id. **Letters and digits only** (no `/`, space, comma) — otherwise screenshot storage fails with a 502. |
 | `CYRIL_S3_SECRET_KEY` | yes | SeaweedFS secret; any characters. |
 | `CYRIL_PUBLIC_URL` | recommended | Address agents are told to use, e.g. `https://cyril.icestudios.in`. If empty the server uses whatever address the browser used. |
-| `CYRIL_WORK_START` / `CYRIL_WORK_END` | no | Hours of the dashboard's **Work** view (default `8` and `22`, viewer's local time). |
+| `CYRIL_WORK_START` / `CYRIL_WORK_END` | no | Hours of the dashboard's **Work** view (default `9:30` and `20:30`, viewer's local time; `H:MM` or decimal hours). |
 | `CYRIL_REQUIRE_SEALED` | no | `1` = refuse uploads that are not sealed (old agents). Turn on once *Install agents* shows 🔒 sealed on every PC. |
 | `CYRIL_PAYLOAD_KEY` | no | Base64 of the server's 32-byte private payload key. Normally leave empty: the server creates `payload.key` next to the database on first start. |
 | `CYRIL_OMS_ORIGINS` | no | Comma-separated web origins allowed to read the agent's **OMS Ping** (§7), default `https://office.icestudios.in`, which agents also have built in. Reaches agents through their 10-second poll. |
@@ -250,7 +250,7 @@ Nothing of Cyril is deleted in this update: `Program Files\Cyril`, `ProgramData\
 | Logs (PC) | `C:\ProgramData\Cyril\data\agent.log`, `crash.log`; Mac: `/Library/Application Support/Cyril/data/` |
 | Rules | *Productivity rules*; editing a rule re-labels history immediately (classification happens at query time) |
 | Groups | *Employees → Manage groups*; groups marked *excluded* stay out of regular reports; pick a group on Overview/Employees/Web activity to view it |
-| Work vs All | switch in the top bar; *Work* trims every report to 8 AM–10 PM your time |
+| Work vs All | switch in the top bar; *Work* trims every report to 9:30 AM–8:30 PM your time |
 | Screenshot frequency | *Screenshots* page (applies to PCs within ~a minute) |
 | Remove an employee | *Employees → Delete* (type the login). Uninstall the agent first or the person reappears |
 | Silent roll-out | Install page → *Silent install* |

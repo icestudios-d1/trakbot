@@ -26,7 +26,7 @@ async function load(r){
     const [users,o,g]=await Promise.all([TB.users(),TB.api('/api/overview?'+TB.qs({start:r.start,end:r.end,tz:TB.tz,group:r.group})),TB.groups()]);
     if(me!==seq)return;
     groups=g.groups;
-    $('#sub').textContent=TB.rangeLabel(r.start,r.end)+TB.slotNote(o.slot)+(TB.scope()==='work'?' · work hours only (8 AM–10 PM)':'');
+    $('#sub').textContent=TB.rangeLabel(r.start,r.end)+TB.slotNote(o.slot)+(TB.scope()==='work'?' · work hours only (9:30 AM–8:30 PM)':'');
     // With a group picked, only its people are listed; the numbers come from the same filtered report.
     const inView=u=>r.group==='all'||(r.group===''?!u.group_excluded:r.group==='none'?!u.group_id:String(u.group_id)===r.group);
     data=users.filter(inView).map(u=>{const m=o.by_user[u.user]||{};const a=(m.productive||0)+(m.unproductive||0)+(m.neutral||0);

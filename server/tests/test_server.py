@@ -657,11 +657,11 @@ def test_groups_filter_reports_and_excluded_groups_drop_out_of_regular_reports()
     assert c.post("/api/users/group", headers=A, json={"users": ["g_bob"], "group_id": 9999}).status_code == 404
 
 
-# ------------------------------------------------------------------ Work (8-22) vs All
+# ------------------------------------------------------------------ Work (9:30-20:30) vs All
 def test_work_scope_trims_everything_to_the_working_window():
     day = "2031-04-05"
-    # 07:30-08:30 (only 30 min counts), 12:00-12:10, 21:50-22:20 (only 10 min counts), 23:00-23:30 (outside)
-    for hh, mm, dur in ((7, 30, 3600), (12, 0, 600), (21, 50, 1800), (23, 0, 1800)):
+    # 09:00-10:00 (only 30 min counts), 12:00-12:10, 20:20-20:50 (only 10 min counts), 21:00-21:30 (outside)
+    for hh, mm, dur in ((9, 0, 3600), (12, 0, 600), (20, 20, 1800), (21, 0, 1800)):
         _post_events("w_user", "PC-W", _local_ts(day, hh, mm), dur=dur)
     q = {"user": "w_user", "start": day, "end": day, "tz": 0}
     import cyril_server.app as srv
@@ -672,10 +672,10 @@ def test_work_scope_trims_everything_to_the_working_window():
     assert allv["seconds"]["productive"] == 3600 + 600 + 1800 + 1800
     assert work["seconds"]["productive"] == 1800 + 600 + 600 and work["scope"] == "work"
     hours = [sum(h.values()) for h in work["hourly"]]
-    assert sum(hours[:8]) == 0 and sum(hours[22:]) == 0 and hours[7] == 0 and hours[21] == 600
+    assert sum(hours[:9]) == 0 and sum(hours[21:]) == 0 and hours[9] == 1800 and hours[20] == 600
     rows = c.get("/api/slots", headers=A, params={**q, "slot": 0, "scope": "work"}).json()["rows"]
     assert sum(r["dur"] for r in rows) == 3000
-    assert srv.WORK_START == 8 and srv.WORK_END == 22
+    assert srv.WORK_START == 9.5 and srv.WORK_END == 20.5
 
 
 # ------------------------------------------------------------------ thumbnails

@@ -35,7 +35,7 @@ async function load(r){
     const [o]=await Promise.all([TB.api('/api/overview?'+TB.qs({start:r.start,end:r.end,tz:TB.tz,group:r.group})),TB.users()]);
     if(me!==seq)return;
     const n=o.days.length,single=n===1;
-    $('#sub').textContent=TB.rangeLabel(r.start,r.end)+TB.slotNote(o.slot)+(TB.scope()==='work'?' · work hours only (8 AM–10 PM)':'');
+    $('#sub').textContent=TB.rangeLabel(r.start,r.end)+TB.slotNote(o.slot)+(TB.scope()==='work'?' · work hours only (9:30 AM–8:30 PM)':'');
     const s=o.seconds,users=Object.keys(o.by_user).length,tracked=TB.sum(s);
     const cshare=o.active_seconds?Math.round(100*o.creative_seconds/o.active_seconds):0;
     $('#kpis').innerHTML=

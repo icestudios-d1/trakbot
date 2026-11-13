@@ -35,8 +35,16 @@ from .payloadcrypto import BadEnvelope, Opener
 ADMIN_TOKEN = os.environ.get("CYRIL_ADMIN_TOKEN", "")
 AGENT_KEY = os.environ.get("CYRIL_AGENT_KEY", "")
 DB_PATH = os.environ.get("CYRIL_DB", "data/cyril.db")
-WORK_START = int(os.environ.get("CYRIL_WORK_START", "8"))    # the dashboard's "Work" view: local hours [start, end)
-WORK_END = int(os.environ.get("CYRIL_WORK_END", "22"))
+
+
+def _hour_of_day(v: str) -> float:
+    """"9:30" or "9.5" -> 9.5 (hours since local midnight)."""
+    h, _, m = v.strip().partition(":")
+    return int(h) + int(m) / 60 if m else float(h)
+
+
+WORK_START = _hour_of_day(os.environ.get("CYRIL_WORK_START", "9:30"))  # the dashboard's "Work" view: local [start, end)
+WORK_END = _hour_of_day(os.environ.get("CYRIL_WORK_END", "20:30"))
 SESSION_COOKIE = "cyril_session"
 SUPER_COOKIE = "cyril_super"
 # Web origins whose pages may read the agent's "OMS Ping" answer on 127.0.0.1:7077. Defaults to the company OMS;

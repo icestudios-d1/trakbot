@@ -56,10 +56,10 @@ def previous_span(days: list[str]):
 
 
 # ---------------------------------------------------------------- work hours
-def clip_hours(events: list[dict], tz: int | None, start_h: int, end_h: int) -> list[dict]:
-    """Keep only the part of each event that falls between start_h:00 and end_h:00 of the viewer's LOCAL day
-    (the "Work" view of the dashboard). An event that straddles an edge is trimmed, not dropped, so 07:50-08:10
-    still contributes its 10 minutes after 08:00. Events are at most an hour long, so at most two windows apply."""
+def clip_hours(events: list[dict], tz: int | None, start_h: float, end_h: float) -> list[dict]:
+    """Keep only the part of each event that falls between start_h and end_h (hours, 9.5 = 09:30) of the viewer's LOCAL day
+    (the "Work" view of the dashboard). An event that straddles an edge is trimmed, not dropped, so 09:20-09:40
+    still contributes its 10 minutes after 09:30. Events are at most an hour long, so at most two windows apply."""
     zi = tzinfo_for(tz)
     out = []
     for e in events:
@@ -76,7 +76,7 @@ def clip_hours(events: list[dict], tz: int | None, start_h: int, end_h: int) -> 
     return out
 
 
-def in_work_hours(ts: float, tz: int | None, start_h: int, end_h: int) -> bool:
+def in_work_hours(ts: float, tz: int | None, start_h: float, end_h: float) -> bool:
     local = (ts + _utc_offset(ts, tzinfo_for(tz))) % 86400
     return start_h * 3600 <= local < end_h * 3600
 
