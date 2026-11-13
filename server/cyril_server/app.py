@@ -20,7 +20,7 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
@@ -38,6 +38,7 @@ DB_PATH = os.environ.get("CYRIL_DB", "data/cyril.db")
 WORK_START = int(os.environ.get("CYRIL_WORK_START", "8"))    # the dashboard's "Work" view: local hours [start, end)
 WORK_END = int(os.environ.get("CYRIL_WORK_END", "22"))
 SESSION_COOKIE = "cyril_session"
+SUPER_COOKIE = "cyril_super"
 # Web origins whose pages may read the agent's "OMS Ping" answer on 127.0.0.1:7077. Defaults to the company OMS;
 # agents also have it built in. Set CYRIL_OMS_ORIGINS (comma separated) to list others.
 OMS_ORIGINS = [o.strip().rstrip("/") for o in os.environ.get("CYRIL_OMS_ORIGINS", "https://office.icestudios.in").split(",")
@@ -102,6 +103,16 @@ def _session_value() -> str:
 def _signed_in(request: Request) -> bool:
     given, want = request.cookies.get(SESSION_COOKIE), _session_value()
     return bool(given and want and hmac.compare_digest(given, want))
+
+
+def _super_value() -> str:
+    return hmac.new(ADMIN_TOKEN.encode(), b"cyril-superadmin-v1", hashlib.sha256).hexdigest() if ADMIN_TOKEN else ""
+
+
+def _is_super(request: Request) -> bool:
+    """SuperAdmin mode: signed in AND has visited /superadmin on this browser (same admin token, no second secret)."""
+    given, want = request.cookies.get(SUPER_COOKIE), _super_value()
+    return bool(_signed_in(request) and given and want and hmac.compare_digest(given, want))
 
 
 def admin(request: Request, authorization: str | None = Header(None)):
@@ -367,6 +378,7 @@ def delete_user(b: UserDeleteIn):
             if not c.execute("SELECT 1 FROM events WHERE device=? LIMIT 1", (d,)).fetchone():
                 c.execute("DELETE FROM agent_status WHERE device=?", (d,))
                 c.execute("DELETE FROM agent_commands WHERE device=?", (d,))
+                c.execute("DELETE FROM device_removals WHERE device=?", (d,))
     return {"deleted": {"events": f["events"], "screenshots": len(removed), "alerts": f["alerts"]},
             "failed_screenshots": failed}
 
@@ -488,8 +500,8 @@ def slot_report(user: str, start: str | None = None, end: str | None = None,
 
 
 @app.get("/api/me", dependencies=[Depends(admin)])
-def me():
-    return {"ok": True}
+def me(request: Request):
+    return {"ok": True, "superadmin": _is_super(request)}
 
 
 def _https(request: Request) -> bool:
@@ -513,6 +525,13 @@ def start_session(b: SessionIn, request: Request, response: Response):
 @app.post("/api/logout")
 def end_session(response: Response):
     response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(SUPER_COOKIE, path="/")
+    return {"ok": True}
+
+
+@app.post("/api/superadmin/exit", dependencies=[Depends(admin)])
+def exit_superadmin(response: Response):
+    response.delete_cookie(SUPER_COOKIE, path="/")
     return {"ok": True}
 
 
@@ -1253,8 +1272,14 @@ def agent_poll(device: str = Query(min_length=1, max_length=128)):
                          (device, now - COMMAND_TTL)).fetchall()
         for r in rows:
             c.execute("UPDATE agent_commands SET status='delivered', delivered=? WHERE id=?", (now, r["id"]))
-    return {"commands": [{"id": r["id"], "kind": r["kind"]} for r in rows],
-            "config": {**_screenshot_settings(), "oms_origins": OMS_ORIGINS}}
+        # A standing uninstall order is sent on every poll until the device is gone (durable, no TTL): a machine that
+        # was offline when it was ordered still picks it up the moment it comes back. id 0 = not an agent_commands row.
+        removing = bool(c.execute("SELECT 1 FROM device_removals WHERE device=? AND status IN('pending','removing')",
+                                  (device,)).fetchone())
+    cmds = [{"id": r["id"], "kind": r["kind"]} for r in rows]
+    if removing:
+        cmds.append({"id": 0, "kind": "uninstall"})
+    return {"commands": cmds, "config": {**_screenshot_settings(), "oms_origins": OMS_ORIGINS}}
 
 
 class CommandResultIn(BaseModel):
@@ -1271,6 +1296,92 @@ def agent_command_result(r: CommandResultIn):
         with db.conn() as c:
             c.execute("UPDATE agent_commands SET status='failed', error=? WHERE id=? AND device=?", (r.error, r.id, r.device))
     return {"ok": True}
+
+
+class DeviceIn(BaseModel):
+    device: str = Field(min_length=1, max_length=128)
+
+
+def _removal(c, device: str) -> dict | None:
+    r = c.execute("SELECT * FROM device_removals WHERE device=?", (device,)).fetchone()
+    return dict(r) if r else None
+
+
+@app.post("/api/devices/remove", dependencies=[Depends(admin)])
+def remove_device(b: DeviceIn):
+    """Order one machine's agent to uninstall itself ("Uninstall now"). Durable: the agent picks it up on its next
+    poll (~10 s) and goes quiet after a final flush; the machine's privileged updater/recovery task then tears the
+    agent down silently (no popup) and reports back. The device's past activity is KEPT on the server."""
+    with db.conn() as c:
+        if not c.execute("SELECT 1 FROM events WHERE device=? LIMIT 1", (b.device,)).fetchone():
+            raise HTTPException(404, "no such device")
+        cur = _removal(c, b.device)
+        if cur and cur["status"] == "removed":
+            return {"status": "removed", "removed": cur["removed"]}   # already gone; ordering again is a no-op
+        c.execute("INSERT INTO device_removals(device,requested,requested_by,status) VALUES(?,?,'admin','pending') "
+                  "ON CONFLICT(device) DO UPDATE SET requested=excluded.requested, requested_by='admin', "
+                  "status='pending', flushed=NULL, removed=NULL, detail=NULL",
+                  (b.device, time.time()))
+    return {"status": "pending"}
+
+
+@app.post("/api/devices/remove/cancel", dependencies=[Depends(admin)])
+def cancel_device_removal(b: DeviceIn):
+    """Call off a removal while it is still pending or in progress. Once a machine reports it is fully removed it
+    cannot be un-removed from here (reinstall the agent on it instead)."""
+    with db.conn() as c:
+        cur = _removal(c, b.device)
+        if not cur:
+            raise HTTPException(404, "no removal ordered for this device")
+        if cur["status"] == "removed":
+            raise HTTPException(409, "this device is already removed")
+        c.execute("UPDATE device_removals SET status='canceled' WHERE device=?", (b.device,))
+    return {"status": "canceled"}
+
+
+@app.get("/api/devices/remove/{device}", dependencies=[Depends(admin)])
+def device_removal_status(device: str):
+    """pending (ordered) -> removing (agent flushed and went quiet) -> removed (privileged teardown done) | canceled."""
+    with db.conn() as c:
+        cur = _removal(c, device)
+    if not cur:
+        return {"device": device, "status": "none"}
+    return cur
+
+
+@app.get("/api/agent/removal", dependencies=[Depends(agent)])
+def agent_removal(device: str = Query(min_length=1, max_length=128)):
+    """Read by a machine's privileged task (the Windows SYSTEM recovery/updater, the mac root daemon) to decide
+    whether to tear the agent down. Plain key=value lines, so a shell with no JSON parser can read it (same as
+    /api/agent/mac-manifest)."""
+    with db.conn() as c:
+        cur = _removal(c, device)
+    remove = bool(cur and cur["status"] in ("pending", "removing"))
+    return PlainTextResponse(f"remove={'1' if remove else '0'}\nstatus={cur['status'] if cur else 'none'}\n")
+
+
+class RemovalStateIn(BaseModel):
+    device: str = Field(min_length=1, max_length=128)
+    state: str = Field(pattern="^(removing|removed)$")
+    detail: str = Field(default="", max_length=2000)
+
+
+@app.post("/api/agent/removal-state", dependencies=[Depends(agent)])
+def agent_removal_state(s: RemovalStateIn):
+    """The agent reports `removing` once it has flushed and gone quiet; the privileged teardown reports `removed`.
+    Reporting on a device with no order (or a canceled one) is ignored, so a late report can't resurrect a removal."""
+    now = time.time()
+    with db.conn() as c:
+        cur = _removal(c, s.device)
+        if not cur or cur["status"] == "canceled":
+            return {"ok": True, "status": cur["status"] if cur else "none"}
+        if s.state == "removing" and cur["status"] == "pending":
+            c.execute("UPDATE device_removals SET status='removing', flushed=?, detail=? WHERE device=?",
+                      (now, s.detail[:2000], s.device))
+        elif s.state == "removed":
+            c.execute("UPDATE device_removals SET status='removed', removed=?, detail=? WHERE device=?",
+                      (now, s.detail[:2000], s.device))
+    return {"ok": True, "status": s.state}
 
 
 @app.get("/api/agent/seen", dependencies=[Depends(agent)])
@@ -1334,12 +1445,19 @@ def devices():
     with db.conn() as c:
         rows = c.execute(
             "SELECT e.device, e.user, n.name, MAX(e.ts+e.dur) last_seen, MIN(e.ts) first_seen, COUNT(*) events, "
-            "st.info status, st.ts status_ts FROM events e "
+            "st.info status, st.ts status_ts, rm.status removal_status, rm.requested removal_requested, "
+            "rm.removed removal_removed FROM events e "
             "LEFT JOIN user_names n ON n.user=e.user LEFT JOIN agent_status st ON st.device=e.device "
+            "LEFT JOIN device_removals rm ON rm.device=e.device "
             "GROUP BY e.device, e.user ORDER BY last_seen DESC").fetchall()
     out = []
     for r in rows:
         d = dict(r)
+        # Surface a removal order (Uninstall now) so the Install page can show pending/removing/removed per machine.
+        rm_status = d.pop("removal_status", None)
+        rm_requested = d.pop("removal_requested", None)
+        rm_removed = d.pop("removal_removed", None)
+        d["removal"] = {"status": rm_status, "requested": rm_requested, "removed": rm_removed} if rm_status else None
         d["last_poll"] = _LAST_POLL.get(d["device"])   # None = this agent has never asked for work (too old, or off)
         try:
             d["status"] = json.loads(d["status"]) if d["status"] else None
@@ -1385,17 +1503,36 @@ def _safe_next(n: str | None) -> str:
     return n if n and re.match(r"^/(?!/)[^\\\s]*$", n) else "/"
 
 
-def _page(name: str):
+_ADMIN_PAGES = {"/", "/alerts", "/rules", "/install"}   # Admin mode pages; the rest need SuperAdmin mode
+
+
+def _page(name: str, path: str):
     def handler(request: Request):
         if not _signed_in(request):
             nxt = request.url.path + (("?" + request.url.query) if request.url.query else "")
             return RedirectResponse("/login?next=" + quote(nxt, safe=""), status_code=302, headers=_NO_STORE)
-        return FileResponse(PAGES_DIR / name, headers=_NO_STORE)
+        sup = _is_super(request)
+        if path not in _ADMIN_PAGES and not sup:
+            return RedirectResponse("/", status_code=302, headers=_NO_STORE)
+        # The page learns its mode from this tag (the cookie itself is HttpOnly), so the nav is right on first paint.
+        html = (PAGES_DIR / name).read_text(encoding="utf-8").replace(
+            "<head>", f'<head><meta name="tb-mode" content="{"super" if sup else "admin"}">', 1)
+        return HTMLResponse(html, headers=_NO_STORE)
     return handler
 
 
 for _path, _file in PAGES.items():
-    app.get(_path, include_in_schema=False)(_page(_file))
+    app.get(_path, include_in_schema=False)(_page(_file, _path))
+
+
+@app.get("/superadmin", include_in_schema=False)
+def superadmin_page(request: Request):
+    """Unlocks SuperAdmin mode for this browser. Same admin token: sign in first (login bounces back here)."""
+    if not _signed_in(request):
+        return RedirectResponse("/login?next=%2Fsuperadmin", status_code=302, headers=_NO_STORE)
+    r = RedirectResponse("/", status_code=302, headers=_NO_STORE)
+    r.set_cookie(SUPER_COOKIE, _super_value(), httponly=True, samesite="lax", secure=_https(request), path="/")
+    return r
 
 
 @app.get("/login", include_in_schema=False)

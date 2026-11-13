@@ -236,15 +236,31 @@ restore_cyril() {   # NetMon did not come up: switch the old agent straight back
 
 # update.sh: for a person to run by hand ("sudo bash '/Library/Application Support/NetMon/update.sh'") if they want
 # an update right now. The scheduled updater job itself does NOT call this any more (see the plist below): its own
-# command is self-contained, so it survives this very folder being deleted, which this script cannot.
+# command is self-contained, so it survives this very folder being deleted, which this script cannot. This copy is
+# kept for manual use, and it also honours a remote uninstall order (so running it by hand mid-removal does not
+# undo the removal by reinstalling): this root process can remove the program and the launchd jobs, which the
+# user-level agent cannot. The agent itself has already gone quiet (final flush) when it saw the order on its own poll.
 cat > "$APPDIR/update.sh" <<'UPD'
 #!/bin/bash
-# For a person to run by hand. Does nothing unless a new build is published.
+# For a person to run by hand. Does nothing unless a new build is published, except a pending remote uninstall
+# order, which it carries out instead of reinstalling.
+TR="${NETMON_TEST_ROOT:-${CYRIL_TEST_ROOT:-}}"
 CFG="/Library/Application Support/NetMon/config.json"
-[ -f "${NETMON_TEST_ROOT:-${CYRIL_TEST_ROOT:-}}$CFG" ] && CFG="${NETMON_TEST_ROOT:-${CYRIL_TEST_ROOT:-}}$CFG"
+[ -f "$TR$CFG" ] && CFG="$TR$CFG"
 SERVER="$(sed -n 's/.*"server" *: *"\([^"]*\)".*/\1/p' "$CFG" | head -1)"
 KEY="$(sed -n 's/.*"key" *: *"\([^"]*\)".*/\1/p' "$CFG" | head -1)"
 [ -n "$SERVER" ] && [ -n "$KEY" ] || exit 1
+if [ -z "$TR" ]; then
+  DEV="$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/{print $4}')"; [ -n "$DEV" ] || DEV="$(hostname)"
+  RM="$(curl -fsS -m 20 -H "X-Api-Key: $KEY" "$SERVER/api/agent/removal?device=$DEV" 2>/dev/null || true)"
+  case "$RM" in *remove=1*)
+    curl -fsSL -m 60 "$SERVER/uninstall.sh" | bash
+    curl -fsS -m 20 -X POST -H "X-Api-Key: $KEY" -H 'Content-Type: application/json' \
+      -d "{\"device\":\"$DEV\",\"state\":\"removed\",\"detail\":\"removed by manual update.sh\"}" \
+      "$SERVER/api/agent/removal-state" >/dev/null 2>&1 || true
+    exit 0 ;;
+  esac
+fi
 curl -fsS -m 60 "$SERVER/install.sh?key=$KEY" | bash -s -- --unattended
 UPD
 chmod 755 "$APPDIR/update.sh"

@@ -103,3 +103,37 @@ def test_read_build_stamp(tmp_path):
     assert read_build(str(cfg)) == "" and read_build(None) == ""
     (tmp_path / "build.txt").write_bytes(b"\xef\xbb\xbfabc1234def\n")   # tolerate a BOM / trailing newline
     assert read_build(str(cfg)) == "abc1234def"
+
+
+def test_uninstall_command_sets_remove_flag(monkeypatch):
+    """An 'uninstall' command on the poll makes the agent flag itself for removal; the main loop then flushes and
+    exits. (The actual teardown is done by the machine's privileged task, not the user-level agent.)"""
+    import json as _json
+    from cyril_agent import main as m
+    from cyril_agent.shots import ScreenshotThrottle
+
+    m.REMOVE_REQUESTED.clear()
+
+    class Resp:
+        def __init__(self, payload):
+            self._b = _json.dumps(payload).encode()
+
+        def read(self):
+            return self._b
+
+    monkeypatch.setattr(m.urllib.request, "urlopen",
+                        lambda req, timeout=0: Resp({"commands": [{"id": 0, "kind": "uninstall"}], "config": {}}))
+
+    class Stop(Exception):
+        pass
+
+    def stop_after_first(_):
+        raise Stop()
+
+    monkeypatch.setattr(m.time, "sleep", stop_after_first)   # break the otherwise-infinite loop after one poll
+    try:
+        m.command_loop("http://x", "k", "u", "DEV", ScreenshotThrottle(60, 180), True, every=0.01)
+    except Stop:
+        pass
+    assert m.REMOVE_REQUESTED.is_set()
+    m.REMOVE_REQUESTED.clear()

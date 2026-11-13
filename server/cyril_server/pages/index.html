@@ -21,14 +21,14 @@
   <div class="card"><h2>Top websites</h2><div class="sub">Bar colour = productivity label</div><div id="sites"></div></div>
 </div>
 <div class="grid g-main">
-  <div class="card"><h2>Team</h2><div class="sub">Click an employee for their full report</div><div class="scroll"><table id="team"></table></div></div>
+  <div class="card"><h2>Team</h2><div class="sub">Team members and their activity</div><div class="scroll"><table id="team"></table></div></div>
   <div class="card"><h2>Categories</h2><div class="sub">Active time by category</div><div id="cats"></div></div>
 </div>
 </main>
 <script src="/static/app.js"></script>
 <script>
 const {$,fmt,esc}=TB;let seq=0;
-const rb=TB.rangeBar($('#range'),{defDays:7,slot:true,group:true,onChange:load});
+const rb=TB.rangeBar($('#range'),{defDays:7,slot:true,group:TB.isSuper,onChange:load});
 async function load(r){
   const me=++seq;TB.error();
   try{
@@ -60,8 +60,8 @@ async function load(r){
     TB.hbars($('#sites'),o.sites,{sub:TB.labelLegend});
     TB.hbars($('#cats'),o.categories.filter(c=>c.name!=='Idle'),{color:()=>'var(--accent)'});
     const rows=Object.entries(o.by_user).map(([u,m])=>({u,a:m.productive+m.unproductive+m.neutral,m})).sort((x,y)=>y.a-x.a);
-    $('#team').innerHTML=rows.length?`<thead><tr><th>Employee</th><th class="right">Active</th><th style="width:30%">Productivity</th><th>Top app</th><th>Last seen</th></tr></thead><tbody>`+rows.map(({u,a,m})=>`<tr class="link" data-u="${esc(u)}"><td><a href="/employee?${TB.qs({user:u,start:r.start,end:r.end})}">${esc(TB.dn(u))}</a></td><td class="right num">${fmt(a)}</td><td><div class="stackbar" data-tip="${esc(`${TB.pct(a?100*m.productive/a:null)} productive`)}">${['productive','neutral','unproductive'].map(k=>`<i style="width:${a?100*m[k]/a:0}%;background:${TB.labelColor(k)}"></i>`).join('')}</div><span class="sm mut">${TB.pct(a?100*m.productive/a:null)}</span></td><td>${esc(m.top_app||'–')}</td><td class="mut nowrap">${TB.when(m.last_seen)}</td></tr>`).join('')+'</tbody>':'<tbody><tr><td class="empty">No employees reported activity in this range.</td></tr></tbody>';
-    $('#team').querySelectorAll('tr.link').forEach(tr=>tr.onclick=e=>{if(e.target.tagName!=='A')location.href=tr.querySelector('a').href});
+    $('#team').innerHTML=rows.length?`<thead><tr><th>Employee</th><th class="right">Active</th><th style="width:30%">Productivity</th><th>Top app</th><th>Last seen</th></tr></thead><tbody>`+rows.map(({u,a,m})=>`<tr class="${TB.isSuper?'link':''}" data-u="${esc(u)}"><td>${TB.isSuper?`<a href="/employee?${TB.qs({user:u,start:r.start,end:r.end})}">${esc(TB.dn(u))}</a>`:esc(TB.dn(u))}</td><td class="right num">${fmt(a)}</td><td><div class="stackbar" data-tip="${esc(`${TB.pct(a?100*m.productive/a:null)} productive`)}">${['productive','neutral','unproductive'].map(k=>`<i style="width:${a?100*m[k]/a:0}%;background:${TB.labelColor(k)}"></i>`).join('')}</div><span class="sm mut">${TB.pct(a?100*m.productive/a:null)}</span></td><td>${esc(m.top_app||'–')}</td><td class="mut nowrap">${TB.when(m.last_seen)}</td></tr>`).join('')+'</tbody>':'<tbody><tr><td class="empty">No employees reported activity in this range.</td></tr></tbody>';
+    $('#team').querySelectorAll('tr.link').forEach(tr=>{const a=tr.querySelector('a');if(a)tr.onclick=e=>{if(e.target.tagName!=='A')location.href=a.href}});
   }catch(e){if(me===seq)TB.error(e)}
 }
 </script></body></html>

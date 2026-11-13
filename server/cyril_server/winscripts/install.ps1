@@ -106,6 +106,22 @@ try { Invoke-WebRequest -UseBasicParsing -Uri "$ServerUrl/api/health" -TimeoutSe
 catch { Fail "Cannot reach $ServerUrl ($($_.Exception.Message)). Check the address and this machine's network." }
 Ok "Server reachable"
 
+# Remote uninstall backstop: when run by the daily/boot updater task (which passes -Unattended), honour a removal
+# order from the server -- the recovery task handles it within 15 minutes, this catches a machine that was off then.
+# Never during an interactive admin install, so re-running the installer by hand cannot trip it.
+if ($Unattended) {
+    $rmDev = Get-DeviceId
+    try { $rm = Invoke-RestMethod -UseBasicParsing -Headers @{ "X-Api-Key" = $AgentKey } -TimeoutSec 20 -Uri "$ServerUrl/api/agent/removal?device=$([uri]::EscapeDataString("$rmDev"))" } catch { $rm = "" }
+    if ("$rm" -match "remove=1") {
+        & ([scriptblock]::Create((Invoke-RestMethod "$ServerUrl/uninstall.ps1")))
+        try {
+            $body = (@{ device = "$rmDev"; state = "removed"; detail = "removed by updater task" } | ConvertTo-Json -Compress)
+            Invoke-RestMethod -UseBasicParsing -Method Post -Headers @{ "X-Api-Key" = $AgentKey; "Content-Type" = "application/json" } -TimeoutSec 20 -Uri "$ServerUrl/api/agent/removal-state" -Body $body | Out-Null
+        } catch { }
+        return
+    }
+}
+
 $expectedHash = $null; $buildInfo = ""; $canSelftest = $false; $ver = $null
 try {
     $ver = Invoke-RestMethod -UseBasicParsing -Uri "$ServerUrl/api/agent/version" -TimeoutSec 15
@@ -303,13 +319,26 @@ $ErrorActionPreference = "Stop"
 try {
     $dir   = Split-Path -Parent $MyInvocation.MyCommand.Path
     $now   = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $c = Get-Content (Join-Path $dir "config.json") -Raw | ConvertFrom-Json
+    # Remote uninstall (the fast privileged path, every 15 min): if the server has ordered this machine removed, tear
+    # the agent down now (this task runs as SYSTEM, which the user-level agent is not and cannot do) and report it,
+    # instead of waiting for the daily updater. Runs before the health logic so it does not depend on anything failing.
+    try { $dev = [Microsoft.Win32.RegistryKey]::OpenBaseKey("LocalMachine","Registry64").OpenSubKey("SOFTWARE\Microsoft\Cryptography").GetValue("MachineGuid") } catch { $dev = $env:COMPUTERNAME }
+    try {
+        $rm = Invoke-RestMethod -UseBasicParsing -Headers @{ "X-Api-Key" = $c.key } -TimeoutSec 20 -Uri ($c.server + "/api/agent/removal?device=" + [uri]::EscapeDataString("$dev"))
+        if ("$rm" -match "remove=1") {
+            & ([scriptblock]::Create((Invoke-RestMethod ($c.server + "/uninstall.ps1"))))
+            $body = (@{ device = "$dev"; state = "removed"; detail = "removed by recovery task" } | ConvertTo-Json -Compress)
+            try { Invoke-RestMethod -UseBasicParsing -Method Post -Headers @{ "X-Api-Key" = $c.key; "Content-Type" = "application/json" } -TimeoutSec 20 -Uri ($c.server + "/api/agent/removal-state") -Body $body | Out-Null } catch { }
+            exit 0
+        }
+    } catch { }
     $h     = Get-Content (Join-Path $dir "data\health.json") -Raw | ConvertFrom-Json
     $since = [long]$h.failing_since
     if ($since -le 0 -or ($now - $since) -lt 3600) { exit 0 }
     $stamp = Join-Path $dir "recovery-last.txt"
     if ((Test-Path $stamp) -and (($now - [long](Get-Content $stamp -Raw)) -lt 1800)) { exit 0 }
     Set-Content -Path $stamp -Value $now
-    $c = Get-Content (Join-Path $dir "config.json") -Raw | ConvertFrom-Json
     & ([scriptblock]::Create((Invoke-RestMethod ($c.server + "/install.ps1?key=" + [uri]::EscapeDataString($c.key))))) -Unattended
 } catch { exit 0 }
 '@

@@ -22,6 +22,13 @@ CREATE TABLE IF NOT EXISTS agent_commands(
   id INTEGER PRIMARY KEY, device TEXT NOT NULL, kind TEXT NOT NULL, created REAL NOT NULL, delivered REAL,
   status TEXT NOT NULL DEFAULT 'pending', screenshot_id INTEGER, error TEXT);
 CREATE TABLE IF NOT EXISTS agent_status(device TEXT PRIMARY KEY, user TEXT, ts REAL NOT NULL, info TEXT NOT NULL);
+-- Remote uninstall orders, one per device. Durable (unlike the TTL'd agent_commands screenshot rail): an offline
+-- machine stays `pending` until it next checks in, then is torn down. History (events/screenshots) is kept; only
+-- the device is marked removed. status: pending -> removing (agent flushed + went quiet) -> removed (privileged
+-- teardown done) | canceled.
+CREATE TABLE IF NOT EXISTS device_removals(
+  device TEXT PRIMARY KEY, requested REAL NOT NULL, requested_by TEXT,
+  status TEXT NOT NULL DEFAULT 'pending', flushed REAL, removed REAL, detail TEXT);
 CREATE TABLE IF NOT EXISTS user_names(user TEXT PRIMARY KEY, name TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS screenshots(
