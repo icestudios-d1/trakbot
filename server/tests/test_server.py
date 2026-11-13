@@ -753,3 +753,73 @@ def test_installers_carry_only_the_public_key_and_poll_lists_oms_origins():
         assert c.get("/api/agent/poll", params={"device": "PC-OMS"}, headers=K).json()["config"]["oms_origins"] == ["https://oms.example.com"]
     finally:
         srv.OMS_ORIGINS[:] = saved
+
+
+def test_remote_uninstall_round_trip():
+    # A device must exist (have reported) before it can be ordered removed.
+    c.post("/api/ingest", headers=K, json={"user": "rmuser", "device": "PC-RM",
+            "events": [{"ts": time.time(), "dur": 60, "app": "code", "title": "x"}]})
+    assert c.post("/api/devices/remove", json={"device": "PC-RM"}).status_code == 401      # needs admin
+    assert c.post("/api/devices/remove", headers=A, json={"device": "NOPE"}).status_code == 404
+    assert c.get("/api/devices/remove/PC-RM", headers=A).json()["status"] == "none"
+
+    # Order it. The agent is given a durable uninstall command on EVERY poll (unlike the TTL'd screenshot command),
+    # so a machine that was offline still picks it up when it comes back.
+    assert c.post("/api/devices/remove", headers=A, json={"device": "PC-RM"}).json()["status"] == "pending"
+    assert c.get("/api/devices/remove/PC-RM", headers=A).json()["status"] == "pending"
+    assert c.get("/api/agent/poll", params={"device": "PC-OTHER2"}, headers=K).json()["commands"] == []
+    for _ in range(2):   # appears again and again, not consumed-once
+        assert {"id": 0, "kind": "uninstall"} in c.get("/api/agent/poll", params={"device": "PC-RM"}, headers=K).json()["commands"]
+    # Plaintext endpoint the privileged (SYSTEM / root) teardown task reads.
+    assert c.get("/api/agent/removal", params={"device": "PC-RM"}, headers=K).status_code == 200
+    assert "remove=1" in c.get("/api/agent/removal", params={"device": "PC-RM"}, headers=K).text
+    assert c.get("/api/agent/removal", params={"device": "PC-RM"}).status_code == 401       # agent key required
+
+    # The Install page surfaces the order per machine.
+    dev = [x for x in c.get("/api/devices", headers=A).json() if x["device"] == "PC-RM"][0]
+    assert dev["removal"]["status"] == "pending"
+
+    # Agent reports it flushed and went quiet -> removing; privileged task reports teardown done -> removed.
+    assert c.post("/api/agent/removal-state", headers=K, json={"device": "PC-RM", "state": "removing"}).json()["status"] == "removing"
+    assert c.get("/api/devices/remove/PC-RM", headers=A).json()["status"] == "removing"
+    assert "remove=1" in c.get("/api/agent/removal", params={"device": "PC-RM"}, headers=K).text   # still removing
+    assert c.post("/api/agent/removal-state", headers=K, json={"device": "PC-RM", "state": "removed"}).json()["status"] == "removed"
+    done = c.get("/api/devices/remove/PC-RM", headers=A).json()
+    assert done["status"] == "removed" and done["removed"]
+
+    # Once removed: no more uninstall command, plaintext says remove=0, and it cannot be canceled.
+    assert {"id": 0, "kind": "uninstall"} not in c.get("/api/agent/poll", params={"device": "PC-RM"}, headers=K).json()["commands"]
+    assert "remove=0" in c.get("/api/agent/removal", params={"device": "PC-RM"}, headers=K).text
+    assert c.post("/api/devices/remove/cancel", headers=A, json={"device": "PC-RM"}).status_code == 409
+    # Ordering again is a no-op (already gone); history (the event) was never touched.
+    assert c.post("/api/devices/remove", headers=A, json={"device": "PC-RM"}).json()["status"] == "removed"
+    assert c.get("/api/summary", headers=A, params={"user": "rmuser", "days": 1}).status_code == 200
+
+
+def test_remote_uninstall_cancel_and_cleanup():
+    c.post("/api/ingest", headers=K, json={"user": "rmuser2", "device": "PC-RM2",
+            "events": [{"ts": time.time(), "dur": 60, "app": "code", "title": "x"}]})
+    assert c.post("/api/devices/remove", headers=A, json={"device": "PC-RM2"}).json()["status"] == "pending"
+    assert {"id": 0, "kind": "uninstall"} in c.get("/api/agent/poll", params={"device": "PC-RM2"}, headers=K).json()["commands"]
+    # Cancel while pending -> the order is called off and the agent stops being told to uninstall.
+    assert c.post("/api/devices/remove/cancel", headers=A, json={"device": "PC-RM2"}).json()["status"] == "canceled"
+    assert {"id": 0, "kind": "uninstall"} not in c.get("/api/agent/poll", params={"device": "PC-RM2"}, headers=K).json()["commands"]
+    assert "remove=0" in c.get("/api/agent/removal", params={"device": "PC-RM2"}, headers=K).text
+    # A late "removed" report on a canceled order must not resurrect it.
+    c.post("/api/agent/removal-state", headers=K, json={"device": "PC-RM2", "state": "removed"})
+    assert c.get("/api/devices/remove/PC-RM2", headers=A).json()["status"] == "canceled"
+    # Cancelling when nothing is ordered is a 404.
+    assert c.post("/api/devices/remove/cancel", headers=A, json={"device": "PC-NEVER"}).status_code == 404
+
+    # Deleting the employee clears the removal record along with the device's other state.
+    c.post("/api/users/delete", headers=A, json={"user": "rmuser2"})
+    assert c.get("/api/devices/remove/PC-RM2", headers=A).json()["status"] == "none"
+
+
+def test_served_scripts_carry_remote_uninstall_logic():
+    # The privileged teardown rides on scripts the server fills in and serves. Guard that the removal check and the
+    # completion report survive edits to the installers.
+    ps = c.get("/install.ps1", params={"key": "agent"}).text
+    assert "/api/agent/removal" in ps and "/api/agent/removal-state" in ps and "/uninstall.ps1" in ps
+    sh = c.get("/install.sh", params={"key": "agent"}).text
+    assert "/api/agent/removal" in sh and "/api/agent/removal-state" in sh and "/uninstall.sh" in sh

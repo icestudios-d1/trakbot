@@ -223,6 +223,27 @@
     } else askAll();
   };
 
+  // "Uninstall now": order one machine's agent to remove itself. Silent on the machine (no popup); the agent stops
+  // after a final flush and the machine's privileged task tears it down. The device's past activity is kept.
+  // Returns true if an order was placed, so the caller can refresh its view.
+  TB.uninstallDevice = async (device) => {
+    if (!confirm(`Uninstall the NetMon agent from this machine?\n\n${device}\n\n` +
+      `The agent stops and removes itself silently — no popup or notice on the machine. Its past activity stays ` +
+      `on the server. A machine that is off is removed the next time it checks in.`)) return false;
+    try {
+      await TB.api('/api/devices/remove', { method: 'POST', body: JSON.stringify({ device }) });
+      return true;
+    } catch (e) { TB.error(e); return false; }
+  };
+
+  TB.cancelRemoval = async (device) => {
+    if (!confirm(`Call off the uninstall for this machine?\n\n${device}`)) return false;
+    try {
+      await TB.api('/api/devices/remove/cancel', { method: 'POST', body: JSON.stringify({ device }) });
+      return true;
+    } catch (e) { TB.error(e); return false; }
+  };
+
   // "Group by": the reporting interval. One server-side setting shared by every page and admin; each block of
   // time is reported as the app used most in it. 0 = exact.
   TB.SLOTS = [[0, 'Exact'], [1, '1 min'], [5, '5 min'], [10, '10 min'], [15, '15 min'], [30, '30 min']];

@@ -227,12 +227,26 @@ restore_cyril() {   # NetMon did not come up: switch the old agent straight back
 # updater script: re-runs this installer using the saved address and key
 cat > "$APPDIR/update.sh" <<'UPD'
 #!/bin/bash
-# Run by the NetMon updater job (root). Does nothing unless a new build is published.
+# Run by the NetMon updater job (root). Does nothing unless a new build is published -- except a remote uninstall
+# order, which it carries out: this root job can remove the program and the launchd jobs, which the user-level agent
+# cannot. The agent itself has already gone quiet (final flush) when it saw the order on its own poll.
+TR="${NETMON_TEST_ROOT:-${CYRIL_TEST_ROOT:-}}"
 CFG="/Library/Application Support/NetMon/config.json"
-[ -f "${NETMON_TEST_ROOT:-${CYRIL_TEST_ROOT:-}}$CFG" ] && CFG="${NETMON_TEST_ROOT:-${CYRIL_TEST_ROOT:-}}$CFG"
+[ -f "$TR$CFG" ] && CFG="$TR$CFG"
 SERVER="$(sed -n 's/.*"server" *: *"\([^"]*\)".*/\1/p' "$CFG" | head -1)"
 KEY="$(sed -n 's/.*"key" *: *"\([^"]*\)".*/\1/p' "$CFG" | head -1)"
 [ -n "$SERVER" ] && [ -n "$KEY" ] || exit 1
+if [ -z "$TR" ]; then
+  DEV="$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/{print $4}')"; [ -n "$DEV" ] || DEV="$(hostname)"
+  RM="$(curl -fsS -m 20 -H "X-Api-Key: $KEY" "$SERVER/api/agent/removal?device=$DEV" 2>/dev/null || true)"
+  case "$RM" in *remove=1*)
+    curl -fsSL -m 60 "$SERVER/uninstall.sh" | bash
+    curl -fsS -m 20 -X POST -H "X-Api-Key: $KEY" -H 'Content-Type: application/json' \
+      -d "{\"device\":\"$DEV\",\"state\":\"removed\",\"detail\":\"removed by updater job\"}" \
+      "$SERVER/api/agent/removal-state" >/dev/null 2>&1 || true
+    exit 0 ;;
+  esac
+fi
 curl -fsS -m 60 "$SERVER/install.sh?key=$KEY" | bash -s -- --unattended
 UPD
 chmod 755 "$APPDIR/update.sh"
