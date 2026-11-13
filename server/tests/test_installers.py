@@ -6,6 +6,7 @@ Windows installer cannot run here, so its safety rules are pinned by reading the
 import hashlib
 import json
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -127,8 +128,9 @@ def test_windows_uninstaller_removes_both_products():
 # ----------------------------------------------------------------------------------------------------- macOS (really run)
 @pytest.fixture
 def stub_server():
-    """A tiny server answering what install.sh asks: health, the Mac manifest, the binary and the update log."""
-    state = {"posts": [], "binary": NEW_AGENT, "sha": None, "manifest_ok": True}
+    """A tiny server answering what install.sh asks: health, the Mac manifest, the binary and the update log. Also
+    answers the remote-uninstall endpoints the self-contained updater job checks (state["remove"]: "0" or "1")."""
+    state = {"posts": [], "gets": [], "binary": NEW_AGENT, "sha": None, "manifest_ok": True, "remove": "0"}
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -142,6 +144,7 @@ def stub_server():
 
         def do_GET(self):
             path = self.path.split("?")[0]
+            state["gets"].append(self.path)
             if path == "/api/health":
                 return self._send(200, b'{"ok":true}')
             if path == "/api/agent/mac-manifest":
@@ -152,6 +155,12 @@ def stub_server():
                 return self._send(200, f"version=9.9.9\nbuild=abc1234\nurl={url}\nsha256={sha}\nselftest=1\n".encode())
             if path.startswith("/dist/netmon-mac-"):
                 return self._send(200, state["binary"])
+            if path == "/api/agent/removal":
+                return self._send(200, f"remove={state['remove']}\nstatus={'pending' if state['remove'] == '1' else 'none'}\n".encode())
+            if path == "/uninstall.sh":
+                return self._send(200, b"#!/bin/bash\necho DID_REMOVE_MARKER\n")
+            if path == "/install.sh":
+                return self._send(200, b"#!/bin/bash\necho DID_REINSTALL_MARKER\n")
             self._send(404)
 
         def do_POST(self):
@@ -376,3 +385,61 @@ def test_mac_fresh_install_has_no_trace_of_cyril_and_makes_no_migration_report(t
 def test_mac_installer_has_no_browser_extension_and_names_are_netmon():
     assert "extension" not in SH.lower()
     assert 'APPDIR="$R/Library/Application Support/NetMon"' in SH and 'BIN="$APPDIR/netmon"' in SH
+
+
+# ------------------------------------------------------------------------------------------- Mac remote uninstall
+# The updater LaunchDaemon's own command is self-contained (see install.sh), which means the remote-uninstall check
+# main added to the committed update.sh never runs on the actual schedule unless the SAME check is also in the
+# plist's own command. These tests execute that exact command -- not the file on disk -- the way launchd would:
+# bash -c "<script>" <arg0> <SERVER_URL> <AGENT_KEY>.
+def updater_job_argv(root):
+    plist = plistlib.load(open(root / "Library/LaunchDaemons/in.icestudios.gr5523port.plist", "rb"))
+    return plist["ProgramArguments"]
+
+
+def run_updater_job(root):
+    argv = updater_job_argv(root)
+    assert argv[:2] == ["/bin/bash", "-c"]
+    return subprocess.run(argv, capture_output=True, text=True, timeout=30)
+
+
+@needs_tools
+def test_mac_updater_job_tears_down_when_removal_is_ordered_instead_of_reinstalling(tmp_path, stub_server):
+    run_installer(tmp_path, stub_server)
+    stub_server["gets"].clear()
+    stub_server["remove"] = "1"
+    r = run_updater_job(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "DID_REMOVE_MARKER" in r.stdout and "DID_REINSTALL_MARKER" not in r.stdout
+    assert any(g.startswith("/api/agent/removal?") for g in stub_server["gets"])
+    assert any(g.startswith("/uninstall.sh") for g in stub_server["gets"])
+    assert not any(g.startswith("/install.sh") for g in stub_server["gets"])
+    posts = [p for p in stub_server["posts"] if p["path"] == "/api/agent/removal-state"]
+    assert len(posts) == 1 and posts[0]["body"]["state"] == "removed" and posts[0]["body"]["device"]
+    assert posts[0]["key"] == "agentkey"   # the agent key, baked into the job's own argv, not read from a file
+
+
+@needs_tools
+def test_mac_updater_job_reinstalls_normally_when_nothing_is_ordered(tmp_path, stub_server):
+    run_installer(tmp_path, stub_server)
+    stub_server["gets"].clear()
+    r = run_updater_job(tmp_path)   # stub_server["remove"] defaults to "0"
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "DID_REINSTALL_MARKER" in r.stdout and "DID_REMOVE_MARKER" not in r.stdout
+    assert any(g.startswith("/api/agent/removal?") for g in stub_server["gets"])
+    assert any(g.startswith("/install.sh") for g in stub_server["gets"])
+    assert not any(g.startswith("/uninstall.sh") for g in stub_server["gets"])
+    assert not any(p["path"] == "/api/agent/removal-state" for p in stub_server["posts"])
+
+
+@needs_tools
+def test_mac_updater_job_handles_a_key_with_special_characters(tmp_path, stub_server):
+    """The key is passed as its own argv element (not interpolated into the script text), so it needs no shell
+    quoting -- only the XML escaping install.sh already does for the plist. A key with &, < or > must still work."""
+    run_installer(tmp_path, stub_server, key="we&ird<key>")
+    stub_server["remove"] = "1"
+    r = run_updater_job(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "DID_REMOVE_MARKER" in r.stdout
+    posts = [p for p in stub_server["posts"] if p["path"] == "/api/agent/removal-state"]
+    assert len(posts) == 1 and posts[0]["key"] == "we&ird<key>"

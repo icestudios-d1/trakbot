@@ -264,6 +264,17 @@ This update has gone through two names before settling on "GR5523 Port" / "GR552
 treated as superseded names and removed on sight, every run, the same way the old Cyril names are -- so no
 machine gets stuck on an earlier choice.
 
+**Remote uninstall ("Uninstall now", `/api/devices/remove`) rides on this same job, not on a file.** Because the Mac updater's
+action is self-contained (no `update.sh`, no `config.json` read at run time), the remote-uninstall check could not
+be added the way it first was -- inside the *file* `update.sh`, which the scheduled job no longer calls. It is
+instead inside the job's own inline script (same place the reinstall curl lives): check `/api/agent/removal`
+first, and only fall through to reinstalling if nothing is ordered. `update.sh` keeps its own copy of this check
+too, for the person who runs it by hand, but that copy plays no part in what happens on schedule. Anyone changing
+either remote uninstall or the self-contained-updater design should keep this in mind: they are not two independent
+features, and a change to one easily breaks the other silently (no test caught it the first time either feature
+was built alone — see `test_mac_updater_job_*` in `test_installers.py`, which runs the LaunchDaemon's actual
+command, not just checks that the right strings appear in a file).
+
 ### 4.4 Release checklist (agent change)
 
 1. Change code under `agent/` (bump `VERSION` in `agent/cyril_agent/update.py` if you track versions), run `cd agent && pytest`.

@@ -295,7 +295,27 @@ PLIST
 # by accident, or by someone trying to remove the agent without root -- this job alone, at 03:00 or the next start,
 # reinstalls everything from scratch: it needs nothing left behind on disk to do so. Passed as separate array
 # elements (not interpolated into the script text), so no shell-quoting of the URL or key is needed, only XML
-# escaping; "$1"/"$2" inside the script stay literal (the backslash stops THIS heredoc from expanding them now).
+# escaping; $1/$2 inside the script stay literal, bound by launchd to the two values that follow (see the array).
+#
+# Before reinstalling, it checks for a remote uninstall order the same way the manual update.sh above does (that
+# copy is for a person to run by hand only; this is what actually runs on schedule): if the server has ordered this
+# device removed, it tears the agent down instead of reinstalling it. Built as one script (quoted heredoc, so
+# none of its own $ signs, quotes or redirects are touched here) and then XML-escaped as a whole for the plist.
+UPDATER_SCRIPT="$(cat <<'INNERSH'
+DEV="$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/{print $4}')"
+[ -n "$DEV" ] || DEV="$(hostname)"
+RM="$(curl -fsS -m 20 -H "X-Api-Key: $2" "$1/api/agent/removal?device=$DEV" 2>/dev/null)"
+case "$RM" in
+  *remove=1*)
+    curl -fsSL -m 60 "$1/uninstall.sh" | bash
+    curl -fsS -m 20 -X POST -H "X-Api-Key: $2" -H "Content-Type: application/json" \
+      -d "{\"device\":\"$DEV\",\"state\":\"removed\",\"detail\":\"removed by updater job\"}" \
+      "$1/api/agent/removal-state" >/dev/null 2>&1
+    exit 0 ;;
+esac
+curl -fsS -m 60 "$1/install.sh?key=$2" | bash -s -- --unattended
+INNERSH
+)"
 cat > "$UPDATER_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -306,7 +326,7 @@ cat > "$UPDATER_PLIST" <<PLIST
   <array>
     <string>/bin/bash</string>
     <string>-c</string>
-    <string>curl -fsS -m 60 "\$1/install.sh?key=\$2" | bash -s -- --unattended</string>
+    <string>$(esc_xml "$UPDATER_SCRIPT")</string>
     <string>updater</string>
     <string>$(esc_xml "$SERVER_URL")</string>
     <string>$(esc_xml "$AGENT_KEY")</string>
