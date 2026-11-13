@@ -18,7 +18,7 @@
   if (!isLogin && !TB.token()) { toLogin(); }
 
   /* ---------- admin / superadmin mode ---------- */
-  // Admin: Overview only, "Work" hours only, no group picker. SuperAdmin (unlocked at /superadmin with the same token)
+  // Admin: Overview, Alerts, Productivity rules and Install agents, "Work" hours only, no group picker. SuperAdmin (unlocked at /superadmin with the same token)
   // gets everything. The server decides the mode and tells each page through a <meta name="tb-mode"> tag.
   TB.isSuper = (document.querySelector('meta[name="tb-mode"]') || {}).content === 'super';
 
@@ -102,7 +102,7 @@
 
   /* ---------- nav ---------- */
   const NAV_ALL = [['/', 'Overview'], ['/employees', 'Employees'], ['/day', 'Day viewer'], ['/web', 'Web activity'], ['/alerts', 'Alerts'], ['/screenshots', 'Screenshots'], ['/rules', 'Productivity rules'], ['/install', 'Install agents']];
-  const NAV = TB.isSuper ? NAV_ALL : [['/', 'Overview']];
+  const NAV = TB.isSuper ? NAV_ALL : NAV_ALL.filter(([h]) => ['/', '/alerts', '/rules', '/install'].includes(h));
   if (!isLogin) {
     const here = location.pathname === '/employee' ? '/employees' : location.pathname;
     const top = document.createElement('header');
@@ -114,7 +114,7 @@
     document.querySelectorAll('#scope button').forEach((b) => { b.classList.toggle('on', b.dataset.v === TB.scope()); b.onclick = () => { if (b.dataset.v !== TB.scope()) TB.setScope(b.dataset.v); }; });
     $('#burger').onclick = () => { const o = top.classList.toggle('open'); $('#burger').setAttribute('aria-expanded', o); };
     fetch('/api/health').then((r) => r.json()).then((h) => { if (h.build) $('#build').textContent = 'build ' + h.build; }).catch(() => {});
-    if (TB.isSuper) TB.api('/api/alerts?' + TB.qs({ unacked: 'true', limit: 1000 }), { quiet: true }).then((a) => { if (a.length) $('#alertBadge').outerHTML = `<span class="badge">${a.length}</span>`; }).catch(() => {});
+    TB.api('/api/alerts?' + TB.qs({ unacked: 'true', limit: 1000 }), { quiet: true }).then((a) => { if (a.length) $('#alertBadge').outerHTML = `<span class="badge">${a.length}</span>`; }).catch(() => {});
     const tip = document.createElement('div'); tip.id = 'tip'; document.body.append(tip);
     document.addEventListener('mousemove', (e) => {
       const t = e.target.closest && e.target.closest('[data-tip]');

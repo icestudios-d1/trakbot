@@ -1503,7 +1503,7 @@ def _safe_next(n: str | None) -> str:
     return n if n and re.match(r"^/(?!/)[^\\\s]*$", n) else "/"
 
 
-_ADMIN_PAGES = {"/"}   # Admin mode sees the Overview only; every other page needs SuperAdmin mode
+_ADMIN_PAGES = {"/", "/alerts", "/rules", "/install"}   # Admin mode pages; the rest need SuperAdmin mode
 
 
 def _page(name: str, path: str):

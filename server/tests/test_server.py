@@ -152,9 +152,11 @@ def test_pages_and_me():
     assert c.get("/api/me", headers=A).json() == {"ok": True, "superadmin": False}
     page = TestClient(app)
     page.post("/api/session", headers=A, json={})        # signs this browser in (sets the cookie)
-    for path in ("/employees", "/employee", "/day", "/web", "/install", "/alerts", "/screenshots", "/rules"):   # Admin mode: Overview only
+    for path in ("/employees", "/employee", "/day", "/web", "/screenshots"):   # Admin mode: no employee drill-downs
         r = page.get(path, follow_redirects=False)
         assert r.status_code == 302 and r.headers["location"] == "/", path
+    for path in ("/alerts", "/rules", "/install"):                                   # ...but Alerts, Rules and Install are Admin pages
+        assert page.get(path, follow_redirects=False).status_code == 200, path
     assert 'content="admin"' in page.get("/").text
     r = page.get("/superadmin", follow_redirects=False)                               # same token unlocks SuperAdmin
     assert r.status_code == 302 and r.headers["location"] == "/"

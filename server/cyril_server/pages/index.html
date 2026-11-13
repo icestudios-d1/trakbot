@@ -43,7 +43,7 @@ async function load(r){
       TB.kpi('Active time',fmt(o.active_seconds),TB.delta(o.active_seconds,o.previous.active_seconds))+
       TB.kpi('In creative tools',fmt(o.creative_seconds),`<span class="dl mut">${cshare}% of active time</span>`)+
       TB.kpi('Employees tracked',users,`<span class="dl mut">${users?fmt(o.active_seconds/users/(n)):'–'} active / person / day</span>`)+
-      (TB.isSuper?TB.kpi('Flagged alerts',(TB.isSuper?`<a href="/alerts" style="color:inherit">${o.alerts.total}</a>`:o.alerts.total),`<span class="dl ${o.alerts.open?'down':'flat'}">${o.alerts.open} unacknowledged</span>`):'');
+      TB.kpi('Flagged alerts',`<a href="/alerts" style="color:inherit">${o.alerts.total}</a>`,`<span class="dl ${o.alerts.open?'down':'flat'}">${o.alerts.open} unacknowledged</span>`);
     // daily stacked
     const keys=TB.LABELS.map(([k,,c])=>[k,c,k[0].toUpperCase()+k.slice(1)]);
     const every=TB.dayEvery(n);
