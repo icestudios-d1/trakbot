@@ -171,6 +171,11 @@ and the matching uninstall command.
   window titles) and, per browser, **Automation** (reading the page address from Chrome, Edge, Brave, Vivaldi, Opera or
   Safari; a private window's address is never recorded). *Install agents* shows "Screen Recording not allowed" per Mac
   until it is on. On Macs you manage with an MDM these can be pre-approved with a privacy-preferences profile.
+- **Every Mac build is signed with one self-signed certificate**, so Screen Recording, once allowed, stays allowed
+  across updates (macOS ties the permission to the signature; an unsigned build is a new program every time). Made
+  once with `./mac/make-signing-cert.sh`, given to CI as the `MAC_SIGN_P12_B64` / `MAC_SIGN_P12_PASSWORD` secrets
+  (or the same environment variables to `./mac/build.sh`). CI refuses to publish an unsigned Mac build. Keep the
+  `.p12` safe and never replace it: a new certificate means every Mac must allow Screen Recording again.
 - **Remove:** `curl -fsSL '.../uninstall.sh' | sudo bash` lists each item it removes. A user can stop their own
   LaunchAgent with `launchctl`, as a Windows user can end the process; only an administrator can remove the jobs.
 - Firefox can't be scripted, so its page addresses aren't read (time still counts under "Firefox").

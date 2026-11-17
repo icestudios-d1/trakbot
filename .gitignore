@@ -11,3 +11,4 @@ node_modules/
 # (via dist/.gitkeep) but not its build output.
 server/dist/*
 !server/dist/.gitkeep
+netmon-signing/
