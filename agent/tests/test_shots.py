@@ -59,3 +59,42 @@ def test_flat_frame_is_blank_and_real_content_is_not():
     img = Image.new("RGB", (1440, 900), (255, 255, 255))
     ImageDraw.Draw(img).rectangle((100, 100, 700, 500), fill=(20, 60, 200))
     assert not looks_blank(img)
+
+
+def _no_permission_frame(w=2560, h=1440, bar=34):
+    """What macOS actually returns without Screen Recording: a wallpaper-tinted menu bar strip on top, the rest
+    flat (40,39,44). Seen on a Mac after the Cyril->NetMon hand-over gave it a program it had not allowed yet."""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (w, h), (40, 39, 44))
+    d = ImageDraw.Draw(img)
+    for x in range(0, w, 40):
+        d.rectangle((x, 0, x + 39, bar), fill=(0, 140 + x % 80, 210 - x % 60))   # blue/cyan circles of the wallpaper
+    return img
+
+
+def test_menu_bar_only_frame_is_blank():
+    from cyril_agent.shots import looks_blank
+    assert looks_blank(_no_permission_frame())
+    assert looks_blank(_no_permission_frame(1440, 900, 24))
+
+
+def test_menu_bar_only_frame_on_two_displays_is_blank():
+    from PIL import Image
+    from cyril_agent.shots import looks_blank
+    img = Image.new("RGB", (2560 + 1920, 1440), (0, 0, 0))   # second display shorter: black filler below it
+    img.paste(_no_permission_frame(), (0, 0))
+    img.paste(_no_permission_frame(1920, 1080, 25), (2560, 0))
+    assert looks_blank(img, [(0, 0, 2560, 1440), (2560, 0, 1920, 1080)])
+    img.paste(Image.new("RGB", (500, 300), (250, 250, 250)), (3000, 500))   # a real window on the second display
+    assert not looks_blank(img, [(0, 0, 2560, 1440), (2560, 0, 1920, 1080)])
+
+
+def test_real_screen_with_a_menu_bar_is_not_blank():
+    from PIL import ImageDraw
+    from cyril_agent.shots import looks_blank
+    img = _no_permission_frame()
+    ImageDraw.Draw(img).rectangle((200, 300, 1800, 1200), fill=(250, 250, 250))   # any window at all
+    assert not looks_blank(img)
+    img = _no_permission_frame()
+    ImageDraw.Draw(img).rectangle((900, 1360, 1660, 1430), fill=(90, 90, 100))    # just the Dock
+    assert not looks_blank(img)

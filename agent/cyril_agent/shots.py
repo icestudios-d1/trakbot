@@ -15,20 +15,42 @@ MAX_WIDTH = 1280
 JPEG_QUALITY = 60
 
 
-def looks_blank(img: Image.Image) -> bool:
-    """True if the picture is one flat colour. That is what macOS hands back while Screen Recording is not allowed
-    (or not yet in effect for the running agent): a uniform dark frame instead of the screen."""
-    small = img.convert("L").resize((64, 40))
-    lo, hi = small.getextrema()
+MENU_BAR_SHARE = 0.06   # top slice of each display left out of the blank test (menu bar, notch area included)
+
+
+def _flat(img: Image.Image) -> bool:
+    lo, hi = img.convert("L").resize((64, 40)).getextrema()
     return hi - lo <= 6
+
+
+def looks_blank(img: Image.Image, displays: list[tuple[int, int, int, int]] | None = None) -> bool:
+    """True if the picture shows nothing of the screen. That is what macOS hands back while Screen Recording is not
+    allowed (or not yet in effect for the running agent): every window, the wallpaper included, is left out and a
+    flat dark frame (about RGB 40,39,44) is returned. The menu bar is still drawn, though, so the frame is NOT one
+    flat colour: a thin strip of wallpaper-tinted menu bar sits at the top of each display. So each display is
+    tested without its top slice. `displays` = (left, top, width, height) of each display within `img`; default:
+    the whole picture is one display."""
+    if _flat(img):
+        return True
+    for left, top, w, h in displays or [(0, 0, img.width, img.height)]:
+        skip = max(1, int(h * MENU_BAR_SHARE))
+        if h - skip < 8 or w < 8 or not _flat(img.crop((left, top + skip, left + w, top + h))):
+            return False
+    return True
 
 
 def capture() -> tuple[str, bool]:
     """(JPEG as base64, picture is blank)."""
     with mss.mss() as sct:
-        raw = sct.grab(sct.monitors[0])  # index 0 = all monitors combined
+        whole = sct.monitors[0]  # index 0 = all monitors combined
+        raw = sct.grab(whole)
+        mons = sct.monitors[1:]
     img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
-    blank = looks_blank(img)
+    # mss gives display positions in points while the picture is in pixels (2x on Retina): scale them across
+    sx, sy = img.width / whole["width"], img.height / whole["height"]
+    displays = [(round((d["left"] - whole["left"]) * sx), round((d["top"] - whole["top"]) * sy),
+                 round(d["width"] * sx), round(d["height"] * sy)) for d in mons] or None
+    blank = looks_blank(img, displays)
     if img.width > MAX_WIDTH:
         h = int(img.height * MAX_WIDTH / img.width)
         img = img.resize((MAX_WIDTH, h))
