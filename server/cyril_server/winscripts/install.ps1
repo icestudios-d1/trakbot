@@ -146,15 +146,7 @@ if ($upToDate) {
     if ($canSelftest) {
         # Run the downloaded program once before it replaces anything: a broken build is rejected here,
         # on this PC, instead of installing and silently never reporting.
-        try { $t = Start-Process -FilePath $tmp -ArgumentList "--selftest" -Wait -PassThru -ErrorAction Stop }
-        catch {
-            Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-            $why = $_.Exception.Message
-            if ($why -match "Application Control|AppLocker|Code Integrity|blocked this file|Smart App Control|administrator has blocked") {
-                Fail "Windows blocked netmon.exe from running on this PC ($why). This is an Application Control policy (Smart App Control, WDAC or AppLocker), not a download problem: the agent is not code-signed, so the PC refuses it. Fix on this PC, then run the installer again: (1) Windows 11: Settings > Privacy & security > Windows Security > App & browser control > Smart App Control > Off; or (2) managed PC: have IT allow-list netmon.exe by file hash or publisher in the WDAC/AppLocker policy (the folder is $installDir); or (3) publish a code-signed build. Nothing was installed."
-            }
-            Fail "The downloaded netmon.exe could not be started ($why). Nothing was installed."
-        }
+        $t = Start-Process -FilePath $tmp -ArgumentList "--selftest" -Wait -PassThru
         if ($t.ExitCode -ne 0) { Remove-Item $tmp -Force; Fail "The downloaded netmon.exe does not start (self-test exit code $($t.ExitCode)). It is a broken build: rebuild with windows\build.ps1 and run this again. Nothing was installed." }
         Ok "Start Successful"
     }
